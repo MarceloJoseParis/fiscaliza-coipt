@@ -110,6 +110,8 @@
   function nomeArquivo(s) { return String(s).replace(/[\\/:*?"<>|]+/g, '-').replace(/\s+/g, ' ').trim(); }
   const dataHoraBR = (iso) => { if (!iso) return ''; const d = new Date(iso); return d.toLocaleDateString('pt-BR') + ' ' + d.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }); };
   const ROTULO = { contrato: 'Contrato', convenio: 'Convênio' };
+  // data/hora completa (ISO em UTC) -> data local dd/mm/aaaa (evita trocar o dia depois das 20h)
+  const dataLocalBR = (iso) => { if (!iso) return ''; const s = String(iso); if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return X.dataBR(s); const d = new Date(s); return isNaN(d) ? '' : X.dataBR(d); };
   const PLURAL = { contrato: 'Contratos', convenio: 'Convênios' };
 
   /* ---------- Status da obra ---------- */
@@ -141,7 +143,9 @@
     const out = [];
     if (r.tipo === 'contrato' && r.prazo_execucao) out.push({ rot: 'Execução', data: r.prazo_execucao, info: infoPrazo(r.prazo_execucao) });
     if (r.vigencia) out.push({ rot: r.tipo === 'convenio' ? 'Vigência do Convênio' : 'Vigência Contratual', data: r.vigencia, info: infoPrazo(r.vigencia) });
-    return out.filter((p) => p.info);
+    // obra encerrada (concluída, rescindida, sem vigência): prazo vencido não é alerta
+    const encerrada = ['Obra concluída', 'Contrato rescindido', 'Contrato rescindido – em processo de relicitação', 'Sem vigência'].includes(r.status_obra);
+    return out.filter((p) => p.info).map((p) => (encerrada && p.info.n < 0 ? Object.assign({}, p, { info: Object.assign({}, p.info, { cls: '' }) }) : p));
   }
 
   /* ---------- Prazo das notificações (dias úteis, a partir do dia seguinte ao envio) ---------- */
@@ -150,9 +154,9 @@
     const set = new Set();
     String((CONFIG && CONFIG.feriados) || '').split(/[\n,;]+/).forEach((t) => {
       t = t.trim();
-      let m = /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/.exec(t);
+      let m = /(\d{1,2})\/(\d{1,2})\/(\d{4})/.exec(t);
       if (m) set.add(m[3] + '-' + m[2].padStart(2, '0') + '-' + m[1].padStart(2, '0'));
-      else if (/^\d{4}-\d{2}-\d{2}$/.test(t)) set.add(t);
+      else if ((m = /\d{4}-\d{2}-\d{2}/.exec(t))) set.add(m[0]);
     });
     return set;
   }
@@ -161,10 +165,11 @@
     const fer = feriados();
     const d = new Date(String(isoEnvio).slice(0, 10) + 'T12:00:00');
     let c = 0;
-    while (c < Math.max(1, +dias || 1)) { d.setDate(d.getDate() + 1); if (ehDiaUtil(d, fer)) c++; }
+    while (c < Math.max(1, +dias || 3)) { d.setDate(d.getDate() + 1); if (ehDiaUtil(d, fer)) c++; }
     return isoDe(d);
   }
   function uteisRestantes(isoFim) {
+    if (!isoFim || isNaN(new Date(String(isoFim).slice(0, 10) + 'T12:00:00'))) return 0;
     const fer = feriados();
     const hoje = new Date(X.hojeISO() + 'T12:00:00'), fim = new Date(String(isoFim).slice(0, 10) + 'T12:00:00');
     if (fim < hoje) return -Math.round((hoje - fim) / 86400000); // negativo = dias corridos de atraso
@@ -181,8 +186,9 @@
       const atraso = n.prazoFinal && n.respondidaEm > n.prazoFinal;
       return { k: 'respondida', txt: 'Respondida em ' + X.dataBR(n.respondidaEm) + (atraso ? ' (fora do prazo)' : ''), cls: 'ok', ordem: 3 };
     }
-    const r = uteisRestantes(n.prazoFinal);
-    if (r < 0) return { k: 'vencida', txt: 'Prazo encerrado há ' + -r + (r === -1 ? ' dia' : ' dias'), cls: 'perigo', ordem: 0, restante: r };
+    const pf = n.prazoFinal || prazoFinalUteis(n.enviadaEm, n.prazoDiasEnvio || n.prazo_dias);
+    const r = uteisRestantes(pf);
+    if (r < 0) return { k: 'vencida', txt: 'Prazo encerrado em ' + X.dataBR(pf) + ' (há ' + -r + (r === -1 ? ' dia)' : ' dias)'), cls: 'perigo', ordem: 0, restante: r };
     return { k: 'aguardando', txt: r === 0 ? 'Prazo termina hoje' : r === 1 ? 'Falta 1 dia útil' : 'Faltam ' + r + ' dias úteis', cls: r <= 1 ? 'alerta' : 'info', ordem: 1, restante: r };
   }
 
@@ -488,8 +494,7 @@
       [['Notificada', r.n_nome], [ROTULO[r.tipo] + ' nº', r.numero], ['Processo', r.processo],
         ['Local da obra', r.local_obra],
         ['Status', r.status_obra ? etqStatus(r) : ''],
-        r.tipo === 'contrato' && r.prazo_execucao ? ['Prazo de execução', h('span', {}, X.dataBR(r.prazo_execucao) + ' ', etq(infoPrazo(r.prazo_execucao).txt, infoPrazo(r.prazo_execucao).cls))] : ['', ''],
-        r.vigencia ? [r.tipo === 'convenio' ? 'Vigência do Convênio' : 'Vigência Contratual', h('span', {}, X.dataBR(r.vigencia) + ' ', etq(infoPrazo(r.vigencia).txt, infoPrazo(r.vigencia).cls))] : ['', ''],
+        ...prazosDoRegistro(r).map((p) => [p.rot === 'Execução' ? 'Prazo de execução' : p.rot, h('span', {}, X.dataBR(p.data) + ' ', etq(p.info.txt, p.info.cls))]),
         ['Valor', r.valor ? 'R$ ' + X.formatarMoeda(X.parseMoeda(r.valor)) : ''],
         r.tipo === 'contrato' ? ['O.S. nº', r.os_numero] : ['', ''],
         ['Sanções', r.sancoes && r.sancoes.trim() ? 'Personalizadas' : 'Padrão do modelo']]
@@ -1328,8 +1333,8 @@
           h('span', { class: 'badge ' + st, style: { float: 'right', marginLeft: '6px' } }, st === 'sanada' ? '✓ Sanada' : 'Pendente'),
           h('div', { class: 't', style: { fontWeight: 500 } }, f.descricao || '(sem descrição)'),
           h('div', { class: 'd' }, 'Constatada em ' + dataHoraBR(f.dataHora).slice(0, 10) +
-            (st === 'sanada' && f.sanadaEm ? ' · sanada em ' + X.dataBR(String(f.sanadaEm).slice(0, 10)) : '') +
-            (st === 'pendente' && ult ? ' · última verificação ' + X.dataBR(String(ult.data).slice(0, 10)) + ': não sanada' : '')))));
+            (st === 'sanada' && f.sanadaEm ? ' · sanada em ' + dataLocalBR(f.sanadaEm) : '') +
+            (st === 'pendente' && ult ? ' · última verificação ' + dataLocalBR(ult.data) + ': não sanada' : '')))));
   }
 
   async function painelIrregularidades(r) {
@@ -1499,9 +1504,9 @@
         h('button', { onclick: () => marcar(() => false) }, 'Nenhuma')),
       contagem, lista);
     atualizar();
-    const acao = await modal('Relatório de irregularidades', corpo, [{ txt: 'Cancelar', valor: null }, { txt: '📤 Compartilhar', valor: 'comp' }, { txt: '⬇️ Baixar Word', cls: 'pri', valor: 'baixar' }]);
-    if (!acao) return;
-    if (!sel.size) { toast('Selecione ao menos uma irregularidade.', true); return; }
+    const exige = () => { if (!sel.size) { toast('Selecione ao menos uma irregularidade.', true); return false; } };
+    const acao = await modal('Relatório de irregularidades', corpo, [{ txt: 'Cancelar', valor: null }, { txt: '📤 Compartilhar', valor: 'comp', antes: exige }, { txt: '⬇️ Baixar Word', cls: 'pri', valor: 'baixar', antes: exige }]);
+    if (!acao || !sel.size) return;
     const st = h('div', {}, h('span', { class: 'carregando' }), ' Gerando relatório…');
     const fundo = h('div', { class: 'modal-fundo' }, h('div', { class: 'modal' }, st));
     document.body.appendChild(fundo);
@@ -1534,7 +1539,7 @@
         itens.push({
           descricao: f.descricao || '',
           sanada: situacao(f) === 'sanada',
-          sanada_em: f.sanadaEm ? X.dataBR(String(f.sanadaEm).slice(0, 10)) : '',
+          sanada_em: f.sanadaEm ? dataLocalBR(f.sanadaEm) : '',
           constatada_data: dataHoraBR(f.dataHora),
           constatada_visita: await visitaTxt(f.visitaId),
           constatada_por: f.criadoPor || '',
@@ -1593,7 +1598,7 @@
         const visD = vf.visitaId ? await DB.get('visitas', vf.visitaId) : null;
         itens.push({
           antes_img: await pegar(f), antes_desc: f.descricao || '', antes_data: dataHoraBR(f.dataHora).slice(0, 10), antes_visita: visA ? 'Visita nº ' + visA.numero : '',
-          depois_img: fotoV ? await pegar(fotoV) : null, depois_desc: vf.descricao || '', depois_data: vf.data ? X.dataBR(String(vf.data).slice(0, 10)) : '—',
+          depois_img: fotoV ? await pegar(fotoV) : null, depois_desc: vf.descricao || '', depois_data: vf.data ? dataLocalBR(vf.data) : '—',
           depois_visita: visD ? 'Visita nº ' + visD.numero : (fotoV ? '' : 'sem foto'), verificado_por: vf.por || '',
         });
       }
@@ -1717,7 +1722,7 @@
 
   function legendaPadrao(f) {
     if (f.descricao && f.descricao.trim()) return f.descricao.trim().replace(/[.;:]?$/, '.');
-    return 'Foto registrada em ' + X.dataBR(String(f.dataHora || '').slice(0, 10) || X.hojeISO()) + '.';
+    return 'Foto registrada em ' + (dataLocalBR(f.dataHora) || X.dataBR(X.hojeISO())) + '.';
   }
 
   /* ---------- Tela "Notificações": todas, com prazo de resposta ---------- */
@@ -1749,7 +1754,7 @@
     rc($main, avisoPermissao, filtros,
       lista.length ? lista.map(({ n, sit, r }) => h('a', { class: 'item', href: '#/notificacao/' + n.id },
         h('div', { class: 't' }, (n.ordinal || '?') + 'ª Notificação · ' + (r.apelido || ROTULO[r.tipo])),
-        h('div', { class: 'd' }, ROTULO[r.tipo] + ' nº ' + (r.numero || '—') + ' · Nº ' + (n.numero || '—') + ' · emitida em ' + X.dataBR(String(n.emitidaEm || n.data || '').slice(0, 10))),
+        h('div', { class: 'd' }, ROTULO[r.tipo] + ' nº ' + (r.numero || '—') + ' · Nº ' + (n.numero || '—') + ' · emitida em ' + dataLocalBR(n.emitidaEm || n.data)),
         h('div', { class: 'etqs' }, etq(sit.txt, sit.cls),
           n.enviadaEm ? etq('enviada ' + X.dataBR(n.enviadaEm), '') : null,
           n.prazoFinal && !n.respondidaEm ? etq('prazo até ' + X.dataBR(n.prazoFinal), '') : null)))
@@ -1759,30 +1764,38 @@
   }
 
   /* Avisos de prazo: número no ícone "Notificações" e aviso no celular quando um prazo termina */
-  async function verificarPrazos() {
+  let verificandoPrazos = null;
+  function verificarPrazos() {
+    if (!verificandoPrazos) verificandoPrazos = verificarPrazosInterno().finally(() => { verificandoPrazos = null; });
+    return verificandoPrazos;
+  }
+  async function verificarPrazosInterno() {
     try {
       const regs = new Map((await DB.all('registros')).map((r) => [r.id, r]));
-      const ativas = (await DB.listar('notificacoes')).filter((n) => { const r = regs.get(n.registroId); return r && !r.excluido && n.status === 'emitida' && n.enviadaEm && !n.respondidaEm && n.prazoFinal; });
+      const ativas = (await DB.listar('notificacoes')).filter((n) => { const r = regs.get(n.registroId); return r && !r.excluido && n.status === 'emitida' && n.enviadaEm && !n.respondidaEm; });
       const vencidas = ativas.filter((n) => situacaoNotif(n).k === 'vencida');
-      const hoje = ativas.filter((n) => situacaoNotif(n).restante === 0);
+      const hoje = ativas.filter((n) => { const st = situacaoNotif(n); return st.k === 'aguardando' && st.restante === 0; });
       const b = document.getElementById('badge-notif');
       if (b) { b.textContent = vencidas.length || hoje.length || ''; b.className = 'nav-badge' + (vencidas.length ? ' on' : hoje.length ? ' on alerta' : ''); }
       const avisadas = await DB.kvGet('avisosPrazo', {});
       const novos = [];
-      for (const n of vencidas) if (!avisadas[n.id + ':' + n.prazoFinal]) novos.push({ n, chave: n.id + ':' + n.prazoFinal, txt: 'terminou em ' + X.dataBR(n.prazoFinal) + ' sem resposta registrada.' });
-      for (const n of hoje) if (!avisadas[n.id + ':hoje:' + n.prazoFinal]) novos.push({ n, chave: n.id + ':hoje:' + n.prazoFinal, txt: 'termina HOJE (' + X.dataBR(n.prazoFinal) + ').' });
+      const pf = (n) => n.prazoFinal || prazoFinalUteis(n.enviadaEm, n.prazoDiasEnvio || n.prazo_dias);
+      for (const n of vencidas) { const c = n.id + ':' + pf(n); if (!avisadas[c]) novos.push({ n, chave: c, txt: 'terminou em ' + X.dataBR(pf(n)) + ' sem resposta registrada.' }); }
+      for (const n of hoje) { const c = n.id + ':hoje:' + pf(n); if (!avisadas[c]) novos.push({ n, chave: c, txt: 'termina HOJE (' + X.dataBR(pf(n)) + ').' }); }
       if (!novos.length) return;
-      for (const x of novos) {
-        const r = regs.get(x.n.registroId) || {};
-        const corpo = (x.n.ordinal || '?') + 'ª Notificação — ' + (r.apelido || '') + ': o prazo de resposta ' + x.txt;
-        let mostrouNoSistema = false;
-        if ('Notification' in window && Notification.permission === 'granted' && navigator.serviceWorker) {
-          try { const reg = await navigator.serviceWorker.ready; await reg.showNotification('⏰ Prazo de notificação', { body: corpo, tag: x.chave, data: { url: '#/notificacao/' + x.n.id }, icon: 'icons/icon-192.png' }); mostrouNoSistema = true; } catch (e) { /* */ }
-        }
-        if (!mostrouNoSistema || document.visibilityState === 'visible') toast('⏰ ' + corpo, true);
-        avisadas[x.chave] = new Date().toISOString();
-      }
+      // grava antes de mostrar: nunca avisa duas vezes a mesma coisa
+      for (const x of novos) avisadas[x.chave] = new Date().toISOString();
       await DB.kvSet('avisosPrazo', avisadas);
+      const textos = novos.map((x) => (x.n.ordinal || '?') + 'ª Notificação — ' + ((regs.get(x.n.registroId) || {}).apelido || '') + ': o prazo de resposta ' + x.txt);
+      // aviso no celular (se permitido), um por notificação
+      if ('Notification' in window && Notification.permission === 'granted' && navigator.serviceWorker) {
+        try {
+          const reg = await Promise.race([navigator.serviceWorker.ready, new Promise((res) => setTimeout(() => res(null), 3000))]);
+          if (reg) for (let i = 0; i < novos.length; i++) await reg.showNotification('⏰ Prazo de notificação', { body: textos[i], tag: novos[i].chave, data: { url: '#/notificacao/' + novos[i].n.id }, icon: 'icons/icon-192.png' });
+        } catch (e) { /* */ }
+      }
+      // aviso dentro do app: um só, somando tudo
+      if (document.visibilityState === 'visible') toast('⏰ ' + (textos.length === 1 ? textos[0] : textos.length + ' prazos de notificação terminaram ou terminam hoje. Veja a aba Notificações.'), true);
     } catch (e) { console.warn('prazos', e); }
   }
   App.verificarPrazos = verificarPrazos;
@@ -1794,16 +1807,19 @@
     o.prazoFinal = prazoFinalUteis(dataISO, o.prazoDiasEnvio);
     o.enviadaPor = email();
   }
-  async function pedirDataEnvio(n) {
-    const d = { data: X.hojeISO() };
+  async function pedirDataEnvio(n, inicial) {
+    const d = { data: inicial || X.hojeISO() };
     const inp = h('input', { type: 'date', value: d.data, max: X.hojeISO(), oninput: (e) => { d.data = e.target.value; prev(); } });
     const info = h('p', { class: 'sub' });
-    const prev = () => { rc(info, d.data ? 'Prazo de ' + (+n.prazo_dias || 3) + ' dia(s) útil(eis) para ' + quemResponde(n.tipo) + ' responder: até ' + X.dataBR(prazoFinalUteis(d.data, n.prazo_dias)) + '.' : ''); };
+    const prev = () => { rc(info, d.data ? 'Prazo de ' + (+n.prazo_dias || 3) + ' dia(s) útil(eis) para ' + quemResponde(n.tipo) + ' responder: até ' + X.dataBR(prazoFinalUteis(d.data, +n.prazo_dias || 3)) + '.' : ''); };
     prev();
     const ok = await modal('📨 Registrar envio', h('div', {},
       h('p', {}, 'Data em que a notificação foi enviada (normalmente hoje). O app passa a contar o prazo a partir do dia seguinte, em dias úteis.'),
       campo('Data do envio', inp), info),
-    [{ txt: 'Cancelar', valor: false }, { txt: 'Registrar envio', cls: 'pri', valor: true, antes: () => { if (!d.data) { toast('Informe a data.', true); return false; } } }]);
+    [{ txt: 'Cancelar', valor: false }, { txt: 'Registrar envio', cls: 'pri', valor: true, antes: () => {
+      if (!d.data) { toast('Informe a data.', true); return false; }
+      if (d.data > X.hojeISO()) { toast('A data do envio não pode ser futura.', true); return false; }
+    } }]);
     return ok ? d : null;
   }
   async function pedirResposta(n) {
@@ -1812,7 +1828,11 @@
       h('p', {}, 'Data em que ' + quemResponde(n.tipo) + ' respondeu à notificação. A pendência sai da lista de prazos.'),
       campo('Data da resposta', h('input', { type: 'date', value: d.data, min: n.enviadaEm || null, oninput: (e) => { d.data = e.target.value; } })),
       campo('Observação (opcional)', inputArea(d, 'obs', { placeholder: 'Ex.: Ofício nº 123/2026 — apresentou cronograma de correção.' }))),
-    [{ txt: 'Cancelar', valor: false }, { txt: 'Registrar', cls: 'ok', valor: true, antes: () => { if (!d.data) { toast('Informe a data.', true); return false; } } }]);
+    [{ txt: 'Cancelar', valor: false }, { txt: 'Registrar', cls: 'ok', valor: true, antes: () => {
+      if (!d.data) { toast('Informe a data.', true); return false; }
+      if (n.enviadaEm && d.data < n.enviadaEm) { toast('A resposta não pode ser anterior ao envio (' + X.dataBR(n.enviadaEm) + ').', true); return false; }
+      if (d.data > X.hojeISO()) { toast('A data da resposta não pode ser futura.', true); return false; }
+    } }]);
     return ok ? d : null;
   }
   function cartaoEnvio(n, r, redesenhar) {
@@ -1843,7 +1863,7 @@
           verificarPrazos(); redesenhar();
         } }, 'Desfazer resposta') : null,
         h('button', { class: 'btn peq', onclick: async () => {
-          const envio = await pedirDataEnvio(n);
+          const envio = await pedirDataEnvio(n, n.enviadaEm);
           if (!envio) return;
           await atualizarCampos('notificacoes', n.id, (o) => aplicarEnvio(o, envio.data));
           verificarPrazos(); redesenhar();
@@ -1862,7 +1882,7 @@
     if (!original || original.excluido) { rc($main, h('div', { class: 'vazio' }, 'Notificação não encontrada.')); return; }
     const r = await DB.get('registros', original.registroId);
     if (!r) { rc($main, h('div', { class: 'vazio' }, 'Cadastro desta notificação não encontrado.')); return; }
-    marcarNav(r.tipo === 'convenio' ? 'convenios' : 'contratos');
+    marcarNav('notificacoes');
     const n = JSON.parse(JSON.stringify(original));
     let nBase = clonar(original);
     const emitida = n.status === 'emitida';
@@ -2004,6 +2024,14 @@
     async function salvar(silencioso) {
       if (original.status === 'emitida' && ro) return;
       if (!ro) {
+        // emitida em outro aparelho enquanto esta tela estava aberta: não altera o documento emitido
+        const atualDB = await DB.get('notificacoes', id);
+        if (atualDB && atualDB.status === 'emitida' && nBase.status !== 'emitida') {
+          sujo = false; toast('Esta notificação foi emitida em outro aparelho; as alterações desta tela não foram gravadas.', true);
+          App._sairNotif = null; return;
+        }
+      }
+      if (!ro) {
         n.fiscais = snapshotAssinantes(edFiscais, pessoas, true);
         n.coordenadores = snapshotAssinantes(edCoord, pessoas, false);
         n.itens = (n.itens || []).map((t) => t.trim()).filter(Boolean);
@@ -2049,8 +2077,16 @@
         toast(e.message, true);
       }
     }
+    let emitindo = false;
     async function emitir(comEnvio) {
+      if (emitindo) return;
+      emitindo = true;
+      try { await emitirInterno(comEnvio); } finally { emitindo = false; }
+    }
+    async function emitirInterno(comEnvio) {
       if (!validar()) return;
+      const atualDB = await DB.get('notificacoes', id);
+      if (atualDB && atualDB.status === 'emitida') { toast('Esta notificação já foi emitida (em outro aparelho).', true); telaNotificacao(id); return; }
       if (await numeroDuplicado() && !(await confirmar('Já existe outra notificação com o número ' + n.numero + '. Emitir mesmo assim?', 'Emitir'))) return;
       if (!(n.fotos || []).length && !(await confirmar('Esta notificação não tem fotos anexas. Emitir mesmo assim?', 'Emitir'))) return;
       let envio = null;
@@ -2083,19 +2119,19 @@
         const envio = await pedirDataEnvio(original);
         if (!envio) return;
         await atualizarCampos('notificacoes', id, (o) => aplicarEnvio(o, envio.data));
-        toast('Envio registrado — prazo até ' + X.dataBR(prazoFinalUteis(envio.data, original.prazo_dias)));
+        toast('Envio registrado — prazo até ' + X.dataBR(prazoFinalUteis(envio.data, +original.prazo_dias || 3)));
         verificarPrazos(); telaNotificacao(id);
       } }, '📨 Enviado') : null),
       h('div', { class: 'acoes' },
         emitida && pode.notificar() ? h('button', { class: 'btn peq', onclick: () => criarNotificacao(r.id, n) }, '↻ Nova notificação a partir desta (reiteração)') : null,
         emitida && pode.admin() ? h('button', { class: 'btn peq', onclick: async () => {
-          if (!(await confirmar('Reabrir para edição? A notificação voltará a ser rascunho.', 'Reabrir'))) return;
-          await atualizarCampos('notificacoes', id, (o) => { o.status = 'rascunho'; delete o.emitidaEm; });
-          telaNotificacao(id);
+          if (!(await confirmar('Reabrir para edição? A notificação voltará a ser rascunho' + (original.enviadaEm ? ' e o registro de envio/resposta será apagado (registre o envio de novo ao reemitir).' : '.'), 'Reabrir'))) return;
+          await atualizarCampos('notificacoes', id, (o) => { o.status = 'rascunho'; delete o.emitidaEm; for (const k of ['enviadaEm', 'prazoFinal', 'prazoDiasEnvio', 'enviadaPor', 'respondidaEm', 'respostaObs', 'respondidaPor']) delete o[k]; });
+          verificarPrazos(); telaNotificacao(id);
         } }, '🔓 Reabrir') : null,
         (!emitida && pode.notificar()) || pode.admin() ? h('button', { class: 'btn peq perigo', onclick: async () => {
           if (!(await confirmar('Excluir esta notificação?', 'Excluir', true))) return;
-          await DB.excluir('notificacoes', id, email()); location.replace('#/registro/' + r.id);
+          await DB.excluir('notificacoes', id, email()); verificarPrazos(); location.replace('#/registro/' + r.id);
         } }, 'Excluir') : null),
       h('p', { class: 'dica' }, 'Dica: para PDF, abra o .docx no Word (celular ou computador) e use “Salvar como PDF”.'));
 
@@ -2172,7 +2208,7 @@
       for (const f of fotosSemDrive) if (!(await DB.blobGet(f.id))) semArquivo++;
       const log = Sync.lerLog().slice().reverse();
       const resumo = {
-        app: '3.2.1', servidor: Sync.versaoServidor || '?', usuario: (u || {}).email, perfil: perfil(), estado: Sync.estado, erro: Sync.erro || '',
+        app: '3.2.2', servidor: Sync.versaoServidor || '?', usuario: (u || {}).email, perfil: perfil(), estado: Sync.estado, erro: Sync.erro || '',
         online: navigator.onLine, ultimaSync: await DB.kvGet('ultimaSync', null), cursor: await DB.kvGet('servidorDesde', 0),
         pendentes: pendPor, fotosAguardandoEnvio: fotosSemDrive.length - semArquivo, fotosDeOutroAparelhoSemEnvio: semArquivo,
         aparelho: navigator.userAgent, log,
@@ -2341,7 +2377,7 @@
         pode.admin() ? h('button', { class: 'btn', onclick: importarBackup }, '⬆️ Importar') : null,
         pode.admin() ? h('button', { class: 'btn', onclick: carregarExemplos }, 'Carregar exemplos dos modelos') : null)));
 
-    cards.push(h('p', { class: 'dica', style: { textAlign: 'center' } }, 'Fiscalização de Obras · v3.2.1 · dados salvos no aparelho' + (Sync.habilitado() ? ' e no Google Drive do administrador' : '') + ' · ', h('a', { href: 'privacidade.html' }, 'Política de privacidade')));
+    cards.push(h('p', { class: 'dica', style: { textAlign: 'center' } }, 'Fiscalização de Obras · v3.2.2 · dados salvos no aparelho' + (Sync.habilitado() ? ' e no Google Drive do administrador' : '') + ' · ', h('a', { href: 'privacidade.html' }, 'Política de privacidade')));
     rc($main, ...cards);
   }
 
@@ -2537,6 +2573,7 @@
     }
     if ('serviceWorker' in navigator && location.protocol !== 'file:') {
       navigator.serviceWorker.register('sw.js').catch((e) => console.warn('SW', e));
+      navigator.serviceWorker.addEventListener('message', (e) => { if (e.data && e.data.hash) location.hash = e.data.hash; });
     }
   }
   iniciar();

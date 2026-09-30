@@ -1,5 +1,5 @@
 /* Service worker: guarda o app no aparelho para funcionar sem internet */
-const VERSAO = 'notif-v3.2.1';
+const VERSAO = 'notif-v3.2.2';
 const ARQUIVOS = [
   './', 'index.html', 'privacidade.html', 'config.js', 'manifest.webmanifest', 'css/app.css',
   'lib/jszip.min.js', 'js/extenso.js', 'js/docgen.js', 'js/db.js', 'js/foto.js', 'js/camera.js', 'js/sync.js', 'js/app.js',
@@ -27,12 +27,14 @@ self.addEventListener('fetch', (e) => {
   );
 });
 
-// toque no aviso de prazo: abre (ou traz para frente) o app na notificação
+// toque no aviso de prazo: traz o app para frente e abre a notificação
 self.addEventListener('notificationclick', (e) => {
   e.notification.close();
   const alvo = (e.notification.data && e.notification.data.url) || '#/notificacoes';
-  e.waitUntil(self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((cs) => {
-    for (const c of cs) { if ('focus' in c) { c.navigate ? c.navigate(c.url.split('#')[0] + alvo).catch(() => {}) : null; return c.focus(); } }
-    return self.clients.openWindow('./index.html' + alvo);
-  }));
+  e.waitUntil((async () => {
+    const cs = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+    const app = cs.find((c) => { const p = new URL(c.url).pathname; return p.endsWith('/') || p.endsWith('/index.html'); });
+    if (app) { try { await app.focus(); } catch (err) { /* */ } app.postMessage({ hash: alvo }); return; }
+    await self.clients.openWindow('./index.html' + alvo);
+  })());
 });
