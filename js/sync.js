@@ -5,6 +5,7 @@
   const ouvintes = new Set();
   let gisCarregado = null;
   let emAndamento = null;
+  const emVoo = new Set(); // pedidos em andamento (cancelados se a internet cair)
 
   Sync.on = (f) => { ouvintes.add(f); return () => ouvintes.delete(f); };
   function emitir(estado, extra) {
@@ -119,19 +120,32 @@
   };
 
   /* ---------------- Chamada ao backend ---------------- */
+  Sync.TEMPO_LIMITE = { padrao: 120000, enviarFoto: 180000, baixarArquivo: 180000, enviarArquivo: 180000 };
   Sync.chamar = async function (acao, dados) {
     const cfg = Sync.config();
     if (!cfg.apiUrl) throw new Error('Servidor não configurado.');
     let token = Sync.token() || (await Sync.renovarToken());
     if (!token) { emitir('login'); throw new Error('Faça login com sua conta Google para sincronizar.'); }
-    const resp = await fetch(cfg.apiUrl, {
-      method: 'POST',
-      redirect: 'follow',
-      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-      body: JSON.stringify(Object.assign({ acao, token }, dados || {})),
-    });
-    if (!resp.ok) throw new Error('Servidor respondeu ' + resp.status);
-    const txt = await resp.text();
+    // tempo limite: uma conexão travada não pode bloquear a sincronização para sempre
+    const ctl = typeof AbortController !== 'undefined' ? new AbortController() : null;
+    const timer = ctl ? setTimeout(() => ctl.abort(), Sync.TEMPO_LIMITE[acao] || Sync.TEMPO_LIMITE.padrao) : null;
+    if (ctl) emVoo.add(ctl);
+    let resp, txt;
+    try {
+      resp = await fetch(cfg.apiUrl, {
+        method: 'POST',
+        redirect: 'follow',
+        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+        body: JSON.stringify(Object.assign({ acao, token }, dados || {})),
+        signal: ctl ? ctl.signal : undefined,
+      });
+      txt = await resp.text();
+    } catch (e) {
+      const err = new Error(e && e.name === 'AbortError' && !ctl.semRede ? 'O servidor demorou demais para responder (conexão lenta). Nada foi perdido: os dados continuam no aparelho e serão enviados na próxima sincronização.' : 'Sem conexão com o servidor. Os dados continuam no aparelho.');
+      err.rede = true;
+      throw err;
+    } finally { if (timer) clearTimeout(timer); if (ctl) emVoo.delete(ctl); }
+    if (!resp.ok) { const err = new Error('Servidor respondeu ' + resp.status + '. Os dados continuam no aparelho.'); err.rede = true; throw err; }
     let j;
     try { j = JSON.parse(txt); } catch (e) {
       throw new Error('O servidor devolveu uma página em vez de dados. Confira no Apps Script: Implantar › Gerenciar implantações › “Quem pode acessar: Qualquer pessoa”, e use a URL que termina em /exec.');
@@ -143,108 +157,172 @@
     if (!j.ok) {
       if (j.codigo === 'TOKEN') { localStorage.removeItem('id_token'); emitir('login'); }
       if (j.codigo === 'SEM_ACESSO') emitir('sem_acesso', { erro: j.erro });
-      throw new Error(j.erro || 'Erro no servidor');
+      const err = new Error(j.erro || 'Erro no servidor');
+      err.codigo = j.codigo;
+      throw err;
     }
+    if (j.versao) Sync.versaoServidor = j.versao;
     return j;
   };
 
   Sync.quemSou = async function () {
     const j = await Sync.chamar('quemSou');
     if (!j.usuario) throw new Error('Resposta inesperada do servidor (quemSou).');
+    Sync.versaoServidor = j.versao || 1;
     const u = Object.assign({}, Sync.usuarioLocal() || {}, j.usuario);
     localStorage.setItem('usuario', JSON.stringify(u));
     Sync.usuario = u;
+    Sync._quemSouEm = Date.now();
     emitir('ok');
     return u;
   };
 
   /* ---------------- Sincronizacao ---------------- */
+  let pedidoDurante = false;
   Sync.sincronizar = function () {
-    if (emAndamento) return emAndamento;
+    if (emAndamento) { pedidoDurante = true; return emAndamento; }
+    pedidoDurante = false;
     emAndamento = (async () => {
-      if (!Sync.habilitado()) { emitir('local'); return; }
-      if (!navigator.onLine) { emitir('offline'); return; }
-      emitir('sincronizando');
+      // garante que o corpo rode depois de "emAndamento" receber a promessa (senão o "finally" abaixo
+      // limparia a variável antes da hora e ela ficaria presa para sempre, bloqueando novas sincronizações)
+      await null;
       try {
+        if (!Sync.habilitado()) { emitir('local'); return; }
+        if (!navigator.onLine) { emitir('offline'); return; }
+        emitir('sincronizando');
         if (!Sync.token()) {
           const t = await Sync.renovarToken();
           if (!t) { emitir('login'); return; }
         }
-        if (!Sync.usuario || !Sync.usuario.perfil) await Sync.quemSou();
-        await enviarFotos();
+        // confere o perfil periodicamente (o administrador pode ter mudado)
+        if (!Sync.usuario || !Sync.usuario.perfil || Date.now() - (Sync._quemSouEm || 0) > 30 * 60000) { await Sync.quemSou(); emitir('sincronizando'); }
+        const falhasFotos = await enviarFotos();
         await enviarAlteracoes();
         await receberAlteracoes();
         await sincronizarModelos();
         await DB.kvSet('ultimaSync', new Date().toISOString());
-        emitir('ok', { erro: null });
+        if (falhasFotos.length) {
+          emitir('erro', { erro: falhasFotos.length + ' foto(s) não puderam ser enviadas agora (' + falhasFotos[0] + '). Os demais dados foram sincronizados; o app tentará as fotos de novo.' });
+        } else emitir('ok', { erro: null });
       } catch (e) {
         console.error(e);
-        if (Sync.estado === 'sincronizando') emitir('erro', { erro: e.message });
+        if (Sync.estado !== 'login' && Sync.estado !== 'sem_acesso') emitir('erro', { erro: e.message });
       } finally {
         emAndamento = null;
+        // alterações feitas durante a sincronização: sincroniza de novo em seguida
+        if (pedidoDurante && Sync.estado !== 'login' && Sync.estado !== 'sem_acesso') { pedidoDurante = false; setTimeout(() => Sync.sincronizar(), 1500); }
       }
     })();
     return emAndamento;
   };
 
+  const perfilAtual = () => ((Sync.usuario || Sync.usuarioLocal() || {}).perfil) || 'consulta';
+
   async function enviarFotos() {
+    const falhas = [];
+    if (perfilAtual() === 'consulta') return falhas;
     const fotos = (await DB.all('fotos')).filter((f) => !f.driveId && !f.excluido);
+    let i = 0;
     for (const f of fotos) {
+      i++;
       const blob = await DB.blobGet(f.id);
       if (!blob) continue;
-      emitir('sincronizando', { detalhe: 'Enviando fotos…' });
-      const b64 = await Foto.blobParaBase64(blob);
-      const j = await Sync.chamar('enviarFoto', { id: f.id, registroId: f.registroId, base64: b64, mime: blob.type || 'image/jpeg' });
-      if (!j.driveId) throw new Error('Resposta inesperada do servidor ao enviar foto.');
-      const atual = await DB.get('fotos', f.id);
-      atual.driveId = j.driveId;
-      atual._pendente = true;
-      await DB.put('fotos', atual);
+      // irregularidade recém-registrada ainda sem descrição: espera a descrição (vai no nome do arquivo no Drive)
+      if (f.irregular && !String(f.descricao || '').trim() && Date.now() - Date.parse(f.criadoEm || 0) < 180000) continue;
+      emitir('sincronizando', { detalhe: 'Enviando foto ' + i + ' de ' + fotos.length + '…' });
+      try {
+        const b64 = await Foto.blobParaBase64(blob);
+        let destino = {};
+        try { if (root.App && App.infoFotoDrive) destino = await App.infoFotoDrive(f); } catch (e) { /* usa a pasta Fotos */ }
+        const j = await Sync.chamar('enviarFoto', { id: f.id, registroId: f.registroId, base64: b64, mime: blob.type || 'image/jpeg', pastas: destino.pastas, nome: destino.nome });
+        if (!j.driveId) throw new Error('Resposta inesperada do servidor ao enviar foto.');
+        const atual = await DB.get('fotos', f.id);
+        if (!atual) continue;
+        atual.driveId = j.driveId;
+        atual._pendente = true;
+        await DB.put('fotos', atual);
+      } catch (e) {
+        // sem internet / sessao / acesso: interrompe; erro de uma foto: segue com as outras
+        if (e.rede || e.codigo === 'TOKEN' || e.codigo === 'SEM_ACESSO' || e.codigo === 'PERFIL' || /redirecionado|página em vez/.test(e.message)) throw e;
+        console.warn('foto', f.id, e);
+        falhas.push(e.message);
+      }
     }
+    return falhas;
   }
 
+  const LOTE_MAX_ITENS = 80;
+  const LOTE_MAX_BYTES = 1500000;
   async function enviarAlteracoes() {
-    const lote = {};
-    let total = 0;
+    const perfil = perfilAtual();
+    const itens = [];
     for (const e of ENTIDADES) {
-      const pend = (await DB.all(e)).filter((o) => o._pendente);
-      if (pend.length) {
-        lote[e] = pend.map((o) => { const c = Object.assign({}, o); delete c._pendente; return c; });
-        total += pend.length;
+      for (const o of (await DB.all(e)).filter((x) => x._pendente)) {
+        // o servidor recusa: consulta nao grava nada; pessoas e ajustes so o administrador
+        if (perfil === 'consulta' || ((e === 'pessoas' || e === 'config') && perfil !== 'admin')) { delete o._pendente; await DB.put(e, o); continue; }
+        const c = Object.assign({}, o); delete c._pendente;
+        itens.push({ e, o: c, tam: JSON.stringify(c).length });
       }
     }
-    if (!total) return;
-    emitir('sincronizando', { detalhe: 'Enviando ' + total + ' alteração(ões)…' });
-    const j = await Sync.chamar('enviar', { dados: lote });
-    if (typeof j.gravados !== 'number') throw new Error('Resposta inesperada do servidor ao enviar. Os dados continuam no aparelho.');
-    const servidorAntigo = !j.versao || j.versao < 2;
-    for (const e of Object.keys(lote)) {
-      if (servidorAntigo && e === 'visitas') continue; // servidor desatualizado nao grava visitas: mantem pendente
-      for (const o of lote[e]) {
-        const atual = await DB.get(e, o.id);
-        if (atual && atual.atualizadoEm === o.atualizadoEm) { delete atual._pendente; await DB.put(e, atual); }
+    if (!itens.length) return;
+    // envia em lotes: um lote grande demais pode estourar o tempo do servidor
+    let enviados = 0;
+    while (enviados < itens.length) {
+      const lote = {};
+      let n = 0, bytes = 0;
+      while (enviados + n < itens.length && n < LOTE_MAX_ITENS && (n === 0 || bytes + itens[enviados + n].tam < LOTE_MAX_BYTES)) {
+        const it = itens[enviados + n];
+        (lote[it.e] = lote[it.e] || []).push(it.o);
+        bytes += it.tam; n++;
       }
+      emitir('sincronizando', { detalhe: 'Enviando alterações ' + (enviados + n) + ' de ' + itens.length + '…' });
+      const j = await Sync.chamar('enviar', { dados: lote });
+      if (typeof j.gravados !== 'number') throw new Error('Resposta inesperada do servidor ao enviar. Os dados continuam no aparelho.');
+      const servidorAntigo = !j.versao || j.versao < 2;
+      for (const e of Object.keys(lote)) {
+        if (servidorAntigo && e === 'visitas') continue; // servidor desatualizado nao grava visitas: mantem pendente
+        for (const o of lote[e]) {
+          const atual = await DB.get(e, o.id);
+          if (atual && atual.atualizadoEm === o.atualizadoEm) { delete atual._pendente; await DB.put(e, atual); }
+        }
+      }
+      if (servidorAntigo && lote.visitas) throw new Error('Atualize o Code.gs no Apps Script (nova versão) para sincronizar as visitas.');
+      enviados += n;
     }
-    if (servidorAntigo && lote.visitas) throw new Error('Atualize o Code.gs no Apps Script (nova versão) para sincronizar as visitas.');
-    return j;
   }
 
   async function receberAlteracoes() {
-    const desde = await DB.kvGet('servidorDesde', 0);
-    const j = await Sync.chamar('receber', { desde });
-    if (!j.dados) throw new Error('Resposta inesperada do servidor ao receber dados.');
-    let n = 0;
-    for (const e of ENTIDADES) {
-      for (const o of (j.dados[e] || [])) {
-        const local = await DB.get(e, o.id);
-        if (local && local._pendente && local.atualizadoEm > o.atualizadoEm) continue;
-        if (local && local.miniatura && !o.miniatura) o.miniatura = local.miniatura;
-        await DB.put(e, o);
-        n++;
+    let total = 0;
+    for (let pagina = 0; pagina < 200; pagina++) {
+      const desde = await DB.kvGet('servidorDesde', 0);
+      const j = await Sync.chamar('receber', { desde });
+      if (!j.dados) throw new Error('Resposta inesperada do servidor ao receber dados.');
+      for (const e of ENTIDADES) {
+        for (const o of (j.dados[e] || [])) {
+          const local = await DB.get(e, o.id);
+          if (local) {
+            // mesma versao que o aparelho ja tem: nada a fazer
+            if (!local._pendente && String(local.atualizadoEm) === String(o.atualizadoEm) && !!local.excluido === !!o.excluido && (e !== 'fotos' || !o.driveId || local.driveId === o.driveId)) continue;
+            // alteracao local mais nova ainda nao enviada: mantem a local
+            if (local._pendente && String(local.atualizadoEm) > String(o.atualizadoEm)) continue;
+            // exclusao e definitiva: uma copia antiga do servidor nao "ressuscita" o que foi excluido aqui
+            if (local.excluido && !o.excluido) {
+              if (!local._pendente) { local._pendente = true; local.atualizadoEm = new Date().toISOString(); await DB.put(e, local); }
+              continue;
+            }
+            if (local.miniatura && !o.miniatura) o.miniatura = local.miniatura;
+            // nao perde o endereco da foto no Drive por causa de uma edicao feita em outro aparelho
+            if (e === 'fotos' && local.driveId && !o.driveId) { o.driveId = local.driveId; o._pendente = true; pedidoDurante = true; }
+          }
+          await DB.put(e, o);
+          total++;
+        }
       }
+      await DB.kvSet('servidorDesde', j.servidorAgora);
+      if (!j.mais) break;
+      emitir('sincronizando', { detalhe: 'Recebendo dados… (' + total + ')' });
     }
-    await DB.kvSet('servidorDesde', j.servidorAgora);
-    if (n && root.App && App.aoReceberDados) App.aoReceberDados(n);
+    if (total && root.App && App.aoReceberDados) await App.aoReceberDados(total);
   }
 
   async function sincronizarModelos() {
@@ -285,6 +363,10 @@
   };
 
   root.addEventListener('online', () => Sync.sincronizar());
-  root.addEventListener('offline', () => emitir('offline'));
+  root.addEventListener('offline', () => {
+    // a conexao caiu: cancela os pedidos em andamento para a sincronizacao nao ficar presa esperando
+    emVoo.forEach((c) => { c.semRede = true; c.abort(); });
+    emitir('offline');
+  });
   root.Sync = Sync;
 })(self);
