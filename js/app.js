@@ -352,6 +352,7 @@
 
   async function rotear() {
     App._atualizarTela = null;
+    if (App._sairTela) { const f = App._sairTela; App._sairTela = null; try { f(); } catch (e) { console.error(e); } }
     if (App._sairNotif) { const f = App._sairNotif; App._sairNotif = null; try { await f(); } catch (e) { console.error(e); } }
     const partes = (location.hash || '#/contratos').slice(2).split('/');
     const [r, a, b] = partes;
@@ -368,6 +369,7 @@
       if (r === 'nova-notificacao') { return await criarNotificacao(a); }
       if (r === 'coleta') { marcarNav('coleta'); return await telaColeta(a); }
       if (r === 'notificacoes') { marcarNav('notificacoes'); return await telaNotificacoes(); }
+      if (r === 'fila') { marcarNav('fila'); return await telaFila(); }
       if (r === 'visita') { return await telaVisita(a); }
       if (r === 'irregularidade') { return await telaIrregularidade(a, b); }
       if (r === 'config') { marcarNav('config'); return await telaConfig(a); }
@@ -544,7 +546,7 @@
       ap(conteudo, gradeFotos(fotos, { onclick: (f) => abrirFoto(f, () => telaRegistro(id)) }));
       if (!fotos.length) ap(conteudo, h('div', { class: 'vazio' }, 'Nenhuma foto coletada.'));
     }
-    rc($main, cab, abas, conteudo);
+    rc($main, cab, r.tipo === 'convenio' ? cartaoFilaConvenio(r) : null, abas, conteudo);
   }
 
   /* ---------------- fotos ---------------- */
@@ -1763,6 +1765,200 @@
     App._atualizarTela = () => telaNotificacoes();
   }
 
+  /* ================================================================== */
+  /* Fila de atendimento (planilha externa, SOMENTE LEITURA)             */
+  /* ================================================================== */
+  // O app nunca escreve na planilha da fila: o servidor só lê os valores exibidos (ação "fila").
+  const semAc = (s) => String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
+  // "0961-2024", "961/2024", "Conv. nº 0961/2024" -> "961/2024"
+  function chaveConvenio(s) {
+    const m = String(s || '').replace(/(\d)\.(\d)/g, '$1$2').match(/\d+/g);
+    if (!m) return '';
+    if (m.length >= 2) {
+      const ano = m[m.length - 1], num = m[m.length - 2];
+      if (ano.length === 4 || ano.length === 2) return String(parseInt(num, 10)) + '/' + (ano.length === 2 ? '20' + ano : ano);
+    }
+    return String(parseInt(m[0], 10));
+  }
+  function corSituacao(t) {
+    const s = semAc(t);
+    if (!s) return '';
+    if (/indeferid|cancelad|reprovad|vencid|devolvid|arquivad.*sem/.test(s)) return 'perigo';
+    if (/aguardando|sem retorno|inconsist|pendent|diligencia|paralisad/.test(s)) return 'alerta';
+    if (/juntad|conclu|finaliz|aprovad|deferid|assinad|publicad|atendid/.test(s)) return 'ok';
+    if (/elabora|analise|andamento|encaminhad|tramit/.test(s)) return 'info';
+    return '';
+  }
+  let filaMem = null; // última leitura (também guardada no aparelho em kv 'fila_cache')
+  let filaLendo = null;
+  async function filaDoCache() {
+    if (!filaMem) filaMem = await DB.kvGet('fila_cache', null);
+    return filaMem;
+  }
+  /** Lê a fila no servidor. Devolve { dados, erro }: se falhar, "dados" é a última leitura salva. */
+  function lerFila() {
+    if (!filaLendo) filaLendo = (async () => {
+      if (!Sync.habilitado()) return { dados: null, erro: 'local' };
+      if (!navigator.onLine) return { dados: await filaDoCache(), erro: 'Sem internet' };
+      try {
+        const j = await Sync.chamar('fila');
+        const d = { configurada: !!j.configurada, titulo: j.titulo, aba: j.aba, colunas: j.colunas || [], linhas: j.linhas || [], lidoEm: j.lidoEm || new Date().toISOString(), contaServidor: j.contaServidor };
+        filaMem = d;
+        await DB.kvSet('fila_cache', d);
+        return { dados: d, erro: null };
+      } catch (e) {
+        const antigo = /desconhecida/i.test(e.message || '');
+        return { dados: await filaDoCache(), erro: antigo ? 'servidor_antigo' : e.message || String(e), antigo };
+      }
+    })().finally(() => { filaLendo = null; });
+    return filaLendo;
+  }
+  function linhasDoConvenio(dados, r) {
+    const k = chaveConvenio(r.numero);
+    if (!k || !dados || !dados.linhas) return [];
+    return dados.linhas.filter((l) => chaveConvenio(l.convenio) === k);
+  }
+  function itemFila(l, reg) {
+    const cab = [l.convenio ? 'Convênio ' + l.convenio : 'Convênio não informado', l.municipio].filter(Boolean).join(' · ');
+    const filhos = [
+      h('div', { class: 't' }, reg ? h('span', {}, cab) : cab),
+      l.escola ? h('div', { class: 'd' }, l.escola) : null,
+      h('div', { class: 'etqs' },
+        l.solicitacao ? etq(l.solicitacao, 'info') : null,
+        l.status ? etq(l.status, '') : null,
+        l.situacao ? etq(l.situacao, corSituacao(l.situacao)) : null),
+      h('div', { class: 'd' }, [l.protocolo ? 'Protocolo nº ' + l.protocolo : '', 'linha ' + l.linha + ' da planilha'].filter(Boolean).join(' · ')),
+      ...(l.extras || []).map(([k, v]) => h('div', { class: 'd' }, k + ': ' + v)),
+      reg ? h('div', { class: 'd', style: { color: 'var(--pri)' } }, 'Abrir “' + (reg.apelido || reg.numero) + '” no app ›') : null,
+    ];
+    return reg ? h('a', { class: 'item fila-item', href: '#/registro/' + reg.id }, ...filhos) : h('div', { class: 'item fila-item' }, ...filhos);
+  }
+  const avisoLeitura = (dados, erro) => {
+    if (!erro || erro === 'local') return null;
+    const quando = dados && dados.lidoEm ? ' Mostrando a leitura de ' + dataHoraBR(dados.lidoEm) + '.' : '';
+    if (erro === 'servidor_antigo') return h('div', { class: 'aviso' }, 'O servidor ainda não tem a Fila: o administrador precisa atualizar o Code.gs e publicar uma “Nova versão” da implantação.');
+    return h('div', { class: 'aviso' }, (erro === 'Sem internet' ? 'Sem internet.' : 'Não foi possível ler a planilha agora: ' + erro) + quando);
+  };
+
+  async function telaFila() {
+    titulo('Fila de atendimento');
+    if (!Sync.habilitado()) {
+      rc($main, h('div', { class: 'vazio' }, 'A Fila de atendimento lê uma planilha do Google pelo servidor do app, então só funciona no modo compartilhado (com login).'));
+      return;
+    }
+    const regs = (await DB.listar('registros')).filter((r) => r.tipo === 'convenio');
+    const porChave = new Map();
+    for (const r of regs) { const k = chaveConvenio(r.numero); if (k && !porChave.has(k)) porChave.set(k, r); }
+    const regDa = (l) => porChave.get(chaveConvenio(l.convenio)) || null;
+
+    let dados = await filaDoCache();
+    let erro = null;
+    const topo = h('div');
+    const resumo = h('div', { class: 'filtros' });
+    const busca = h('input', { type: 'search', placeholder: 'Buscar convênio, município, escola, protocolo…' });
+    const selSol = h('select', {});
+    const selSt = h('select', {});
+    const soApp = h('input', { type: 'checkbox' });
+    const lista = h('div');
+    const st = (() => { try { return JSON.parse(sessionStorage.getItem('fila_filtros') || '{}'); } catch (e) { return {}; } })();
+    busca.value = st.q || ''; soApp.checked = !!st.soApp;
+    let sit = st.sit || '';
+    const guardar = () => { try { sessionStorage.setItem('fila_filtros', JSON.stringify({ q: busca.value, sol: selSol.value, st: selSt.value, sit, soApp: soApp.checked })); } catch (e) { /* */ } };
+    const opcoes = (sel, campo, rotuloTodos, valor) => {
+      const ls = (dados && dados.linhas) || [];
+      const cont = new Map();
+      for (const l of ls) { const v = l[campo] || ''; if (v) cont.set(v, (cont.get(v) || 0) + 1); }
+      rc(sel, h('option', { value: '' }, rotuloTodos), ...[...cont.entries()].sort((a, b) => a[0].localeCompare(b[0], 'pt-BR')).map(([v, n]) => h('option', { value: v }, v + ' (' + n + ')')));
+      sel.value = valor || '';
+      if (sel.selectedIndex < 0) sel.value = '';
+    };
+    const desenhar = () => {
+      guardar();
+      const ls = (dados && dados.linhas) || [];
+      const q = semAc(busca.value).trim();
+      const base = ls.filter((l) => (!selSol.value || l.solicitacao === selSol.value) && (!selSt.value || l.status === selSt.value) && (!soApp.checked || regDa(l))
+        && (!q || semAc([l.convenio, l.protocolo, l.municipio, l.escola, l.solicitacao, l.status, l.situacao, ...(l.extras || []).map((x) => x[1])].join(' ')).includes(q)));
+      const cont = new Map();
+      for (const l of base) { const v = l.situacao || '(sem situação)'; cont.set(v, (cont.get(v) || 0) + 1); }
+      if (sit && !cont.has(sit)) sit = '';
+      rc(resumo, h('button', { class: sit ? '' : 'ativo', onclick: () => { sit = ''; desenhar(); } }, 'Todas (' + base.length + ')'),
+        ...[...cont.entries()].sort((a, b) => b[1] - a[1]).map(([v, n]) => h('button', { class: sit === v ? 'ativo' : '', onclick: () => { sit = sit === v ? '' : v; desenhar(); } }, v + ' (' + n + ')')));
+      const vis = base.filter((l) => !sit || (l.situacao || '(sem situação)') === sit);
+      rc(lista, ...(vis.length ? vis.map((l) => itemFila(l, regDa(l))) : [h('div', { class: 'vazio' }, ls.length ? 'Nada encontrado com esses filtros.' : 'A planilha não tem linhas preenchidas.')]));
+    };
+    const montar = () => {
+      if (!dados || !dados.configurada) {
+        rc(topo, avisoLeitura(dados, erro), dados || !erro ? h('div', { class: 'vazio' }, 'A planilha da fila ainda não foi vinculada.',
+          pode.admin() ? h('div', { style: { marginTop: '12px' } }, h('a', { class: 'btn pri', href: '#/config' }, 'Vincular em Ajustes')) : h('div', { class: 'sub' }, 'Peça ao administrador para vincular em Ajustes.')) : null);
+        rc(resumo); rc(lista); controles.classList.add('oculto');
+        return;
+      }
+      controles.classList.remove('oculto');
+      rc(topo, avisoLeitura(dados, erro),
+        h('div', { class: 'linha', style: { marginBottom: '10px' } },
+          h('div', { class: 'cresce sub' }, '📄 ' + (dados.titulo || 'Planilha') + (dados.aba ? ' › ' + dados.aba : '') + ' · ' + dados.linhas.length + ' processo(s)', h('br'), 'Lido em ' + dataHoraBR(dados.lidoEm)),
+          h('button', { class: 'btn peq', onclick: () => atualizar(true) }, '↻ Atualizar')));
+      opcoes(selSol, 'solicitacao', 'Todas as solicitações', selSol.value || st.sol);
+      opcoes(selSt, 'status', 'Todos os status', selSt.value || st.st);
+      desenhar();
+    };
+    const controles = h('div', {},
+      h('div', { class: 'linha-busca' }, busca, selSol, selSt),
+      h('label', { class: 'linha', style: { gap: '6px', marginBottom: '10px', fontSize: '14px' } }, soApp, 'Só convênios cadastrados no app'),
+      resumo);
+    busca.addEventListener('input', desenhar);
+    selSol.addEventListener('change', desenhar);
+    selSt.addEventListener('change', desenhar);
+    soApp.addEventListener('change', desenhar);
+    const rodape = h('p', { class: 'dica' }, 'Somente leitura: estas informações vêm da planilha da fila de atendimento. Para alterar algo, edite a própria planilha no Google Planilhas — o app busca de novo a cada minuto enquanto esta tela está aberta.');
+    rc($main, topo, controles, lista, rodape);
+    if (!dados) rc(topo, h('div', { class: 'vazio' }, h('span', { class: 'carregando' }), ' Lendo a planilha…'));
+    else montar();
+
+    let ativo = true;
+    const atualizar = async (manual) => {
+      if (!ativo) return;
+      if (manual) toast('Atualizando…');
+      const r = await lerFila();
+      if (!ativo || !document.contains(lista)) return;
+      dados = r.dados; erro = r.erro;
+      montar();
+      if (manual && !r.erro) toast('Fila atualizada');
+    };
+    const timer = setInterval(() => { if (document.visibilityState === 'visible') atualizar(false); }, 60000);
+    const aoVoltar = () => { if (document.visibilityState === 'visible' && (!dados || Date.now() - new Date(dados.lidoEm).getTime() > 30000)) atualizar(false); };
+    document.addEventListener('visibilitychange', aoVoltar);
+    App._sairTela = () => { ativo = false; clearInterval(timer); document.removeEventListener('visibilitychange', aoVoltar); };
+    atualizar(false);
+  }
+
+  /* Cartão "Fila de atendimento" dentro de um convênio */
+  function cartaoFilaConvenio(r) {
+    const box = h('div', { class: 'card oculto' });
+    const pintar = (dados, erro) => {
+      if (!dados || !dados.configurada) { box.classList.add('oculto'); return; }
+      const ls = linhasDoConvenio(dados, r);
+      box.classList.remove('oculto');
+      rc(box, h('h2', {}, 'Fila de atendimento'),
+        !chaveConvenio(r.numero) ? h('p', { class: 'sub' }, 'Informe o número do convênio no cadastro para ver os processos dele na fila.')
+          : ls.length ? ls.map((l) => h('div', { class: 'fila-linha' },
+            h('div', { class: 'etqs' }, l.solicitacao ? etq(l.solicitacao, 'info') : null, l.status ? etq(l.status, '') : null, l.situacao ? etq(l.situacao, corSituacao(l.situacao)) : null),
+            h('div', { class: 'sub' }, [l.protocolo ? 'Protocolo nº ' + l.protocolo : '', l.escola].filter(Boolean).join(' · ')),
+            ...(l.extras || []).map(([k, v]) => h('div', { class: 'sub' }, k + ': ' + v))))
+            : h('p', { class: 'sub' }, 'Nenhum processo deste convênio (' + r.numero + ') na planilha da fila.'),
+        erro && erro !== 'local' ? h('div', { class: 'dica' }, 'Última leitura: ' + dataHoraBR(dados.lidoEm) + ' (sem atualização agora).') : h('div', { class: 'dica' }, 'Somente leitura · atualizado em ' + dataHoraBR(dados.lidoEm) + ' · ', h('a', { href: '#/fila' }, 'ver fila completa')));
+    };
+    if (r.tipo !== 'convenio' || !Sync.habilitado()) return box;
+    (async () => {
+      pintar(await filaDoCache(), null);
+      const ult = filaMem && filaMem.lidoEm ? new Date(filaMem.lidoEm).getTime() : 0;
+      if (Date.now() - ult < 60000) return;
+      const x = await lerFila();
+      pintar(x.dados, x.erro);
+    })().catch((e) => console.error(e));
+    return box;
+  }
+
   /* Avisos de prazo: número no ícone "Notificações" e aviso no celular quando um prazo termina */
   let verificandoPrazos = null;
   function verificarPrazos() {
@@ -2208,7 +2404,7 @@
       for (const f of fotosSemDrive) if (!(await DB.blobGet(f.id))) semArquivo++;
       const log = Sync.lerLog().slice().reverse();
       const resumo = {
-        app: '3.2.2', servidor: Sync.versaoServidor || '?', usuario: (u || {}).email, perfil: perfil(), estado: Sync.estado, erro: Sync.erro || '',
+        app: '3.3', servidor: Sync.versaoServidor || '?', usuario: (u || {}).email, perfil: perfil(), estado: Sync.estado, erro: Sync.erro || '',
         online: navigator.onLine, ultimaSync: await DB.kvGet('ultimaSync', null), cursor: await DB.kvGet('servidorDesde', 0),
         pendentes: pendPor, fotosAguardandoEnvio: fotosSemDrive.length - semArquivo, fotosDeOutroAparelhoSemEnvio: semArquivo,
         aparelho: navigator.userAgent, log,
@@ -2303,6 +2499,51 @@
         } }, 'Salvar padrões'))));
     }
 
+    /* fila de atendimento (planilha externa somente leitura) */
+    if (Sync.habilitado() && pode.admin()) {
+      const box = h('div', {}, h('span', { class: 'carregando' }));
+      cards.push(h('div', { class: 'card' }, h('h2', {}, 'Fila de atendimento (somente leitura)'), box));
+      const f = { url: '', aba: '' };
+      const passos = (conta) => h('ol', { class: 'sub', style: { paddingLeft: '20px', margin: '6px 0' } },
+        h('li', {}, 'Abra a planilha da fila no Google Planilhas e copie o endereço da barra do navegador.'),
+        h('li', {}, conta ? h('span', {}, 'Se a planilha não for da conta ', h('b', {}, conta), ', clique em Compartilhar e adicione essa conta como ', h('b', {}, 'Leitor'), '.') : h('span', {}, 'Se a planilha for de outra conta, compartilhe-a como ', h('b', {}, 'Leitor'), ' com a conta que publicou o servidor do app.')),
+        h('li', {}, 'Cole o endereço abaixo e toque em “Salvar e testar”.'));
+      const previa = (d) => h('div', {},
+        h('div', { class: 'ok-box', style: { margin: '8px 0' } }, '✔ Lendo “' + d.titulo + '” › ' + d.aba + ': ' + d.linhas.length + ' linha(s). Colunas: ' + d.colunas.filter(Boolean).join(', ')),
+        d.linhas.slice(0, 3).map((l) => h('div', { class: 'sub' }, '• ' + [l.convenio, l.municipio, l.solicitacao, l.situacao].filter(Boolean).join(' · '))));
+      const desenharFila = (d, msgErro) => {
+        const conta = d && d.contaServidor;
+        rc(box,
+          h('p', { class: 'sub' }, 'Mostra na aba “Fila” e em cada convênio a situação dos processos, lida de uma planilha do Google. O app só LÊ essa planilha — nunca altera nada nela. Compartilhando como Leitor, o próprio Google impede qualquer alteração.'),
+          d && d.configurada ? previa(d) : h('div', { class: 'aviso' }, 'Nenhuma planilha vinculada.'),
+          msgErro ? h('div', { class: 'aviso' }, msgErro) : null,
+          passos(conta),
+          campo('Endereço (link) da planilha da fila', inputTxt(f, 'url', { placeholder: 'https://docs.google.com/spreadsheets/d/…' })),
+          campo('Nome da aba (opcional)', inputTxt(f, 'aba', { placeholder: 'ex.: CONVÊNIOS — em branco usa a primeira aba' })),
+          h('div', { class: 'acoes' },
+            h('button', { class: 'btn pri', onclick: async (e) => {
+              if (!f.url.trim()) { toast('Cole o endereço da planilha', true); return; }
+              e.target.disabled = true;
+              try {
+                const j = await Sync.chamar('filaConfig', { url: f.url.trim(), aba: f.aba.trim() });
+                filaMem = null; await DB.kvSet('fila_cache', null);
+                f.url = ''; f.aba = '';
+                toast('Planilha da fila vinculada');
+                desenharFila(j, null);
+              } catch (err) { e.target.disabled = false; desenharFila(d, /desconhecida/i.test(err.message) ? 'O servidor ainda não tem a Fila: atualize o Code.gs e publique uma “Nova versão”.' : err.message); }
+            } }, 'Salvar e testar'),
+            (d && d.configurada) || msgErro ? h('button', { class: 'btn perigo', onclick: async () => {
+              if (!(await confirmar('Desvincular a planilha da fila? A planilha em si não é alterada; o app apenas deixa de mostrá-la.', 'Desvincular', true))) return;
+              try { const j = await Sync.chamar('filaConfig', { url: '' }); filaMem = null; await DB.kvSet('fila_cache', null); toast('Desvinculada'); desenharFila(j, null); } catch (err) { toast(err.message, true); }
+            } }, 'Desvincular') : null));
+      };
+      (async () => {
+        if (!navigator.onLine) { desenharFila(null, 'Sem internet.'); return; }
+        try { desenharFila(await Sync.chamar('fila'), null); }
+        catch (err) { desenharFila(null, /desconhecida/i.test(err.message) ? 'O servidor ainda não tem a Fila: atualize o Code.gs e publique uma “Nova versão” da implantação.' : err.message); }
+      })();
+    }
+
     /* modelos */
     const modCard = h('div', { class: 'card' }, h('h2', {}, 'Modelos do Word'));
     const ROT_MOD = { contrato: 'Notificação — Contrato', convenio: 'Notificação — Convênio', relatorio: 'Relatório fotográfico', irregularidades: 'Relatório de irregularidades' };
@@ -2377,7 +2618,7 @@
         pode.admin() ? h('button', { class: 'btn', onclick: importarBackup }, '⬆️ Importar') : null,
         pode.admin() ? h('button', { class: 'btn', onclick: carregarExemplos }, 'Carregar exemplos dos modelos') : null)));
 
-    cards.push(h('p', { class: 'dica', style: { textAlign: 'center' } }, 'Fiscalização de Obras · v3.2.2 · dados salvos no aparelho' + (Sync.habilitado() ? ' e no Google Drive do administrador' : '') + ' · ', h('a', { href: 'privacidade.html' }, 'Política de privacidade')));
+    cards.push(h('p', { class: 'dica', style: { textAlign: 'center' } }, 'Fiscalização de Obras · v3.3 · dados salvos no aparelho' + (Sync.habilitado() ? ' e no Google Drive do administrador' : '') + ' · ', h('a', { href: 'privacidade.html' }, 'Política de privacidade')));
     rc($main, ...cards);
   }
 

@@ -274,3 +274,9 @@ details.card[open] > summary::before { content: '▾ '; }
 .nav-badge { position: absolute; top: 2px; left: calc(50% + 5px); min-width: 17px; height: 17px; padding: 0 4px; border-radius: 999px; background: var(--erro); color: #fff; font-size: 10.5px; font-weight: 700; display: none; align-items: center; justify-content: center; }
 .nav-badge.on { display: flex; }
 .nav-badge.alerta { background: var(--alerta); }
+/* Fila de atendimento (somente leitura) */
+.ok-box { background: var(--ok-bg); color: var(--ok); border-radius: 8px; padding: 8px 10px; font-size: 13.5px; }
+.fila-item .etqs { margin: 5px 0 3px; }
+.fila-linha { padding: 8px 0; border-top: 1px solid var(--linha); }
+.fila-linha:first-of-type { border-top: 0; padding-top: 2px; }
+.fila-linha .etqs { margin-bottom: 3px; }
