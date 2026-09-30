@@ -730,7 +730,55 @@
     }, paresFiscais(fiscais));
   }
 
-  const api = { gerar, montarDadosRelatorio, montarDadosSanadas, montarDados, listarMarcadores, extrairTextoBloco, textoEquipe, imageSize };
+  /**
+   * Dados do Relatorio de Irregularidades (todas as selecionadas, com o historico completo).
+   * itens: [{descricao, sanada, sanada_em, constatada_data, constatada_visita, constatada_por, img,
+   *          historico: [{data, status, descricao, visita, por, img}]}]
+   */
+  function montarDadosIrregularidades(reg, itens, fiscais, dataISO) {
+    const X = E();
+    const n = itens.length;
+    const nS = itens.filter((i) => i.sanada).length, nP = n - nS;
+    const plural = (k, s, p) => k + ' ' + (k === 1 ? s : p);
+    return Object.assign({
+      obra: reg.apelido || '',
+      objeto: reg.objeto || '',
+      tem_objeto: !!reg.objeto,
+      rotulo_instrumento: reg.tipo === 'convenio' ? 'CONVÊNIO' : 'CONTRATO',
+      rotulo_notificada: reg.tipo === 'convenio' ? 'CONVENENTE' : 'CONTRATADA',
+      numero_instrumento: reg.numero || '',
+      processo: reg.processo || '—',
+      n_nome: reg.n_nome || '',
+      local_obra: reg.local_obra || '',
+      tem_local: !!reg.local_obra,
+      data_emissao: X.dataBR(dataISO),
+      data_extenso: X.dataExtenso(dataISO),
+      total_texto: n === 1 ? '1 (uma) irregularidade' : n + ' irregularidades',
+      resumo_situacao: [nP ? plural(nP, 'pendente', 'pendentes') : '', nS ? plural(nS, 'sanada', 'sanadas') : ''].filter(Boolean).join(' e '),
+      itens: itens.map((it, i) => {
+        const hist = (it.historico || []).map((h) => ({
+          h_data: h.data || '', h_status: h.status || '', h_descricao: (h.descricao || '').trim() || '—',
+          h_visita: h.visita ? h.visita + ' · ' : '', h_por: h.por || '—', h_img: h.img || null, h_semfoto: h.img ? '' : 'Sem foto nesta verificação.',
+        }));
+        return {
+          n: i + 1,
+          descricao: (it.descricao || '(sem descrição)').trim().replace(/[.;]?$/, '.'),
+          situacao: it.sanada ? 'SANADA' : 'PENDENTE',
+          sanada_em: it.sanada && it.sanada_em ? ' (em ' + it.sanada_em + ')' : '',
+          constatada_data: it.constatada_data || '',
+          constatada_visita: it.constatada_visita ? ' · ' + it.constatada_visita : '',
+          constatada_por: it.constatada_por || '—',
+          img: it.img || null,
+          n_verificacoes: String(hist.length),
+          historico: hist,
+          tem_historico: hist.length ? [{}] : [],
+          sem_historico: hist.length ? [] : [{}],
+        };
+      }),
+    }, paresFiscais(fiscais));
+  }
+
+  const api = { gerar, montarDadosRelatorio, montarDadosSanadas, montarDadosIrregularidades, montarDados, listarMarcadores, extrairTextoBloco, textoEquipe, imageSize };
   if (typeof module === 'object' && module.exports) module.exports = api;
   else root.DocGen = api;
 })(typeof self !== 'undefined' ? self : this);

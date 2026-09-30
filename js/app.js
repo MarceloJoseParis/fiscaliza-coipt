@@ -1236,7 +1236,7 @@
     const bt = (k, t) => h('button', { class: filtro === k ? 'ativo' : '', onclick: () => { sessionStorage.setItem('filtro_irr', k); telaRegistro(r.id); } }, t);
     return h('div', {},
       h('div', { class: 'filtros' }, bt('pendente', 'Pendentes (' + nP + ')'), bt('sanada', 'Sanadas (' + nS + ')'), bt('todas', 'Todas (' + todas.length + ')')),
-      nS ? h('div', { class: 'acoes', style: { marginTop: 0, marginBottom: '10px' } }, h('button', { class: 'btn', onclick: () => dialogoSanadas(r) }, '📄 Relatório de irregularidades sanadas')) : null,
+      todas.length ? h('div', { class: 'acoes', style: { marginTop: 0, marginBottom: '10px' } }, h('button', { class: 'btn', onclick: () => dialogoIrregularidades(r) }, '📄 Relatório de irregularidades')) : null,
       lista.length ? lista.map((f) => itemIrregularidade(f, () => { location.hash = '#/irregularidade/' + f.id; }))
         : h('div', { class: 'vazio' }, filtro === 'pendente' ? 'Nenhuma irregularidade pendente. 👍' : 'Nada por aqui.'));
   }
@@ -1367,6 +1367,92 @@
     });
     toast(status === 'sanada' ? 'Irregularidade registrada como sanada' : 'Verificação registrada: não sanada');
     if (visitaId) history.back(); else telaIrregularidade(f.id, visitaId);
+  }
+
+  /* Relatório de irregularidades: escolhe quais (pendentes e/ou sanadas) e gera o Word com o histórico completo e fotos */
+  async function dialogoIrregularidades(r) {
+    const todas = (await irregularidadesDe(r.id)).sort((a, b) => String(a.dataHora).localeCompare(b.dataHora));
+    const sel = new Set(todas.map((f) => f.id));
+    const caixas = new Map();
+    const contagem = h('div', { class: 'sub', style: { margin: '4px 0 8px' } });
+    const atualizar = () => {
+      caixas.forEach((c, id) => { c.checked = sel.has(id); });
+      const nS = todas.filter((f) => sel.has(f.id) && situacao(f) === 'sanada').length;
+      contagem.textContent = sel.size + ' de ' + todas.length + ' selecionada(s)' + (sel.size ? ' — ' + (sel.size - nS) + ' pendente(s), ' + nS + ' sanada(s)' : '');
+    };
+    const lista = h('div', {}, todas.map((f) => {
+      const chk = h('input', { type: 'checkbox', onclick: (e) => e.stopPropagation(), onchange: (e) => { if (e.target.checked) sel.add(f.id); else sel.delete(f.id); atualizar(); } });
+      caixas.set(f.id, chk);
+      return itemIrregularidade(f, () => { if (sel.has(f.id)) sel.delete(f.id); else sel.add(f.id); atualizar(); }, chk);
+    }));
+    const marcar = (filtro) => { sel.clear(); todas.filter(filtro).forEach((f) => sel.add(f.id)); atualizar(); };
+    const corpo = h('div', {},
+      h('p', { class: 'sub', style: { marginTop: 0 } }, 'Selecione as irregularidades do relatório. Cada uma sai com a foto da constatação e todo o histórico de verificações (sanada / não sanada), com as fotos.'),
+      h('div', { class: 'filtros', style: { marginBottom: '4px' } },
+        h('button', { onclick: () => marcar(() => true) }, 'Todas'),
+        h('button', { onclick: () => marcar((f) => situacao(f) === 'pendente') }, 'Só pendentes'),
+        h('button', { onclick: () => marcar((f) => situacao(f) === 'sanada') }, 'Só sanadas'),
+        h('button', { onclick: () => marcar(() => false) }, 'Nenhuma')),
+      contagem, lista);
+    atualizar();
+    const acao = await modal('Relatório de irregularidades', corpo, [{ txt: 'Cancelar', valor: null }, { txt: '📤 Compartilhar', valor: 'comp' }, { txt: '⬇️ Baixar Word', cls: 'pri', valor: 'baixar' }]);
+    if (!acao) return;
+    if (!sel.size) { toast('Selecione ao menos uma irregularidade.', true); return; }
+    const st = h('div', {}, h('span', { class: 'carregando' }), ' Gerando relatório…');
+    const fundo = h('div', { class: 'modal-fundo' }, h('div', { class: 'modal' }, st));
+    document.body.appendChild(fundo);
+    try {
+      const faltando = [];
+      const pegar = async (foto) => {
+        if (!foto || foto.excluido) return null;
+        let b = await DB.blobGet(foto.id);
+        if (!b && Sync.habilitado() && navigator.onLine) { try { b = await Sync.baixarFoto(foto); } catch (e) { /* */ } }
+        if (!b) faltando.push(foto.id);
+        return b || null;
+      };
+      const visitaTxt = async (vid) => { const v = vid ? await DB.get('visitas', vid) : null; return v ? 'Visita nº ' + v.numero : ''; };
+      const itens = [];
+      let k = 0;
+      for (const f of todas.filter((x) => sel.has(x.id))) {
+        rc(st, h('span', { class: 'carregando' }), ' Preparando irregularidade ' + (++k) + ' de ' + sel.size + '…');
+        const historico = [];
+        for (const vf of f.verificacoes || []) {
+          const fotoV = vf.fotoId ? await DB.get('fotos', vf.fotoId) : null;
+          historico.push({
+            data: vf.data ? dataHoraBR(vf.data) : '',
+            status: vf.status === 'sanada' ? 'SANADA' : 'NÃO SANADA',
+            descricao: vf.descricao || '',
+            visita: await visitaTxt(vf.visitaId),
+            por: vf.por || '',
+            img: await pegar(fotoV),
+          });
+        }
+        itens.push({
+          descricao: f.descricao || '',
+          sanada: situacao(f) === 'sanada',
+          sanada_em: f.sanadaEm ? X.dataBR(String(f.sanadaEm).slice(0, 10)) : '',
+          constatada_data: dataHoraBR(f.dataHora),
+          constatada_visita: await visitaTxt(f.visitaId),
+          constatada_por: f.criadoPor || '',
+          img: await pegar(f),
+          historico,
+        });
+      }
+      if (faltando.length && !(await confirmar(faltando.length + ' foto(s) ainda não estão neste aparelho (sem internet para baixá-las). Gerar o relatório sem elas?', 'Gerar sem elas'))) { fundo.remove(); return; }
+      rc(st, h('span', { class: 'carregando' }), ' Montando o documento…');
+      const pessoas = await pessoasMap();
+      const fiscais = snapshotAssinantes(r.fiscais && r.fiscais.length ? r.fiscais : fiscaisPadrao(r.tipo), pessoas, true);
+      const dados = DocGen.montarDadosIrregularidades(r, itens, fiscais, X.hojeISO());
+      const blob = await DocGen.gerar(await modeloDocx('irregularidades'), dados, { type: 'blob' });
+      const nome = nomeArquivo('RELATÓRIO DE IRREGULARIDADES - ' + r.apelido + ' - ' + X.dataBR(X.hojeISO()).replace(/\//g, '-')) + '.docx';
+      fundo.remove();
+      if (acao === 'comp') await compartilharBlob(blob, nome, nome); else baixarBlob(blob, nome);
+      toast('Relatório gerado: ' + nome);
+    } catch (e) {
+      fundo.remove();
+      console.error(e);
+      toast(e.message, true);
+    }
   }
 
   async function dialogoSanadas(r) {
@@ -1830,7 +1916,7 @@
       for (const f of fotosSemDrive) if (!(await DB.blobGet(f.id))) semArquivo++;
       const log = Sync.lerLog().slice().reverse();
       const resumo = {
-        app: '3.0', servidor: Sync.versaoServidor || '?', usuario: (u || {}).email, perfil: perfil(), estado: Sync.estado, erro: Sync.erro || '',
+        app: '3.1', servidor: Sync.versaoServidor || '?', usuario: (u || {}).email, perfil: perfil(), estado: Sync.estado, erro: Sync.erro || '',
         online: navigator.onLine, ultimaSync: await DB.kvGet('ultimaSync', null), cursor: await DB.kvGet('servidorDesde', 0),
         pendentes: pendPor, fotosAguardandoEnvio: fotosSemDrive.length - semArquivo, fotosDeOutroAparelhoSemEnvio: semArquivo,
         aparelho: navigator.userAgent, log,
@@ -1926,8 +2012,8 @@
 
     /* modelos */
     const modCard = h('div', { class: 'card' }, h('h2', {}, 'Modelos do Word'));
-    const ROT_MOD = { contrato: 'Notificação — Contrato', convenio: 'Notificação — Convênio', relatorio: 'Relatório fotográfico', sanadas: 'Relatório de irregularidades sanadas' };
-    for (const tipo of ['contrato', 'convenio', 'relatorio', 'sanadas']) {
+    const ROT_MOD = { contrato: 'Notificação — Contrato', convenio: 'Notificação — Convênio', relatorio: 'Relatório fotográfico', irregularidades: 'Relatório de irregularidades' };
+    for (const tipo of ['contrato', 'convenio', 'relatorio', 'irregularidades']) {
       const custom = await DB.arquivoGet('modelo_' + tipo);
       const inp = h('input', { type: 'file', accept: '.docx', class: 'oculto' });
       inp.addEventListener('change', async () => {
@@ -1935,7 +2021,7 @@
         if (!f) return;
         try {
           const tags = await DocGen.listarMarcadores(await f.arrayBuffer());
-          const essenciais = tipo === 'relatorio' ? ['obra', 'data_visita', '#tr:linhas'] : tipo === 'sanadas' ? ['obra', '#itens'] : ['ordinal', 'numero_notificacao', 'n_nome', 'objeto', 'data_extenso', '#fotos'];
+          const essenciais = tipo === 'relatorio' ? ['obra', 'data_visita', '#tr:linhas'] : tipo === 'sanadas' || tipo === 'irregularidades' ? ['obra', '#itens'] : ['ordinal', 'numero_notificacao', 'n_nome', 'objeto', 'data_extenso', '#fotos'];
           const falta = essenciais.filter((t) => !tags.includes(t));
           if (falta.length && !(await confirmar('O modelo não contém os marcadores: ' + falta.map((t) => '{' + t + '}').join(', ') + '. Usar mesmo assim?', 'Usar'))) return;
           let driveId = null;
@@ -1998,7 +2084,7 @@
         pode.admin() ? h('button', { class: 'btn', onclick: importarBackup }, '⬆️ Importar') : null,
         pode.admin() ? h('button', { class: 'btn', onclick: carregarExemplos }, 'Carregar exemplos dos modelos') : null)));
 
-    cards.push(h('p', { class: 'dica', style: { textAlign: 'center' } }, 'Fiscalização de Obras · v3.0 · dados salvos no aparelho' + (Sync.habilitado() ? ' e no Google Drive do administrador' : '') + ' · ', h('a', { href: 'privacidade.html' }, 'Política de privacidade')));
+    cards.push(h('p', { class: 'dica', style: { textAlign: 'center' } }, 'Fiscalização de Obras · v3.1 · dados salvos no aparelho' + (Sync.habilitado() ? ' e no Google Drive do administrador' : '') + ' · ', h('a', { href: 'privacidade.html' }, 'Política de privacidade')));
     rc($main, ...cards);
   }
 
@@ -2108,7 +2194,7 @@
     for (const e of ['registros', 'pessoas', 'visitas', 'notificacoes', 'fotos', 'config']) dados[e] = await DB.all(e);
     zip.file('dados.json', JSON.stringify({ versao: 1, exportadoEm: new Date().toISOString(), dados }, null, 1));
     for (const f of dados.fotos) { const b = await DB.blobGet(f.id); if (b) zip.file('fotos/' + f.id + '.jpg', b); }
-    for (const t of ['contrato', 'convenio', 'relatorio', 'sanadas']) { const m = await DB.arquivoGet('modelo_' + t); if (m && m.blob) zip.file('modelos/modelo_' + t + '.docx', m.blob); }
+    for (const t of ['contrato', 'convenio', 'relatorio', 'sanadas', 'irregularidades']) { const m = await DB.arquivoGet('modelo_' + t); if (m && m.blob) zip.file('modelos/modelo_' + t + '.docx', m.blob); }
     const blob = await zip.generateAsync({ type: 'blob' });
     baixarBlob(blob, 'backup-notificacoes-' + X.hojeISO() + '.zip');
   }
