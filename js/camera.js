@@ -43,6 +43,9 @@
     return new Promise(async (resolve, reject) => {
       let stream = null, track = null, cap = {}, wake = null, fechado = false, total = 0, ocupado = false, torch = false;
       let facing = 'environment', temFrontal = false, zoom = 1, imgCap = null, gravidade = null;
+      /* Lentes traseiras: no iPhone a grande angular vem como zoom 0,5 da câmera principal.
+         No Android ela costuma ser OUTRA câmera (outro deviceId) — então o 0,5 troca de câmera. */
+      const lentes = { principal: null, extras: [], atual: null, naUltra: false, logico: false };
       const sessao = []; // fotos desta sessao: {url, blob, foto: Promise}
 
       const video = el('video', { autoplay: '', playsinline: '', muted: '', class: 'cv-video' });
@@ -83,13 +86,17 @@
         clearTimeout(aviso._t); aviso._t = setTimeout(() => { msg.style.opacity = '0'; }, ms || 1600);
       }
 
-      async function abrirStream() {
-        if (stream) stream.getTracks().forEach((t) => t.stop());
+      async function abrirStream(deviceId) {
+        if (stream) { stream.getTracks().forEach((t) => t.stop()); stream = null; }
         const tam = { width: { ideal: 4096 }, height: { ideal: 3072 } };
-        try {
-          stream = await navigator.mediaDevices.getUserMedia({ audio: false, video: Object.assign({ facingMode: { exact: facing } }, tam) });
-        } catch (e) {
-          stream = await navigator.mediaDevices.getUserMedia({ audio: false, video: Object.assign({ facingMode: { ideal: facing } }, tam) });
+        if (deviceId) {
+          stream = await navigator.mediaDevices.getUserMedia({ audio: false, video: Object.assign({ deviceId: { exact: deviceId } }, tam) });
+        } else {
+          try {
+            stream = await navigator.mediaDevices.getUserMedia({ audio: false, video: Object.assign({ facingMode: { exact: facing } }, tam) });
+          } catch (e) {
+            stream = await navigator.mediaDevices.getUserMedia({ audio: false, video: Object.assign({ facingMode: { ideal: facing } }, tam) });
+          }
         }
         video.classList.toggle('espelho', facing === 'user');
         track = stream.getVideoTracks()[0];
@@ -105,19 +112,59 @@
         montarZoom();
       }
 
+      const FRONTAL = /front|frontal|user|selfie|facing front|dianteira/i;
       async function detectarFrontal() {
-        try {
-          const devs = (await navigator.mediaDevices.enumerateDevices()).filter((d) => d.kind === 'videoinput');
-          temFrontal = devs.length > 1;
-        } catch (e) { temFrontal = false; }
+        let devs = [];
+        try { devs = (await navigator.mediaDevices.enumerateDevices()).filter((d) => d.kind === 'videoinput'); } catch (e) { /* */ }
+        temFrontal = devs.length > 1;
         btnLente.style.visibility = temFrontal ? 'visible' : 'hidden';
+        // outras câmeras traseiras (grande angular, teleobjetiva...) — usadas quando o zoom 0,5 não existe
+        const s = track && track.getSettings ? track.getSettings() : {};
+        lentes.principal = s.deviceId || lentes.principal;
+        const num = (d) => { const m = /(\d+)/.exec(d.label || ''); return m ? +m[1] : 99; };
+        const ultraNome = (d) => (/ultra|wide|grande.?angular|0[.,]5/i.test(d.label || '') ? 0 : 1);
+        lentes.extras = devs.filter((d) => d.deviceId && d.deviceId !== lentes.principal && d.label && !FRONTAL.test(d.label))
+          .sort((a, b) => ultraNome(a) - ultraNome(b) || num(a) - num(b));
+        montarZoom();
       }
 
       async function alternarFrontal() {
         const antes = facing;
         facing = facing === 'environment' ? 'user' : 'environment';
-        try { await abrirStream(); aviso(facing === 'user' ? 'Câmera frontal' : 'Câmera traseira'); }
-        catch (e) { facing = antes; try { await abrirStream(); } catch (e2) { /* */ } aviso('Não foi possível trocar a câmera'); }
+        lentes.naUltra = false;
+        try { await abrirStream(facing === 'environment' ? lentes.principal : null); aviso(facing === 'user' ? 'Câmera frontal' : 'Câmera traseira'); }
+        catch (e) { facing = antes; try { await abrirStream(facing === 'environment' ? lentes.principal : null); } catch (e2) { /* */ } aviso('Não foi possível trocar a câmera'); }
+      }
+
+      /* Android: 0,5 = abrir a câmera grande angular (outro dispositivo). Tocar de novo em 0,5 troca para a
+         próxima câmera traseira, caso a escolhida não seja a grande angular; a escolha fica gravada. */
+      async function irParaUltra() {
+        if (!lentes.extras.length) return;
+        let alvo;
+        if (lentes.naUltra) {
+          const i = lentes.extras.findIndex((d) => d.deviceId === lentes.atual);
+          alvo = lentes.extras[(i + 1) % lentes.extras.length];
+        } else {
+          const salvo = ls.get('lente_05');
+          alvo = lentes.extras.find((d) => d.label === salvo) || lentes.extras[0];
+        }
+        try {
+          await abrirStream(alvo.deviceId);
+          lentes.atual = alvo.deviceId; lentes.naUltra = true;
+          ls.set('lente_05', alvo.label);
+          zoom = 0.5; montarZoom();
+          if (lentes.extras.length > 1) aviso('Lente ' + (lentes.extras.indexOf(alvo) + 1) + ' de ' + lentes.extras.length + ' — se não for a grande angular, toque em 0,5 de novo', 3200);
+        } catch (e) {
+          aviso('Não foi possível abrir a grande angular neste celular');
+          await voltarPrincipal();
+        }
+      }
+      async function voltarPrincipal(z) {
+        if (lentes.naUltra) {
+          lentes.naUltra = false;
+          try { await abrirStream(lentes.principal); } catch (e) { await abrirStream(); }
+        }
+        if (z && z !== 1) await aplicarZoom(z); else { zoom = (track.getSettings && track.getSettings().zoom) || 1; montarZoom(); }
       }
 
       /* posicao do celular no momento da foto (para salvar na horizontal quando estiver na horizontal) */
@@ -189,18 +236,32 @@
 
       function montarZoom() {
         zoomBar.replaceChildren();
-        if (!cap.zoom || !(cap.zoom.max > cap.zoom.min)) return;
+        if (facing !== 'environment') return;
+        const temZoom = cap.zoom && cap.zoom.max > cap.zoom.min;
+        // zoom abaixo de 1 na própria câmera (iPhone e alguns Android): usa o zoom
+        lentes.logico = !lentes.naUltra && temZoom && cap.zoom.min < 1;
+        const outraLente = !lentes.logico && lentes.extras.length > 0;
+        if (!temZoom && !outraLente && !lentes.naUltra) return;
         const pres = [];
-        if (cap.zoom.min < 1) pres.push(Math.max(cap.zoom.min, 0.5));
+        if (lentes.logico) pres.push(Math.max(cap.zoom.min, 0.5));
+        else if (outraLente || lentes.naUltra) pres.push(0.5);
         pres.push(1);
-        for (const z of [2, 5]) if (cap.zoom.max >= z) pres.push(z);
-        pres.forEach((z) => zoomBar.append(el('button', { 'data-z': z, onclick: () => aplicarZoom(z) }, fmtZoom(z))));
+        const zMax = lentes.naUltra ? (lentes.zMaxPrincipal || 1) : (temZoom ? cap.zoom.max : 1);
+        if (!lentes.naUltra && temZoom) lentes.zMaxPrincipal = cap.zoom.max;
+        for (const z of [2, 5]) if (zMax >= z) pres.push(z);
+        pres.forEach((z) => zoomBar.append(el('button', { 'data-z': z, onclick: () => escolherZoom(z) }, fmtZoom(z))));
         marcarZoom();
+      }
+      function escolherZoom(z) {
+        if (z < 1 && !lentes.logico) return irParaUltra();
+        if (lentes.naUltra) return voltarPrincipal(z);
+        return aplicarZoom(z);
       }
       function marcarZoom() {
         const botoes = [...zoomBar.children];
         let alvo = null;
-        botoes.forEach((b) => { if (+b.dataset.z <= zoom + 0.01) alvo = b; });
+        if (lentes.naUltra) alvo = botoes[0] || null;
+        else botoes.forEach((b) => { if (+b.dataset.z <= zoom + 0.01) alvo = b; });
         botoes.forEach((b) => {
           const ativo = b === alvo;
           b.classList.toggle('ativo', ativo);
@@ -208,7 +269,7 @@
         });
       }
       async function aplicarZoom(z) {
-        if (!cap.zoom) return;
+        if (!cap.zoom) { marcarZoom(); return; }
         z = Math.min(cap.zoom.max, Math.max(cap.zoom.min, z));
         try { await track.applyConstraints({ advanced: [{ zoom: z }] }); zoom = z; } catch (e) { /* */ }
         marcarZoom();
@@ -220,9 +281,11 @@
         if (e.touches.length === 2) pinca = { d: Math.hypot(e.touches[0].clientX - e.touches[1].clientX, e.touches[0].clientY - e.touches[1].clientY), z: zoom };
       }, { passive: true });
       visor.addEventListener('touchmove', (e) => {
-        if (pinca && e.touches.length === 2 && cap.zoom) {
+        if (pinca && e.touches.length === 2) {
           const d = Math.hypot(e.touches[0].clientX - e.touches[1].clientX, e.touches[0].clientY - e.touches[1].clientY);
-          aplicarZoom(pinca.z * (d / pinca.d));
+          if (lentes.naUltra) { if (d / pinca.d > 1.6 && !pinca.trocou) { pinca.trocou = true; voltarPrincipal(); } return; }
+          if (!lentes.logico && lentes.extras.length && d / pinca.d < 0.6 && zoom <= 1.01 && !pinca.trocou) { pinca.trocou = true; irParaUltra(); return; }
+          if (cap.zoom) aplicarZoom(pinca.z * (d / pinca.d));
         }
       }, { passive: true });
       visor.addEventListener('touchend', () => { pinca = null; }, { passive: true });
