@@ -140,7 +140,7 @@
   function prazosDoRegistro(r) {
     const out = [];
     if (r.tipo === 'contrato' && r.prazo_execucao) out.push({ rot: 'Execução', data: r.prazo_execucao, info: infoPrazo(r.prazo_execucao) });
-    if (r.vigencia) out.push({ rot: 'Vigência', data: r.vigencia, info: infoPrazo(r.vigencia) });
+    if (r.vigencia) out.push({ rot: r.tipo === 'convenio' ? 'Vigência do Convênio' : 'Vigência Contratual', data: r.vigencia, info: infoPrazo(r.vigencia) });
     return out.filter((p) => p.info);
   }
 
@@ -454,7 +454,7 @@
           h('div', { class: 't' }, r.apelido || '(sem nome)', r._pendente ? h('span', { class: 'pend', title: 'Aguardando sincronização' }) : null),
           h('div', { class: 'd' }, descricaoRegistro(r)),
           h('div', { class: 'etqs' }, etqStatus(r),
-            prazosDoRegistro(r).map((p) => etq(p.rot + ': ' + p.info.txt, p.info.cls, p.rot + ' até ' + X.dataBR(p.data))),
+            prazosDoRegistro(r).map((p) => etq(p.rot + ': ' + X.dataBR(p.data) + ' · ' + p.info.txt, p.info.cls)),
             venc ? etq('⏰ ' + venc + ' notificação(ões) com prazo encerrado', 'perigo') : aguard.length ? etq(aguard.length + ' notificação(ões) aguardando resposta', 'info') : null),
           h('div', { class: 'd' }, ns.length ? ns.length + ' notificação(ões) · última em ' + X.dataBR(ult.data) : 'Nenhuma notificação no app'));
       }) : [h('div', { class: 'vazio' }, regs.length ? 'Nada encontrado.' : 'Nenhum ' + ROTULO[tipo].toLowerCase() + ' cadastrado ainda.',
@@ -489,7 +489,7 @@
         ['Local da obra', r.local_obra],
         ['Status', r.status_obra ? etqStatus(r) : ''],
         r.tipo === 'contrato' && r.prazo_execucao ? ['Prazo de execução', h('span', {}, X.dataBR(r.prazo_execucao) + ' ', etq(infoPrazo(r.prazo_execucao).txt, infoPrazo(r.prazo_execucao).cls))] : ['', ''],
-        r.vigencia ? ['Vigência', h('span', {}, X.dataBR(r.vigencia) + ' ', etq(infoPrazo(r.vigencia).txt, infoPrazo(r.vigencia).cls))] : ['', ''],
+        r.vigencia ? [r.tipo === 'convenio' ? 'Vigência do Convênio' : 'Vigência Contratual', h('span', {}, X.dataBR(r.vigencia) + ' ', etq(infoPrazo(r.vigencia).txt, infoPrazo(r.vigencia).cls))] : ['', ''],
         ['Valor', r.valor ? 'R$ ' + X.formatarMoeda(X.parseMoeda(r.valor)) : ''],
         r.tipo === 'contrato' ? ['O.S. nº', r.os_numero] : ['', ''],
         ['Sanções', r.sancoes && r.sancoes.trim() ? 'Personalizadas' : 'Padrão do modelo']]
@@ -2172,7 +2172,7 @@
       for (const f of fotosSemDrive) if (!(await DB.blobGet(f.id))) semArquivo++;
       const log = Sync.lerLog().slice().reverse();
       const resumo = {
-        app: '3.2', servidor: Sync.versaoServidor || '?', usuario: (u || {}).email, perfil: perfil(), estado: Sync.estado, erro: Sync.erro || '',
+        app: '3.2.1', servidor: Sync.versaoServidor || '?', usuario: (u || {}).email, perfil: perfil(), estado: Sync.estado, erro: Sync.erro || '',
         online: navigator.onLine, ultimaSync: await DB.kvGet('ultimaSync', null), cursor: await DB.kvGet('servidorDesde', 0),
         pendentes: pendPor, fotosAguardandoEnvio: fotosSemDrive.length - semArquivo, fotosDeOutroAparelhoSemEnvio: semArquivo,
         aparelho: navigator.userAgent, log,
@@ -2341,7 +2341,7 @@
         pode.admin() ? h('button', { class: 'btn', onclick: importarBackup }, '⬆️ Importar') : null,
         pode.admin() ? h('button', { class: 'btn', onclick: carregarExemplos }, 'Carregar exemplos dos modelos') : null)));
 
-    cards.push(h('p', { class: 'dica', style: { textAlign: 'center' } }, 'Fiscalização de Obras · v3.2 · dados salvos no aparelho' + (Sync.habilitado() ? ' e no Google Drive do administrador' : '') + ' · ', h('a', { href: 'privacidade.html' }, 'Política de privacidade')));
+    cards.push(h('p', { class: 'dica', style: { textAlign: 'center' } }, 'Fiscalização de Obras · v3.2.1 · dados salvos no aparelho' + (Sync.habilitado() ? ' e no Google Drive do administrador' : '') + ' · ', h('a', { href: 'privacidade.html' }, 'Política de privacidade')));
     rc($main, ...cards);
   }
 
