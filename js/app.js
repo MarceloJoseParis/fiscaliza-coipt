@@ -112,6 +112,80 @@
   const ROTULO = { contrato: 'Contrato', convenio: 'Convênio' };
   const PLURAL = { contrato: 'Contratos', convenio: 'Convênios' };
 
+  /* ---------- Status da obra ---------- */
+  const STATUS_OBRA = {
+    contrato: ['Obra não iniciada', 'Em execução', 'Paralisada', 'Contrato rescindido', 'Sem vigência', 'Em recebimento provisório', 'Obra concluída'],
+    convenio: ['Em licitação', 'Obra não iniciada', 'Em execução', 'Paralisada', 'Contrato rescindido', 'Contrato rescindido – em processo de relicitação', 'Sem vigência', 'Em prestação de contas', 'Obra concluída'],
+  };
+  const COR_STATUS = {
+    'Em execução': 'ok', 'Obra concluída': 'ok', 'Obra não iniciada': 'neutro', 'Em licitação': 'info', 'Em recebimento provisório': 'info', 'Em prestação de contas': 'info',
+    'Paralisada': 'alerta', 'Contrato rescindido': 'perigo', 'Contrato rescindido – em processo de relicitação': 'perigo', 'Sem vigência': 'perigo',
+  };
+  const etq = (txt, cls, title) => h('span', { class: 'etq ' + (cls || ''), title: title || null }, txt);
+  const etqStatus = (r) => (r.status_obra ? etq(r.status_obra, COR_STATUS[r.status_obra] || '') : null);
+
+  /* ---------- Prazos em dias corridos (execução / vigência) ---------- */
+  function diasAte(iso) {
+    if (!iso) return null;
+    const hoje = new Date(X.hojeISO() + 'T00:00:00'), d = new Date(String(iso).slice(0, 10) + 'T00:00:00');
+    if (isNaN(d)) return null;
+    return Math.round((d - hoje) / 86400000);
+  }
+  function infoPrazo(iso) {
+    const n = diasAte(iso);
+    if (n === null) return null;
+    const txt = n > 1 ? 'faltam ' + n + ' dias' : n === 1 ? 'falta 1 dia' : n === 0 ? 'termina hoje' : 'vencido há ' + -n + (n === -1 ? ' dia' : ' dias');
+    return { n, txt, cls: n < 0 ? 'perigo' : n <= 30 ? 'alerta' : 'ok' };
+  }
+  function prazosDoRegistro(r) {
+    const out = [];
+    if (r.tipo === 'contrato' && r.prazo_execucao) out.push({ rot: 'Execução', data: r.prazo_execucao, info: infoPrazo(r.prazo_execucao) });
+    if (r.vigencia) out.push({ rot: 'Vigência', data: r.vigencia, info: infoPrazo(r.vigencia) });
+    return out.filter((p) => p.info);
+  }
+
+  /* ---------- Prazo das notificações (dias úteis, a partir do dia seguinte ao envio) ---------- */
+  const isoDe = (d) => d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+  function feriados() {
+    const set = new Set();
+    String((CONFIG && CONFIG.feriados) || '').split(/[\n,;]+/).forEach((t) => {
+      t = t.trim();
+      let m = /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/.exec(t);
+      if (m) set.add(m[3] + '-' + m[2].padStart(2, '0') + '-' + m[1].padStart(2, '0'));
+      else if (/^\d{4}-\d{2}-\d{2}$/.test(t)) set.add(t);
+    });
+    return set;
+  }
+  function ehDiaUtil(d, fer) { const w = d.getDay(); return w !== 0 && w !== 6 && !fer.has(isoDe(d)); }
+  function prazoFinalUteis(isoEnvio, dias) {
+    const fer = feriados();
+    const d = new Date(String(isoEnvio).slice(0, 10) + 'T12:00:00');
+    let c = 0;
+    while (c < Math.max(1, +dias || 1)) { d.setDate(d.getDate() + 1); if (ehDiaUtil(d, fer)) c++; }
+    return isoDe(d);
+  }
+  function uteisRestantes(isoFim) {
+    const fer = feriados();
+    const hoje = new Date(X.hojeISO() + 'T12:00:00'), fim = new Date(String(isoFim).slice(0, 10) + 'T12:00:00');
+    if (fim < hoje) return -Math.round((hoje - fim) / 86400000); // negativo = dias corridos de atraso
+    let c = 0; const d = new Date(hoje);
+    while (d < fim) { d.setDate(d.getDate() + 1); if (ehDiaUtil(d, fer)) c++; }
+    return c;
+  }
+  const quemResponde = (tipo) => (tipo === 'convenio' ? 'a prefeitura' : 'a empresa');
+  /* situação de uma notificação: rascunho, emitida sem envio, aguardando resposta, prazo encerrado, respondida */
+  function situacaoNotif(n) {
+    if (n.status !== 'emitida') return { k: 'rascunho', txt: 'Rascunho', cls: 'alerta', ordem: 4 };
+    if (!n.enviadaEm) return { k: 'nao_enviada', txt: 'Emitida · não enviada', cls: 'info', ordem: 2 };
+    if (n.respondidaEm) {
+      const atraso = n.prazoFinal && n.respondidaEm > n.prazoFinal;
+      return { k: 'respondida', txt: 'Respondida em ' + X.dataBR(n.respondidaEm) + (atraso ? ' (fora do prazo)' : ''), cls: 'ok', ordem: 3 };
+    }
+    const r = uteisRestantes(n.prazoFinal);
+    if (r < 0) return { k: 'vencida', txt: 'Prazo encerrado há ' + -r + (r === -1 ? ' dia' : ' dias'), cls: 'perigo', ordem: 0, restante: r };
+    return { k: 'aguardando', txt: r === 0 ? 'Prazo termina hoje' : r === 1 ? 'Falta 1 dia útil' : 'Faltam ' + r + ' dias úteis', cls: r <= 1 ? 'alerta' : 'info', ordem: 1, restante: r };
+  }
+
   /* ================================================================== */
   /* Estado, usuario e permissoes                                        */
   /* ================================================================== */
@@ -144,6 +218,7 @@
     funcao_padrao: { convenio: ['Fiscal do Convênio'], contrato: ['Fiscal do Contrato', 'Fiscal Suplente do Contrato'] },
     modelos: {},
     pasta_fotos: '{tipo}-{numero}/{data}',
+    feriados: '',
   };
 
   const PESSOAS_INICIAIS = [
@@ -249,6 +324,7 @@
   App.aoReceberDados = async function () {
     await carregarConfig();
     await repararConsistencia();
+    verificarPrazos();
     const r = location.hash;
     if (document.querySelector('.modal-fundo') || document.querySelector('.cv')) return; // não mexe na tela com janela ou câmera abertas
     if (!/notificacao|editar|novo|config|visita|coleta|irregularidade/.test(r)) rotear();
@@ -285,6 +361,7 @@
       if (r === 'notificacao') { return await telaNotificacao(a); }
       if (r === 'nova-notificacao') { return await criarNotificacao(a); }
       if (r === 'coleta') { marcarNav('coleta'); return await telaColeta(a); }
+      if (r === 'notificacoes') { marcarNav('notificacoes'); return await telaNotificacoes(); }
       if (r === 'visita') { return await telaVisita(a); }
       if (r === 'irregularidade') { return await telaIrregularidade(a, b); }
       if (r === 'config') { marcarNav('config'); return await telaConfig(a); }
@@ -355,23 +432,37 @@
     const regs = (await DB.listar('registros', (r) => r.tipo === tipo)).sort((a, b) => String(a.apelido || '').localeCompare(b.apelido || ''));
     const notifs = await DB.listar('notificacoes');
     const busca = h('input', { type: 'search', placeholder: 'Buscar por nome, número, empresa…' });
+    const chaveFiltro = 'filtro_status_' + tipo;
+    const filtroSt = h('select', { onchange: () => { sessionStorage.setItem(chaveFiltro, filtroSt.value); desenhar(); } },
+      h('option', { value: '' }, 'Todos os status (' + regs.length + ')'),
+      STATUS_OBRA[tipo].map((st) => { const n = regs.filter((r) => r.status_obra === st).length; return n ? h('option', { value: st }, st + ' (' + n + ')') : null; }),
+      regs.some((r) => !r.status_obra) ? h('option', { value: '__sem' }, 'Sem status informado (' + regs.filter((r) => !r.status_obra).length + ')') : null);
+    filtroSt.value = sessionStorage.getItem(chaveFiltro) || '';
+    if (filtroSt.selectedIndex < 0) filtroSt.value = '';
     const lista = h('div');
     const desenhar = () => {
       const q = busca.value.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
-      const filtrados = regs.filter((r) => !q || [r.apelido, r.numero, r.n_nome, r.objeto, r.processo].join(' ').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').includes(q));
+      const fs = filtroSt.value;
+      const filtrados = regs.filter((r) => (!fs || (fs === '__sem' ? !r.status_obra : r.status_obra === fs)) &&
+        (!q || [r.apelido, r.numero, r.n_nome, r.objeto, r.processo, r.status_obra].join(' ').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').includes(q)));
       rc(lista, ...(filtrados.length ? filtrados.map((r) => {
         const ns = notifs.filter((n) => n.registroId === r.id);
         const ult = ns.sort((a, b) => String(b.data).localeCompare(a.data))[0];
+        const aguard = ns.filter((n) => ['aguardando', 'vencida'].includes(situacaoNotif(n).k));
+        const venc = aguard.filter((n) => situacaoNotif(n).k === 'vencida').length;
         return h('a', { class: 'item', href: '#/registro/' + r.id },
           h('div', { class: 't' }, r.apelido || '(sem nome)', r._pendente ? h('span', { class: 'pend', title: 'Aguardando sincronização' }) : null),
           h('div', { class: 'd' }, descricaoRegistro(r)),
+          h('div', { class: 'etqs' }, etqStatus(r),
+            prazosDoRegistro(r).map((p) => etq(p.rot + ': ' + p.info.txt, p.info.cls, p.rot + ' até ' + X.dataBR(p.data))),
+            venc ? etq('⏰ ' + venc + ' notificação(ões) com prazo encerrado', 'perigo') : aguard.length ? etq(aguard.length + ' notificação(ões) aguardando resposta', 'info') : null),
           h('div', { class: 'd' }, ns.length ? ns.length + ' notificação(ões) · última em ' + X.dataBR(ult.data) : 'Nenhuma notificação no app'));
       }) : [h('div', { class: 'vazio' }, regs.length ? 'Nada encontrado.' : 'Nenhum ' + ROTULO[tipo].toLowerCase() + ' cadastrado ainda.',
         pode.cadastro() && !regs.length ? h('div', { style: { marginTop: '12px' } }, h('a', { class: 'btn pri', href: '#/novo/' + tipo }, '+ Cadastrar ' + ROTULO[tipo].toLowerCase())) : null)]));
     };
     busca.addEventListener('input', desenhar);
     desenhar();
-    rc($main, h('div', { style: { marginBottom: '10px' } }, busca), lista);
+    rc($main, h('div', { class: 'linha-busca' }, busca, filtroSt), lista);
     if (pode.cadastro() && location.hash.indexOf(tipo === 'convenio' ? 'convenios' : 'contratos') >= 0 || (pode.cadastro() && tipo === 'contrato' && !location.hash)) document.body.appendChild(h('button', { class: 'fab', title: 'Novo', onclick: () => { location.hash = '#/novo/' + tipo; } }, '+'));
   }
 
@@ -396,8 +487,11 @@
     const info = h('table', { class: 'tabela-info' },
       [['Notificada', r.n_nome], [ROTULO[r.tipo] + ' nº', r.numero], ['Processo', r.processo],
         ['Local da obra', r.local_obra],
+        ['Status', r.status_obra ? etqStatus(r) : ''],
+        r.tipo === 'contrato' && r.prazo_execucao ? ['Prazo de execução', h('span', {}, X.dataBR(r.prazo_execucao) + ' ', etq(infoPrazo(r.prazo_execucao).txt, infoPrazo(r.prazo_execucao).cls))] : ['', ''],
+        r.vigencia ? ['Vigência', h('span', {}, X.dataBR(r.vigencia) + ' ', etq(infoPrazo(r.vigencia).txt, infoPrazo(r.vigencia).cls))] : ['', ''],
         ['Valor', r.valor ? 'R$ ' + X.formatarMoeda(X.parseMoeda(r.valor)) : ''],
-        r.tipo === 'convenio' ? ['Vigência', X.dataBR(r.vigencia)] : ['O.S. nº', r.os_numero],
+        r.tipo === 'contrato' ? ['O.S. nº', r.os_numero] : ['', ''],
         ['Sanções', r.sancoes && r.sancoes.trim() ? 'Personalizadas' : 'Padrão do modelo']]
         .filter((x) => x[1]).map(([k, v]) => h('tr', {}, h('td', {}, k), h('td', {}, v))));
 
@@ -437,6 +531,7 @@
         h('span', { class: 'badge ' + (n.status === 'emitida' ? 'emit' : 'rasc') }, n.status === 'emitida' ? 'Emitida' : 'Rascunho'),
         h('div', { class: 't' }, (n.ordinal || '?') + 'ª Notificação', n._pendente ? h('span', { class: 'pend' }) : null),
         h('div', { class: 'd' }, 'Nº ' + (n.numero || '—') + ' · ' + X.dataBR(n.data)),
+        n.status === 'emitida' ? h('div', { class: 'etqs' }, etq(situacaoNotif(n).txt, situacaoNotif(n).cls), n.prazoFinal && !n.respondidaEm ? etq('prazo até ' + X.dataBR(n.prazoFinal), '') : null) : null,
         h('div', { class: 'd' }, (n.itens && n.itens.length ? n.itens.length + ' item(ns) · ' : '') + ((n.fotos || []).length) + ' foto(s) · por ' + (n.criadoPor || '—'))))
         : [h('div', { class: 'vazio' }, 'Nenhuma notificação registrada no app para este ' + ROTULO[r.tipo].toLowerCase() + '.',
           r.ultima_notif_anterior ? h('div', { class: 'sub' }, 'Notificações emitidas antes do app: ' + r.ultima_notif_anterior) : null)]));
@@ -755,7 +850,12 @@
         campo('CEP', inputTxt(r, 'n_cep', { inputmode: 'numeric' }))),
       campo('Município/UF', inputTxt(r, 'n_municipio', { placeholder: 'Ex.: Sinop/MT' })));
 
+    const selStatus = h('select', { onchange: (e) => { r.status_obra = e.target.value; } },
+      h('option', { value: '' }, '— não informado —'),
+      STATUS_OBRA[tipo].map((st) => h('option', { value: st, selected: r.status_obra === st ? 'selected' : null }, st)),
+      r.status_obra && !STATUS_OBRA[tipo].includes(r.status_obra) ? h('option', { value: r.status_obra, selected: 'selected' }, r.status_obra) : null);
     const secDados = h('div', { class: 'card' }, h('h2', {}, 'Dados do ' + ROTULO[tipo].toLowerCase()),
+      campo('Status da obra', selStatus),
       campo('Nome curto (identificação no app e no nome do arquivo) *', inputTxt(r, 'apelido', { placeholder: tipo === 'convenio' ? 'Ex.: CONVÊNIO 0961-2024 - CLÁUDIA' : 'Ex.: CEI DAURY RIVA' })),
       campo('Objeto', inputArea(r, 'objeto', { placeholder: 'Sem aspas — o modelo já inclui' })),
       campo('Local da obra (endereço / município)', inputTxt(r, 'local_obra', { placeholder: 'Ex.: Bairro Dauri Riva, Sinop/MT' }), 'Aparece no relatório fotográfico.'),
@@ -764,7 +864,11 @@
         campo('Processo/Protocolo nº', inputTxt(r, 'processo'))),
       campo('Valor do ' + ROTULO[tipo].toLowerCase() + ' (R$)', vInp),
       campo('Valor por extenso', vExt, 'Deixe vazio para gerar automaticamente.'),
-      tipo === 'convenio' ? campo('Prazo de vigência', h('input', { type: 'date', value: r.vigencia || '', oninput: (e) => { r.vigencia = e.target.value; } })) : null,
+      tipo === 'contrato' ? h('div', { class: 'grade2' },
+        campo('Prazo de execução (data final)', h('input', { type: 'date', value: r.prazo_execucao || '', oninput: (e) => { r.prazo_execucao = e.target.value; } })),
+        campo('Prazo de vigência (data final)', h('input', { type: 'date', value: r.vigencia || '', oninput: (e) => { r.vigencia = e.target.value; } })))
+        : campo('Prazo de vigência (data final)', h('input', { type: 'date', value: r.vigencia || '', oninput: (e) => { r.vigencia = e.target.value; } })),
+      h('div', { class: 'dica' }, 'O app mostra na lista quantos dias faltam para cada prazo.'),
       tipo === 'contrato' ? (() => {
         const [oInp, oExt] = valorInp('valor_os', 'valor_os_extenso');
         return h('div', {}, h('h3', {}, 'Ordem de Serviço (opcional)'),
@@ -934,7 +1038,7 @@
     if (!v0 || v0.excluido) { rc($main, h('div', { class: 'vazio' }, 'Visita não encontrada.')); return; }
     const r = await DB.get('registros', v0.registroId);
     if (!r) { rc($main, h('div', { class: 'vazio' }, 'Obra desta visita não encontrada.')); return; }
-    marcarNav('coleta');
+    marcarNav(r.tipo === 'convenio' ? 'convenios' : 'contratos');
     titulo('Visita nº ' + v0.numero + ' · ' + r.apelido, true);
     const v = JSON.parse(JSON.stringify(v0));
     let vBase = clonar(v0);
@@ -1616,6 +1720,143 @@
     return 'Foto registrada em ' + X.dataBR(String(f.dataHora || '').slice(0, 10) || X.hojeISO()) + '.';
   }
 
+  /* ---------- Tela "Notificações": todas, com prazo de resposta ---------- */
+  async function telaNotificacoes() {
+    titulo('Notificações');
+    const regs = new Map((await DB.all('registros')).map((r) => [r.id, r]));
+    const todas = (await DB.listar('notificacoes')).filter((n) => { const r = regs.get(n.registroId); return r && !r.excluido; })
+      .map((n) => ({ n, sit: situacaoNotif(n), r: regs.get(n.registroId) }));
+    const grupos = [
+      ['pendentes', 'Aguardando resposta', (x) => x.sit.k === 'aguardando' || x.sit.k === 'vencida'],
+      ['vencidas', 'Prazo encerrado', (x) => x.sit.k === 'vencida'],
+      ['nao_enviadas', 'Não enviadas', (x) => x.sit.k === 'nao_enviada'],
+      ['respondidas', 'Respondidas', (x) => x.sit.k === 'respondida'],
+      ['rascunhos', 'Rascunhos', (x) => x.sit.k === 'rascunho'],
+      ['todas', 'Todas', () => true],
+    ];
+    let filtro = sessionStorage.getItem('filtro_notifs') || 'pendentes';
+    const g = grupos.find((x) => x[0] === filtro) || grupos[0];
+    const lista = todas.filter(g[2]).sort((a, b) => a.sit.ordem - b.sit.ordem
+      || (a.sit.k === 'vencida' || a.sit.k === 'aguardando' ? String(a.n.prazoFinal).localeCompare(String(b.n.prazoFinal)) : String(b.n.data || '').localeCompare(String(a.n.data || ''))));
+    const filtros = h('div', { class: 'filtros' }, grupos.map(([k, rot, f]) => {
+      const c = todas.filter(f).length;
+      return h('button', { class: k === g[0] ? 'ativo' : '', onclick: () => { sessionStorage.setItem('filtro_notifs', k); telaNotificacoes(); } }, rot + ' (' + c + ')');
+    }));
+    const avisoPermissao = ('Notification' in window) && Notification.permission === 'default' && todas.some((x) => x.sit.k === 'aguardando' || x.sit.k === 'vencida')
+      ? h('div', { class: 'aviso' }, '🔔 Quer ser avisado no celular quando um prazo terminar? ',
+        h('button', { class: 'btn peq', onclick: async () => { try { await Notification.requestPermission(); } catch (e) { /* */ } telaNotificacoes(); } }, 'Ativar avisos'))
+      : null;
+    rc($main, avisoPermissao, filtros,
+      lista.length ? lista.map(({ n, sit, r }) => h('a', { class: 'item', href: '#/notificacao/' + n.id },
+        h('div', { class: 't' }, (n.ordinal || '?') + 'ª Notificação · ' + (r.apelido || ROTULO[r.tipo])),
+        h('div', { class: 'd' }, ROTULO[r.tipo] + ' nº ' + (r.numero || '—') + ' · Nº ' + (n.numero || '—') + ' · emitida em ' + X.dataBR(String(n.emitidaEm || n.data || '').slice(0, 10))),
+        h('div', { class: 'etqs' }, etq(sit.txt, sit.cls),
+          n.enviadaEm ? etq('enviada ' + X.dataBR(n.enviadaEm), '') : null,
+          n.prazoFinal && !n.respondidaEm ? etq('prazo até ' + X.dataBR(n.prazoFinal), '') : null)))
+        : h('div', { class: 'vazio' }, g[0] === 'pendentes' ? 'Nenhuma notificação aguardando resposta. 👍' : 'Nada por aqui.'),
+      h('p', { class: 'dica' }, 'O prazo conta em dias úteis a partir do dia seguinte ao envio (sábados, domingos e os feriados cadastrados em Ajustes › Padrões não contam). Para registrar envio ou resposta, abra a notificação.'));
+    App._atualizarTela = () => telaNotificacoes();
+  }
+
+  /* Avisos de prazo: número no ícone "Notificações" e aviso no celular quando um prazo termina */
+  async function verificarPrazos() {
+    try {
+      const regs = new Map((await DB.all('registros')).map((r) => [r.id, r]));
+      const ativas = (await DB.listar('notificacoes')).filter((n) => { const r = regs.get(n.registroId); return r && !r.excluido && n.status === 'emitida' && n.enviadaEm && !n.respondidaEm && n.prazoFinal; });
+      const vencidas = ativas.filter((n) => situacaoNotif(n).k === 'vencida');
+      const hoje = ativas.filter((n) => situacaoNotif(n).restante === 0);
+      const b = document.getElementById('badge-notif');
+      if (b) { b.textContent = vencidas.length || hoje.length || ''; b.className = 'nav-badge' + (vencidas.length ? ' on' : hoje.length ? ' on alerta' : ''); }
+      const avisadas = await DB.kvGet('avisosPrazo', {});
+      const novos = [];
+      for (const n of vencidas) if (!avisadas[n.id + ':' + n.prazoFinal]) novos.push({ n, chave: n.id + ':' + n.prazoFinal, txt: 'terminou em ' + X.dataBR(n.prazoFinal) + ' sem resposta registrada.' });
+      for (const n of hoje) if (!avisadas[n.id + ':hoje:' + n.prazoFinal]) novos.push({ n, chave: n.id + ':hoje:' + n.prazoFinal, txt: 'termina HOJE (' + X.dataBR(n.prazoFinal) + ').' });
+      if (!novos.length) return;
+      for (const x of novos) {
+        const r = regs.get(x.n.registroId) || {};
+        const corpo = (x.n.ordinal || '?') + 'ª Notificação — ' + (r.apelido || '') + ': o prazo de resposta ' + x.txt;
+        let mostrouNoSistema = false;
+        if ('Notification' in window && Notification.permission === 'granted' && navigator.serviceWorker) {
+          try { const reg = await navigator.serviceWorker.ready; await reg.showNotification('⏰ Prazo de notificação', { body: corpo, tag: x.chave, data: { url: '#/notificacao/' + x.n.id }, icon: 'icons/icon-192.png' }); mostrouNoSistema = true; } catch (e) { /* */ }
+        }
+        if (!mostrouNoSistema || document.visibilityState === 'visible') toast('⏰ ' + corpo, true);
+        avisadas[x.chave] = new Date().toISOString();
+      }
+      await DB.kvSet('avisosPrazo', avisadas);
+    } catch (e) { console.warn('prazos', e); }
+  }
+  App.verificarPrazos = verificarPrazos;
+
+  /* ---------- Envio e resposta das notificações ---------- */
+  function aplicarEnvio(o, dataISO) {
+    o.enviadaEm = dataISO;
+    o.prazoDiasEnvio = +o.prazo_dias || 3;
+    o.prazoFinal = prazoFinalUteis(dataISO, o.prazoDiasEnvio);
+    o.enviadaPor = email();
+  }
+  async function pedirDataEnvio(n) {
+    const d = { data: X.hojeISO() };
+    const inp = h('input', { type: 'date', value: d.data, max: X.hojeISO(), oninput: (e) => { d.data = e.target.value; prev(); } });
+    const info = h('p', { class: 'sub' });
+    const prev = () => { rc(info, d.data ? 'Prazo de ' + (+n.prazo_dias || 3) + ' dia(s) útil(eis) para ' + quemResponde(n.tipo) + ' responder: até ' + X.dataBR(prazoFinalUteis(d.data, n.prazo_dias)) + '.' : ''); };
+    prev();
+    const ok = await modal('📨 Registrar envio', h('div', {},
+      h('p', {}, 'Data em que a notificação foi enviada (normalmente hoje). O app passa a contar o prazo a partir do dia seguinte, em dias úteis.'),
+      campo('Data do envio', inp), info),
+    [{ txt: 'Cancelar', valor: false }, { txt: 'Registrar envio', cls: 'pri', valor: true, antes: () => { if (!d.data) { toast('Informe a data.', true); return false; } } }]);
+    return ok ? d : null;
+  }
+  async function pedirResposta(n) {
+    const d = { data: X.hojeISO(), obs: '' };
+    const ok = await modal('✅ Registrar resposta', h('div', {},
+      h('p', {}, 'Data em que ' + quemResponde(n.tipo) + ' respondeu à notificação. A pendência sai da lista de prazos.'),
+      campo('Data da resposta', h('input', { type: 'date', value: d.data, min: n.enviadaEm || null, oninput: (e) => { d.data = e.target.value; } })),
+      campo('Observação (opcional)', inputArea(d, 'obs', { placeholder: 'Ex.: Ofício nº 123/2026 — apresentou cronograma de correção.' }))),
+    [{ txt: 'Cancelar', valor: false }, { txt: 'Registrar', cls: 'ok', valor: true, antes: () => { if (!d.data) { toast('Informe a data.', true); return false; } } }]);
+    return ok ? d : null;
+  }
+  function cartaoEnvio(n, r, redesenhar) {
+    const sit = situacaoNotif(n);
+    const card = h('div', { class: 'card' }, h('h2', {}, 'Envio e prazo de resposta'));
+    if (!n.enviadaEm) {
+      ap(card, h('p', { class: 'sub', style: { marginTop: 0 } }, 'Ainda não registrada como enviada. No dia do envio, toque em “📨 Enviado”: o app passa a contar o prazo de ' + (+n.prazo_dias || 3) + ' dia(s) útil(eis) para ' + quemResponde(n.tipo) + ' responder e avisa quando terminar.'));
+      return card;
+    }
+    ap(card,
+      h('div', { class: 'etqs', style: { marginTop: 0, marginBottom: '8px' } }, etq(sit.txt, sit.cls)),
+      h('table', { class: 'tabela-info' },
+        h('tr', {}, h('td', {}, 'Enviada em'), h('td', {}, X.dataBR(n.enviadaEm) + (n.enviadaPor ? ' · por ' + n.enviadaPor : ''))),
+        h('tr', {}, h('td', {}, 'Prazo para resposta'), h('td', {}, (n.prazoDiasEnvio || n.prazo_dias || 3) + ' dia(s) útil(eis) → até ' + X.dataBR(n.prazoFinal))),
+        n.respondidaEm ? h('tr', {}, h('td', {}, 'Respondida em'), h('td', {}, X.dataBR(n.respondidaEm) + (n.respondidaPor ? ' · registrado por ' + n.respondidaPor : ''))) : null,
+        n.respostaObs ? h('tr', {}, h('td', {}, 'Observação'), h('td', {}, n.respostaObs)) : null));
+    if (pode.notificar()) {
+      ap(card, h('div', { class: 'acoes' },
+        !n.respondidaEm ? h('button', { class: 'btn ok', onclick: async () => {
+          const resp = await pedirResposta(n);
+          if (!resp) return;
+          await atualizarCampos('notificacoes', n.id, (o) => { o.respondidaEm = resp.data; o.respostaObs = resp.obs.trim(); o.respondidaPor = email(); });
+          toast('Resposta registrada'); verificarPrazos(); redesenhar();
+        } }, '✅ Registrar resposta') : null,
+        n.respondidaEm ? h('button', { class: 'btn peq', onclick: async () => {
+          if (!(await confirmar('Desfazer o registro da resposta? A notificação volta a aguardar resposta.', 'Desfazer'))) return;
+          await atualizarCampos('notificacoes', n.id, (o) => { delete o.respondidaEm; delete o.respostaObs; delete o.respondidaPor; });
+          verificarPrazos(); redesenhar();
+        } }, 'Desfazer resposta') : null,
+        h('button', { class: 'btn peq', onclick: async () => {
+          const envio = await pedirDataEnvio(n);
+          if (!envio) return;
+          await atualizarCampos('notificacoes', n.id, (o) => aplicarEnvio(o, envio.data));
+          verificarPrazos(); redesenhar();
+        } }, 'Corrigir data de envio'),
+        !n.respondidaEm ? h('button', { class: 'btn peq perigo', onclick: async () => {
+          if (!(await confirmar('Desfazer o registro de envio? O prazo deixa de ser contado.', 'Desfazer', true))) return;
+          await atualizarCampos('notificacoes', n.id, (o) => { delete o.enviadaEm; delete o.prazoFinal; delete o.prazoDiasEnvio; delete o.enviadaPor; });
+          verificarPrazos(); redesenhar();
+        } }, 'Desfazer envio') : null));
+    }
+    return card;
+  }
+
   async function telaNotificacao(id) {
     const original = await DB.get('notificacoes', id);
     if (!original || original.excluido) { rc($main, h('div', { class: 'vazio' }, 'Notificação não encontrada.')); return; }
@@ -1808,17 +2049,24 @@
         toast(e.message, true);
       }
     }
-    async function emitir() {
+    async function emitir(comEnvio) {
       if (!validar()) return;
       if (await numeroDuplicado() && !(await confirmar('Já existe outra notificação com o número ' + n.numero + '. Emitir mesmo assim?', 'Emitir'))) return;
       if (!(n.fotos || []).length && !(await confirmar('Esta notificação não tem fotos anexas. Emitir mesmo assim?', 'Emitir'))) return;
-      if (!(await confirmar('Ao emitir, o conteúdo fica bloqueado e registrado no histórico. Continuar?', 'Emitir'))) return;
+      let envio = null;
+      if (comEnvio) {
+        envio = await pedirDataEnvio(n);
+        if (!envio) return;
+      } else if (!(await confirmar('Ao emitir, o conteúdo fica bloqueado e registrado no histórico. Continuar?', 'Emitir'))) return;
       await salvar(true);
       const snap = Object.assign({}, r);
       for (const k of ['_pendente', 'atualizadoEm', 'atualizadoPor', 'criadoEm', 'criadoPor']) delete snap[k];
       n.status = 'emitida'; n.emitidaEm = new Date().toISOString(); n.emitidaPor = email();
       sujo = false;
-      const emit = await atualizarCampos('notificacoes', id, (o) => { o.registroSnapshot = snap; o.status = n.status; o.emitidaEm = n.emitidaEm; o.emitidaPor = n.emitidaPor; });
+      const emit = await atualizarCampos('notificacoes', id, (o) => {
+        o.registroSnapshot = snap; o.status = n.status; o.emitidaEm = n.emitidaEm; o.emitidaPor = n.emitidaPor;
+        if (envio) aplicarEnvio(o, envio.data);
+      });
       Object.assign(original, emit);
       App._sairNotif = null;
       await gerarDireto();
@@ -1829,7 +2077,15 @@
       !ro ? h('button', { class: 'btn', onclick: () => salvar() }, '💾 Salvar rascunho') : null,
       h('button', { class: 'btn pri', onclick: () => gerar(false) }, '⬇️ Baixar Word (.docx)'),
       h('button', { class: 'btn', onclick: () => gerar(true) }, '📤 Compartilhar'),
-      !ro ? h('button', { class: 'btn ok', onclick: emitir }, '✅ Emitir') : null),
+      !ro ? h('button', { class: 'btn ok', onclick: () => emitir(false) }, '✅ Emitir') : null,
+      !ro ? h('button', { class: 'btn', onclick: () => emitir(true), title: 'Emite a notificação e registra o envio com a data de hoje' }, '📨 Enviado') : null,
+      emitida && !original.enviadaEm && pode.notificar() ? h('button', { class: 'btn pri', onclick: async () => {
+        const envio = await pedirDataEnvio(original);
+        if (!envio) return;
+        await atualizarCampos('notificacoes', id, (o) => aplicarEnvio(o, envio.data));
+        toast('Envio registrado — prazo até ' + X.dataBR(prazoFinalUteis(envio.data, original.prazo_dias)));
+        verificarPrazos(); telaNotificacao(id);
+      } }, '📨 Enviado') : null),
       h('div', { class: 'acoes' },
         emitida && pode.notificar() ? h('button', { class: 'btn peq', onclick: () => criarNotificacao(r.id, n) }, '↻ Nova notificação a partir desta (reiteração)') : null,
         emitida && pode.admin() ? h('button', { class: 'btn peq', onclick: async () => {
@@ -1843,7 +2099,7 @@
         } }, 'Excluir') : null),
       h('p', { class: 'dica' }, 'Dica: para PDF, abra o .docx no Word (celular ou computador) e use “Salvar como PDF”.'));
 
-    rc($main, secCab, secFatos, secProv, secAss, secFotos, acoes);
+    rc($main, secCab, emitida ? cartaoEnvio(original, r, () => telaNotificacao(id)) : null, secFatos, secProv, secAss, secFotos, acoes);
     // salvamento automatico do rascunho ao sair da tela
     App._sairNotif = async () => { if (sujo && !ro) await salvar(true); };
   }
@@ -1916,7 +2172,7 @@
       for (const f of fotosSemDrive) if (!(await DB.blobGet(f.id))) semArquivo++;
       const log = Sync.lerLog().slice().reverse();
       const resumo = {
-        app: '3.1', servidor: Sync.versaoServidor || '?', usuario: (u || {}).email, perfil: perfil(), estado: Sync.estado, erro: Sync.erro || '',
+        app: '3.2', servidor: Sync.versaoServidor || '?', usuario: (u || {}).email, perfil: perfil(), estado: Sync.estado, erro: Sync.erro || '',
         online: navigator.onLine, ultimaSync: await DB.kvGet('ultimaSync', null), cursor: await DB.kvGet('servidorDesde', 0),
         pendentes: pendPor, fotosAguardandoEnvio: fotosSemDrive.length - semArquivo, fotosDeOutroAparelhoSemEnvio: semArquivo,
         aparelho: navigator.userAgent, log,
@@ -1994,6 +2250,7 @@
         campo('Providências padrão — Convênio', inputArea(c.providencias_padrao, 'convenio'), '{nome_texto} é trocado pelo nome da notificada. **texto** = negrito.'),
         campo('Providências complementares padrão — Contrato', inputArea(c.providencias_padrao, 'contrato')),
         campo('Prazo padrão (dias úteis)', inputTxt(c, 'prazo_padrao', { type: 'number', min: '1' })),
+        campo('Feriados (não contam no prazo das notificações)', inputArea(c, 'feriados', { placeholder: '01/01/2026\n20/11/2026\n25/12/2026' }), 'Um por linha, no formato dd/mm/aaaa (nacionais, estaduais e municipais). Sábados e domingos já não contam.'),
         h('h3', {}, 'Fotos no Google Drive'),
         campo('Pastas das fotos', inputTxt(c, 'pasta_fotos', { placeholder: '{tipo}-{numero}/{data}' }),
           'Dentro da pasta Fotos. Use / para criar subpastas. {tipo} = Conv ou Contr · {numero} = nº do contrato/convênio · {apelido} = nome curto · {data} = data da visita (29.09.2026) · {ano} · {visita} = “Visita 3”. Ex.: {tipo}-{numero}/{data} → Conv-013-2023/29.09.2026. Vale para as próximas fotos enviadas.'),
@@ -2084,7 +2341,7 @@
         pode.admin() ? h('button', { class: 'btn', onclick: importarBackup }, '⬆️ Importar') : null,
         pode.admin() ? h('button', { class: 'btn', onclick: carregarExemplos }, 'Carregar exemplos dos modelos') : null)));
 
-    cards.push(h('p', { class: 'dica', style: { textAlign: 'center' } }, 'Fiscalização de Obras · v3.1 · dados salvos no aparelho' + (Sync.habilitado() ? ' e no Google Drive do administrador' : '') + ' · ', h('a', { href: 'privacidade.html' }, 'Política de privacidade')));
+    cards.push(h('p', { class: 'dica', style: { textAlign: 'center' } }, 'Fiscalização de Obras · v3.2 · dados salvos no aparelho' + (Sync.habilitado() ? ' e no Google Drive do administrador' : '') + ' · ', h('a', { href: 'privacidade.html' }, 'Política de privacidade')));
     rc($main, ...cards);
   }
 
@@ -2245,13 +2502,14 @@
       numero: '013/2026', processo: 'SEDUC-PRO-2025/62764', os_numero: '02/2026',
       objeto_especifico: 'CONTRATAÇÃO INTEGRADA DE EMPRESA ESPECIALIZADA EM ENGENHARIA E ARQUITETURA PARA ELABORAÇÃO DE SOLUÇÃO COMPLETA INCLUINDO O DESENVOLVIMENTO E EXECUÇÃO COMPLETA DOS PROJETOS BÁSICOS, COMPLEMENTAR E EXECUTIVO PARA A CONSTRUÇÃO DA ESCOLA ESTADUAL DAURY RIVA, LOCALIZADO NO MUNICÍPIO DE SINOP, COM BLOCO EDUCACIONAL DE 24 SALAS DE AULA, REFEITÓRIO COM COZINHA, QUADRA POLIESPORTIVA COM VESTIÁRIO E PISCINA',
       valor: 41797391.43, valor_os: 20795119.72, fiscais: fiscC, coordenadores: ['p-norberto', 'p-andressa'], ultima_notif_anterior: 5, prazo_dias: 3,
+      status_obra: 'Em execução', prazo_execucao: '2027-03-31', vigencia: '2027-06-30',
     }, email());
     await DB.salvar('registros', {
       id: 'ex-convenio-claudia', tipo: 'convenio', apelido: 'CONVÊNIO 0961-2024 - CLÁUDIA',
       n_cnpj: '01.310.499/0001-04', n_nome: 'PREFEITURA MUNICIPAL DE CLÁUDIA', n_nome_texto: 'Prefeitura Municipal de Cláudia',
       n_representante: 'ALTAMIR KURTEN', n_logradouro: 'Av. Gaspar Dutra, S/N', n_cep: '78540-000', n_bairro: 'Centro', n_municipio: 'Cláudia/MT', n_telefone: '(66) 3546-1250',
       objeto: 'Construção de Escola Estadual Florestan Fernandes', numero: '0961-2024', processo: 'SEDUC-PRO-2024/47906', valor: 8021795.36,
-      valor_extenso: 'Oito milhões, vinte e um mil, setecentos e noventa e cinco reais e trinta e seis centavos', vigencia: '2026-11-05',
+      valor_extenso: 'Oito milhões, vinte e um mil, setecentos e noventa e cinco reais e trinta e seis centavos', vigencia: '2026-11-05', status_obra: 'Paralisada',
       fiscais: fiscV, coordenadores: ['p-norberto', 'p-andressa'], ultima_notif_anterior: 2, prazo_dias: 3,
     }, email());
     toast('Exemplos criados');
@@ -2267,6 +2525,9 @@
     await carregarConfig();
     await repararConsistencia();
     atualizarChip();
+    verificarPrazos();
+    setInterval(verificarPrazos, 10 * 60 * 1000);
+    document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') verificarPrazos(); });
     if (!location.hash) location.replace('#/contratos');
     await rotear();
     if (Sync.habilitado()) {

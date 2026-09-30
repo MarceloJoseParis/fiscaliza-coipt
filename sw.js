@@ -1,5 +1,5 @@
 /* Service worker: guarda o app no aparelho para funcionar sem internet */
-const VERSAO = 'notif-v3.1.0';
+const VERSAO = 'notif-v3.2.0';
 const ARQUIVOS = [
   './', 'index.html', 'privacidade.html', 'config.js', 'manifest.webmanifest', 'css/app.css',
   'lib/jszip.min.js', 'js/extenso.js', 'js/docgen.js', 'js/db.js', 'js/foto.js', 'js/camera.js', 'js/sync.js', 'js/app.js',
@@ -25,4 +25,14 @@ self.addEventListener('fetch', (e) => {
       return resp;
     }).catch(() => caches.match(e.request, { ignoreSearch: true }).then((r) => r || caches.match('index.html')))
   );
+});
+
+// toque no aviso de prazo: abre (ou traz para frente) o app na notificação
+self.addEventListener('notificationclick', (e) => {
+  e.notification.close();
+  const alvo = (e.notification.data && e.notification.data.url) || '#/notificacoes';
+  e.waitUntil(self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((cs) => {
+    for (const c of cs) { if ('focus' in c) { c.navigate ? c.navigate(c.url.split('#')[0] + alvo).catch(() => {}) : null; return c.focus(); } }
+    return self.clients.openWindow('./index.html' + alvo);
+  }));
 });
