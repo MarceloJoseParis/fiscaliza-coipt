@@ -9,6 +9,7 @@
     fechar: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>',
     flashOff: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M13 3L6 13h5l-1 8 7-10h-5l1-8z"/><path d="M3 3l18 18"/></svg>',
     flashOn: '<svg viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"><path d="M13 3L6 13h5l-1 8 7-10h-5l1-8z"/></svg>',
+    lentes: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="4"/><path d="M12 3v5M20.2 8l-4.5 2.2M17.6 19.5l-3.1-3.9M6.4 19.5l3.1-3.9M3.8 8l4.5 2.2"/></svg>',
     celular: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="7" y="2.5" width="10" height="19" rx="2"/><path d="M11 18.5h2"/></svg>',
     lixo: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"/></svg>',
     esq: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg>',
@@ -63,6 +64,7 @@
         const files = inpNativo.files;
         if (files && files.length) { fechar(true); resolve({ aparelho: files, total }); }
       });
+      const btnLentes = el('button', { class: 'cv-ic', 'aria-label': 'Escolher lente', title: 'Escolher lente', html: SVG.lentes, style: { display: 'none' }, onclick: () => menuLentes() });
       const btnFlash = el('button', { class: 'cv-ic', 'aria-label': 'Flash', html: SVG.flashOff, style: { visibility: 'hidden' }, onclick: () => alternarFlash() });
       const btnLente = el('button', { class: 'cv-ic cv-ic-grande', 'aria-label': 'Câmera frontal / traseira', html: SVG.lente, style: { visibility: 'hidden' }, onclick: () => alternarFrontal() });
       const btnDisparo = el('button', { class: 'cv-disparo', 'aria-label': 'Tirar foto', onclick: () => disparar() }, el('span'));
@@ -72,7 +74,7 @@
         el('div', { class: 'cv-topo' },
           el('button', { class: 'cv-ic', 'aria-label': 'Fechar', html: SVG.fechar, onclick: () => fechar() }),
           cont,
-          el('div', { class: 'cv-topo-dir' }, btnFlash,
+          el('div', { class: 'cv-topo-dir' }, btnLentes, btnFlash,
             el('button', { class: 'cv-ic', 'aria-label': 'Câmera do celular', title: 'Abrir a câmera do celular', html: SVG.celular, onclick: () => inpNativo.click() }))),
         visor, msg,
         el('div', { class: 'cv-modos' }, el('span', { class: 'ativo' }, 'FOTO')),
@@ -118,7 +120,7 @@
          e lê o zoom de cada uma. Em muitos Android existe uma câmera "combinada" com zoom abaixo de 1x
          (ex.: 0,6x) que NÃO é a que o navegador abre por padrão — é ela que dá a grande angular. */
       async function perfilLentes(devs) {
-        const assinatura = devs.map((d) => d.label).join('|');
+        const assinatura = devs.map((d) => d.label || d.deviceId).join('|');
         let perf = null;
         try { perf = JSON.parse(ls.get('cam_perfil') || 'null'); } catch (e) { /* */ }
         if (perf && perf.assinatura === assinatura) return perf;
@@ -131,9 +133,9 @@
             const st = await navigator.mediaDevices.getUserMedia({ audio: false, video: { deviceId: { exact: d.deviceId } } });
             const t = st.getVideoTracks()[0];
             const c = t.getCapabilities ? t.getCapabilities() : {};
-            perf.cams.push({ label: d.label, zmin: c.zoom ? c.zoom.min : null, zmax: c.zoom ? c.zoom.max : null, facing: (c.facingMode || [])[0] || (t.getSettings() || {}).facingMode || '' });
+            perf.cams.push({ label: d.label || d.deviceId, zmin: c.zoom ? c.zoom.min : null, zmax: c.zoom ? c.zoom.max : null, facing: (c.facingMode || [])[0] || (t.getSettings() || {}).facingMode || '' });
             st.getTracks().forEach((x) => x.stop());
-          } catch (e) { perf.cams.push({ label: d.label, erro: e.name || 'erro' }); }
+          } catch (e) { perf.cams.push({ label: d.label || d.deviceId, erro: e.name || 'erro' }); }
         }
         ls.set('cam_perfil', JSON.stringify(perf));
         return perf;
@@ -148,9 +150,11 @@
         lentes.principal = s.deviceId || lentes.principal;
         let perf = null;
         // a câmera aberta não tem zoom abaixo de 1x e há outras câmeras: descobre as lentes (uma vez por celular)
-        if (facing === 'environment' && !(cap.zoom && cap.zoom.min < 1) && devs.length > 1 && devs.every((d) => d.label)) {
+        lentes.todas = devs;
+        if (facing === 'environment' && !(cap.zoom && cap.zoom.min < 1) && devs.length > 1) {
           try { perf = await perfilLentes(devs); } catch (e) { perf = null; }
-          const infoDe = (d) => (perf ? perf.cams.find((c) => c.label === d.label) : null) || {};
+          const infoDe = (d) => (perf ? perf.cams.find((c) => c.label === (d.label || d.deviceId)) : null) || {};
+          lentes.perfil = perf;
           const combinada = devs.filter((d) => { const i = infoDe(d); return i.zmin != null && i.zmin < 1 && i.facing !== 'user' && !FRONTAL.test(d.label); })
             .sort((a, b) => infoDe(a).zmin - infoDe(b).zmin)[0];
           const abrir = combinada ? combinada.deviceId : lentes.principal;
@@ -160,7 +164,7 @@
             lentes.principal = s2.deviceId || abrir;
           }
           // na próxima vez já abre direto na câmera com grande angular
-          ls.set('cam_principal', combinada ? combinada.label : '');
+          if (combinada) ls.set('cam_principal', combinada.label || combinada.deviceId);
         }
         // outras câmeras traseiras (grande angular, teleobjetiva...) — usadas quando o zoom abaixo de 1x não existe
         const frontalPerfil = (d) => { const i = perf ? perf.cams.find((c) => c.label === d.label) : null; return i && i.facing === 'user'; };
@@ -169,7 +173,38 @@
         const escolhida = ls.get('lente_05');
         lentes.extras = devs.filter((d) => d.deviceId && d.deviceId !== lentes.principal && (d.label === escolhida || (d.label && !FRONTAL.test(d.label) && !frontalPerfil(d))))
           .sort((a, b) => (b.label === escolhida) - (a.label === escolhida) || ultraNome(a) - ultraNome(b) || num(a) - num(b));
+        const traseiras = devs.filter((d) => d.deviceId && !(d.label && FRONTAL.test(d.label)) && !frontalPerfil(d));
+        btnLentes.style.display = traseiras.length > 1 ? '' : 'none';
         montarZoom();
+      }
+
+      /* Escolha manual da lente (como nas versões anteriores): lista todas as câmeras traseiras.
+         A escolhida vira a câmera principal e passa a abrir direto nas próximas vezes. */
+      function menuLentes() {
+        const velho = ov.querySelector('.cv-lentes-menu');
+        if (velho) { velho.remove(); return; }
+        const devs = (lentes.todas || []).filter((d) => d.deviceId && !(d.label && FRONTAL.test(d.label)));
+        const atual = track && track.getSettings ? track.getSettings().deviceId : null;
+        const info = (d) => { const p = lentes.perfil || (() => { try { return JSON.parse(ls.get('cam_perfil') || 'null'); } catch (e) { return null; } })(); const c = p && p.cams.find((x) => x.label === (d.label || d.deviceId)); return c || {}; };
+        const menu = el('div', { class: 'cv-lentes-menu' },
+          el('div', { class: 'cv-lentes-tit' }, 'Lentes deste celular'),
+          devs.map((d, i) => {
+            const c = info(d);
+            const extra = c.facing === 'user' ? ' · frontal' : c.zmin != null ? ' · zoom ' + String(Math.round(c.zmin * 10) / 10).replace('.', ',') + '–' + String(Math.round(c.zmax * 10) / 10).replace('.', ',') + 'x' : '';
+            return el('button', { class: d.deviceId === atual ? 'ativo' : '', onclick: async () => {
+              menu.remove();
+              try {
+                facing = 'environment'; lentes.naUltra = false;
+                await abrirStream(d.deviceId);
+                lentes.principal = d.deviceId;
+                ls.set('cam_principal', d.label || d.deviceId);
+                lentes.extras = (lentes.todas || []).filter((x) => x.deviceId && x.deviceId !== d.deviceId && x.label && !FRONTAL.test(x.label));
+                montarZoom();
+                aviso((d.label || 'Lente ' + (i + 1)) + (cap.zoom && cap.zoom.min < 1 ? ' — zoom a partir de ' + String(Math.round(cap.zoom.min * 10) / 10).replace('.', ',') + 'x' : ''), 2600);
+              } catch (e) { aviso('Não foi possível abrir esta lente'); }
+            } }, (d.label || 'Lente ' + (i + 1)) + extra);
+          }));
+        ov.append(menu);
       }
 
       async function alternarFrontal() {

@@ -218,7 +218,11 @@ details.card[open] > summary::before { content: '▾ '; }
 .cv-zoom:empty { display: none; }
 .cv-zoom button { min-width: 34px; height: 34px; border-radius: 999px; border: 0; background: rgba(0,0,0,.45); color: #fff; font-size: 12px; font-weight: 600; cursor: pointer; padding: 0 6px; }
 .cv-zoom button.ativo { background: rgba(0,0,0,.6); color: #facc15; min-width: 44px; height: 38px; font-size: 13px; }
-.cv-msg { position: absolute; left: 50%; top: calc(70px + env(safe-area-inset-top)); transform: translateX(-50%); background: rgba(0,0,0,.6); padding: 6px 14px; border-radius: 999px; font-size: 13px; opacity: 0; transition: opacity .3s; pointer-events: none; white-space: nowrap; }
+.cv-msg { position: absolute; left: 50%; top: calc(70px + env(safe-area-inset-top)); transform: translateX(-50%); background: rgba(0,0,0,.6); padding: 6px 14px; border-radius: 16px; font-size: 13px; opacity: 0; transition: opacity .3s; pointer-events: none; max-width: 88vw; text-align: center; z-index: 4; }
+.cv-lentes-menu { position: absolute; z-index: 6; right: 10px; top: calc(60px + env(safe-area-inset-top)); background: rgba(20,20,20,.94); border-radius: 14px; padding: 8px; display: flex; flex-direction: column; gap: 4px; max-width: min(88vw, 360px); max-height: 60vh; overflow: auto; box-shadow: 0 6px 24px rgba(0,0,0,.5); }
+.cv-lentes-tit { font-size: 12px; opacity: .7; padding: 4px 8px; }
+.cv-lentes-menu button { border: 0; background: transparent; color: #fff; text-align: left; padding: 10px 12px; border-radius: 10px; font-size: 14px; cursor: pointer; }
+.cv-lentes-menu button.ativo { background: rgba(255,255,255,.18); color: #facc15; }
 .cv-modos { flex: none; display: flex; justify-content: center; gap: 22px; padding: 14px 0 4px; font-size: 13px; font-weight: 600; letter-spacing: .04em; color: rgba(255,255,255,.55); }
 .cv-modos .ativo { color: #facc15; }
 .cv-base { flex: 1; min-height: 110px; display: flex; align-items: center; justify-content: space-around; padding: 6px 24px calc(14px + env(safe-area-inset-bottom)); }
