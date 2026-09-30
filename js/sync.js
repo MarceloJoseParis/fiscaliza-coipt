@@ -50,6 +50,12 @@
     return JSON.parse(json);
   }
   Sync.token = function () {
+    // sessão do app (30 dias, renovada a cada sincronização): não depende do login do Google, que dura só 1 hora
+    try {
+      const sess = localStorage.getItem('sessao');
+      const exp = +localStorage.getItem('sessao_exp') || 0;
+      if (sess && exp > Date.now() + 3600000) return sess;
+    } catch (e) { /* */ }
     const t = localStorage.getItem('id_token');
     if (!t) return null;
     try {
@@ -63,6 +69,7 @@
   };
   Sync.sair = function () {
     localStorage.removeItem('id_token');
+    localStorage.removeItem('sessao'); localStorage.removeItem('sessao_exp');
     localStorage.removeItem('usuario');
     Sync.usuario = null;
     if (root.google && google.accounts && google.accounts.id) google.accounts.id.disableAutoSelect();
@@ -138,6 +145,7 @@
     try {
       return await chamarUmaVez(acao, dados);
     } catch (e) {
+      if (e.renovar && !tentativa) return Sync.chamar(acao, dados, 1);
       const repetir = (tentativa || 0) < 2 && !e.semRede && !e.tempoEsgotado && e.codigo !== 'TOKEN' && e.codigo !== 'SEM_ACESSO' && e.codigo !== 'PERFIL' &&
         (e.rede || e.temporario || TEMPORARIO.test(e.message)) && navigator.onLine;
       if (!repetir) throw e;
@@ -193,7 +201,12 @@
       throw new Error('O pedido ao servidor foi redirecionado e chegou incompleto (a URL do Apps Script precisa ser no formato https://script.google.com/macros/s/…/exec). Nada foi perdido: os dados continuam no aparelho.');
     }
     if (!j.ok) {
-      if (j.codigo === 'TOKEN') { localStorage.removeItem('id_token'); emitir('login'); }
+      if (j.codigo === 'TOKEN') {
+        localStorage.removeItem('sessao'); localStorage.removeItem('sessao_exp');
+        // a sessão do app venceu, mas o login do Google ainda vale: tenta de novo sem incomodar o usuário
+        if (String(token).indexOf('S1.') === 0 && Sync.token()) { const err = new Error('Sessão renovada'); err.renovar = true; throw err; }
+        localStorage.removeItem('id_token'); emitir('login');
+      }
       if (j.codigo === 'SEM_ACESSO') emitir('sem_acesso', { erro: j.erro });
       const err = new Error(j.erro || 'Erro no servidor');
       err.codigo = j.codigo;
@@ -207,6 +220,7 @@
     const j = await Sync.chamar('quemSou');
     if (!j.usuario) throw new Error('Resposta inesperada do servidor (quemSou).');
     Sync.versaoServidor = j.versao || 1;
+    if (j.sessao) { try { localStorage.setItem('sessao', j.sessao); localStorage.setItem('sessao_exp', String(Date.now() + 29 * 86400000)); } catch (e) { /* */ } }
     const u = Object.assign({}, Sync.usuarioLocal() || {}, j.usuario);
     localStorage.setItem('usuario', JSON.stringify(u));
     Sync.usuario = u;
@@ -453,6 +467,7 @@
         }
       }
       await DB.kvSet('servidorDesde', j.servidorAgora);
+      if (j.ultima) Sync._ultimaVista = Math.max(Sync._ultimaVista || 0, j.ultima);
       if (!j.mais) break;
       emitir('sincronizando', { detalhe: 'Recebendo dados… (' + total + ')' });
     }
@@ -505,6 +520,23 @@
     const b64 = await Foto.blobParaBase64(blob);
     return Sync.chamar('enviarArquivo', { nome, base64: b64, mime: blob.type });
   };
+
+  /* Aviso rápido de novidades: a cada 20 s (com o app aberto na tela) pergunta ao servidor se alguém gravou
+     algo; só então sincroniza. Assim o que um fiscal registra aparece nos outros celulares em segundos. */
+  Sync._ultimaVista = 0;
+  let semNovidades = false;
+  Sync.verificarNovidades = async function () {
+    if (semNovidades || emAndamento || !Sync.habilitado() || !navigator.onLine || (root.document && document.visibilityState !== 'visible')) return;
+    if (!Sync.token() || Sync.estado === 'login' || Sync.estado === 'sem_acesso') return; // nunca abre tela de login sozinho
+    try {
+      const j = await chamarUmaVez('novidades');
+      if (!Sync._ultimaVista) Sync._ultimaVista = j.ultima; // primeira consulta: a sincronização normal já acontece ao abrir
+      else if (j.ultima > Sync._ultimaVista) { Sync.log('novidades', 'Outro aparelho gravou dados — sincronizando'); Sync.sincronizar(); }
+    } catch (e) {
+      if (/desconhecida/i.test(e.message || '')) semNovidades = true; // servidor antigo: fica só com a sincronização a cada 5 min
+    }
+  };
+  setInterval(() => Sync.verificarNovidades(), 20000);
 
   root.addEventListener('online', () => { Sync.log('conexão', 'internet voltou'); Sync.sincronizar(); });
   // ao voltar para o app (iPhone/Android suspendem o app em segundo plano): sincroniza se já faz um tempo

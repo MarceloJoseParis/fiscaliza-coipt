@@ -250,7 +250,9 @@
     await carregarConfig();
     await repararConsistencia();
     const r = location.hash;
-    if (!document.querySelector('.modal-fundo') && !document.querySelector('.cam-overlay') && !/notificacao|editar|novo|config|visita|coleta|irregularidade/.test(r)) rotear();
+    if (document.querySelector('.modal-fundo') || document.querySelector('.cv')) return; // não mexe na tela com janela ou câmera abertas
+    if (!/notificacao|editar|novo|config|visita|coleta|irregularidade/.test(r)) rotear();
+    else if (App._atualizarTela) { try { await App._atualizarTela(); } catch (e) { /* */ } } // telas com edição: atualiza só as partes seguras
   };
 
   /* ================================================================== */
@@ -267,6 +269,7 @@
   }
 
   async function rotear() {
+    App._atualizarTela = null;
     if (App._sairNotif) { const f = App._sairNotif; App._sairNotif = null; try { await f(); } catch (e) { console.error(e); } }
     const partes = (location.hash || '#/contratos').slice(2).split('/');
     const [r, a, b] = partes;
@@ -1107,6 +1110,7 @@
 
     rc($main, cab, v.status !== 'concluida' ? gps : null, captura, boxPend, boxFotos, boxIrr, dados, acoes);
     await desenharFotos();
+    App._atualizarTela = () => (document.body.contains(boxFotos) ? desenharFotos() : null); // fotos de outros aparelhos aparecem sem sair da tela
     if (v.status !== 'concluida' && podeEd) {
       Foto.iniciarGPS();
       const off = Foto.onGPS((p, err) => {
@@ -1302,6 +1306,7 @@
       } }, '🗑 Excluir irregularidade')) : null,
       h('p', { class: 'dica' }, st === 'pendente' ? 'Irregularidades pendentes aparecem como opção nas notificações. Ao marcar como sanada, ela sai das opções de notificação e fica no histórico.' : 'Sanada: não aparece mais nas opções de notificação.'));
     rc($main, cab, acoes, hist);
+    App._atualizarTela = () => telaIrregularidade(id, visitaId);
   }
 
   async function escolherFoto(titulo, fundo) {
@@ -1797,7 +1802,7 @@
         h('div', {}, h('b', {}, u ? u.nome || u.email : '—'), ' ', h('span', { class: 'badge' }, { admin: 'Administrador', fiscal: 'Fiscal', consulta: 'Consulta' }[perfil()] || perfil())),
         h('div', { class: 'sub' }, u ? u.email : ''),
         h('div', { class: 'sub' }, 'Última sincronização: ' + (ult ? dataHoraBR(ult) : 'nunca')),
-        Sync.versaoServidor && Sync.versaoServidor < 4 ? h('div', { class: 'aviso', style: { marginTop: '8px' } }, '⚠️ O servidor (Code.gs) está numa versão antiga, sujeita a perda de sincronismo. O administrador deve colar o Code.gs novo no Apps Script e publicar como nova versão (Guia de publicação, Parte G).') : null,
+        Sync.versaoServidor && Sync.versaoServidor < 5 ? h('div', { class: 'aviso', style: { marginTop: '8px' } }, '⚠️ O servidor (Code.gs) está numa versão antiga, sujeita a perda de sincronismo. O administrador deve colar o Code.gs novo no Apps Script e publicar como nova versão (Guia de publicação, Parte G).') : null,
         Sync.estado === 'erro' ? h('div', { class: 'aviso', style: { marginTop: '8px' } }, Sync.erro) : null,
         Sync.estado === 'sem_acesso' ? h('div', { class: 'aviso', style: { marginTop: '8px' } }, 'Seu e-mail não está autorizado. Peça ao administrador para incluí-lo.') : null,
         !Sync.token() ? h('div', { class: 'sub', style: { marginTop: '8px' } }, 'Sessão expirada — entre novamente para sincronizar:') : null,
@@ -1825,7 +1830,7 @@
       for (const f of fotosSemDrive) if (!(await DB.blobGet(f.id))) semArquivo++;
       const log = Sync.lerLog().slice().reverse();
       const resumo = {
-        app: '2.9.3', servidor: Sync.versaoServidor || '?', usuario: (u || {}).email, perfil: perfil(), estado: Sync.estado, erro: Sync.erro || '',
+        app: '3.0', servidor: Sync.versaoServidor || '?', usuario: (u || {}).email, perfil: perfil(), estado: Sync.estado, erro: Sync.erro || '',
         online: navigator.onLine, ultimaSync: await DB.kvGet('ultimaSync', null), cursor: await DB.kvGet('servidorDesde', 0),
         pendentes: pendPor, fotosAguardandoEnvio: fotosSemDrive.length - semArquivo, fotosDeOutroAparelhoSemEnvio: semArquivo,
         aparelho: navigator.userAgent, log,
@@ -1993,7 +1998,7 @@
         pode.admin() ? h('button', { class: 'btn', onclick: importarBackup }, '⬆️ Importar') : null,
         pode.admin() ? h('button', { class: 'btn', onclick: carregarExemplos }, 'Carregar exemplos dos modelos') : null)));
 
-    cards.push(h('p', { class: 'dica', style: { textAlign: 'center' } }, 'Fiscalização de Obras · v2.9.3 · dados salvos no aparelho' + (Sync.habilitado() ? ' e no Google Drive do administrador' : '') + ' · ', h('a', { href: 'privacidade.html' }, 'Política de privacidade')));
+    cards.push(h('p', { class: 'dica', style: { textAlign: 'center' } }, 'Fiscalização de Obras · v3.0 · dados salvos no aparelho' + (Sync.habilitado() ? ' e no Google Drive do administrador' : '') + ' · ', h('a', { href: 'privacidade.html' }, 'Política de privacidade')));
     rc($main, ...cards);
   }
 
