@@ -207,12 +207,25 @@
   const chip = document.getElementById('chip-sync');
   const txtSync = document.getElementById('txt-sync');
   const TXT_ESTADO = { local: 'Neste aparelho', ok: 'Sincronizado', sincronizando: 'Sincronizando…', erro: 'Erro ao sincronizar', offline: 'Offline', login: 'Entrar', sem_acesso: 'Sem acesso' };
-  async function atualizarChip() {
+  // contar pendências lê o banco inteiro: no máximo a cada 3 s (o rótulo muda na hora)
+  let pendCache = 0, contagemEm = 0, timerContagem = null;
+  function desenharChip() {
     const st = Sync.habilitado() ? (navigator.onLine ? Sync.estado : 'offline') : 'local';
     chip.className = 'chip-sync ' + st;
+    const rot = st === 'offline' && navigator.onLine && Sync.habilitado() ? 'Sem conexão' : (TXT_ESTADO[st] || st);
+    txtSync.textContent = rot + (pendCache && st !== 'sincronizando' ? ' · ' + pendCache + ' pend.' : '');
+  }
+  async function contarPendentes() {
+    contagemEm = Date.now();
     let pend = 0;
-    if (Sync.habilitado()) for (const e of ['registros', 'pessoas', 'visitas', 'notificacoes', 'fotos', 'config']) pend += (await DB.all(e)).filter((o) => o._pendente).length;
-    txtSync.textContent = (TXT_ESTADO[st] || st) + (pend && st !== 'sincronizando' ? ' · ' + pend + ' pend.' : '');
+    try { if (Sync.habilitado()) for (const e of ['registros', 'pessoas', 'visitas', 'notificacoes', 'fotos', 'config']) pend += (await DB.all(e)).filter((o) => o._pendente).length; } catch (e) { /* */ }
+    pendCache = pend;
+    desenharChip();
+  }
+  function atualizarChip() {
+    desenharChip();
+    clearTimeout(timerContagem);
+    timerContagem = setTimeout(contarPendentes, Math.max(0, 3000 - (Date.now() - contagemEm)));
   }
   Sync.on(() => {
     atualizarChip();
@@ -223,7 +236,7 @@
   chip.addEventListener('click', () => {
     if (!Sync.habilitado()) { toast('Modo local: os dados ficam só neste aparelho. Veja Ajustes para ativar o compartilhamento.'); return; }
     if (Sync.estado === 'login' || !Sync.token()) { location.hash = '#/config'; return; }
-    if (Sync.estado === 'erro') toast(Sync.erro || 'Erro', true);
+    if ((Sync.estado === 'erro' || Sync.estado === 'offline') && Sync.erro) toast(Sync.erro, Sync.estado === 'erro');
     Sync.sincronizar();
   });
   let timerSync = null;
@@ -467,22 +480,31 @@
   /* Grava só os campos que o usuário mudou na tela (base = cópia de quando a tela abriu),
      aplicando-os sobre a versão mais recente guardada no aparelho (que pode ter chegado de outro celular). */
   async function salvarMudancas(store, base, editado) {
-    const atual = editado.id ? await DB.get(store, editado.id) : null;
-    if (!atual) return DB.salvar(store, editado, email());
+    if (!editado.id || !(await DB.get(store, editado.id))) return DB.salvar(store, editado, email());
     const chaves = new Set([...Object.keys(base || {}), ...Object.keys(editado)]);
-    for (const k of chaves) {
-      if (CAMPOS_SISTEMA.includes(k)) continue;
-      if (JSON.stringify((base || {})[k]) === JSON.stringify(editado[k])) continue;
-      if (editado[k] === undefined) delete atual[k]; else atual[k] = clonar(editado[k]);
-    }
-    return DB.salvar(store, atual, email());
+    return atualizarCampos(store, editado.id, (atual) => {
+      for (const k of chaves) {
+        if (CAMPOS_SISTEMA.includes(k)) continue;
+        if (JSON.stringify((base || {})[k]) === JSON.stringify(editado[k])) continue;
+        if (editado[k] === undefined) delete atual[k]; else atual[k] = clonar(editado[k]);
+      }
+    });
   }
   /* Lê a versão mais recente, altera e grava. */
   async function atualizarCampos(store, id, fn) {
-    const o = await DB.get(store, id);
-    if (!o) return null;
-    await fn(o);
-    return DB.salvar(store, o, email());
+    // leitura e gravação na mesma transação: uma sincronização no meio não é sobrescrita (fn não pode usar await)
+    const quem = email();
+    const r = await DB.atualizar(store, id, (o) => {
+      if (!o) return undefined;
+      fn(o);
+      o.atualizadoEm = DB.carimbo(o.atualizadoEm);
+      o.atualizadoPor = quem;
+      o._pendente = true;
+      return o;
+    });
+    if (!r) return null;
+    if (App.agendarSync) App.agendarSync();
+    return r;
   }
   async function salvarConfig(fn) {
     const o = (await DB.get('config', 'geral')) || clonar(CONFIG);
@@ -890,9 +912,11 @@
             campo('O que está irregular?', inputArea(edit, 'descricao', { placeholder: 'Ex.: Trincas no contrapiso do refeitório' }))),
           [{ txt: 'Não é irregularidade', valor: '__normal' },
             { txt: 'Salvar', cls: 'pri', valor: () => edit.descricao, antes: () => { if (!edit.descricao.trim()) { toast('Descreva a irregularidade (ou marque como foto normal).', true); return false; } } }]);
-          if (desc === '__normal') foto.irregular = false;
-          else if (desc) foto.descricao = desc.trim();
-          await DB.salvar('fotos', foto, email());
+          const salvo = await atualizarCampos('fotos', foto.id, (o) => {
+            if (desc === '__normal') o.irregular = false;
+            else if (desc) o.descricao = desc.trim();
+          });
+          if (salvo) Object.assign(foto, salvo);
         }
       } catch (e) {
         console.error(e);
@@ -1327,9 +1351,8 @@
       const sv = await salvarFotos([dado.foto], dado.origem, r, visita, { irregular: false });
       fotoV = sv[0] || null;
       if (fotoV) {
-        fotoV.verificacaoDe = f.id;
-        fotoV.descricao = (status === 'sanada' ? 'Correção: ' : 'Verificação: ') + dado.descricao.trim();
-        await DB.salvar('fotos', fotoV, email());
+        const desc = (status === 'sanada' ? 'Correção: ' : 'Verificação: ') + dado.descricao.trim();
+        fotoV = (await atualizarCampos('fotos', fotoV.id, (o) => { o.verificacaoDe = f.id; o.descricao = desc; })) || fotoV;
       }
     }
     const agora = new Date().toISOString();
@@ -1428,7 +1451,7 @@
         'Qual foi o número da última notificação já emitida para “' + r.apelido + '”? (Informe 0 se esta for a primeira.)', 0);
       if (n === null) { history.back(); return; }
       ordinal = n + 1;
-      if (pode.cadastro()) { r.ultima_notif_anterior = n; await DB.salvar('registros', r, email()); }
+      if (pode.cadastro()) await atualizarCampos('registros', r.id, (o) => { o.ultima_notif_anterior = n; });
     }
     // numero sequencial do setor
     const hoje = X.hojeISO();
@@ -1702,12 +1725,10 @@
       await salvar(true);
       const snap = Object.assign({}, r);
       for (const k of ['_pendente', 'atualizadoEm', 'atualizadoPor', 'criadoEm', 'criadoPor']) delete snap[k];
-      original.registroSnapshot = snap;
-      original.status = n.status = 'emitida';
-      original.emitidaEm = n.emitidaEm = new Date().toISOString();
-      original.emitidaPor = n.emitidaPor = email();
+      n.status = 'emitida'; n.emitidaEm = new Date().toISOString(); n.emitidaPor = email();
       sujo = false;
-      await DB.salvar('notificacoes', original, email());
+      const emit = await atualizarCampos('notificacoes', id, (o) => { o.registroSnapshot = snap; o.status = n.status; o.emitidaEm = n.emitidaEm; o.emitidaPor = n.emitidaPor; });
+      Object.assign(original, emit);
       App._sairNotif = null;
       await gerarDireto();
       await telaNotificacao(id);
@@ -1776,7 +1797,7 @@
         h('div', {}, h('b', {}, u ? u.nome || u.email : '—'), ' ', h('span', { class: 'badge' }, { admin: 'Administrador', fiscal: 'Fiscal', consulta: 'Consulta' }[perfil()] || perfil())),
         h('div', { class: 'sub' }, u ? u.email : ''),
         h('div', { class: 'sub' }, 'Última sincronização: ' + (ult ? dataHoraBR(ult) : 'nunca')),
-        Sync.versaoServidor && Sync.versaoServidor < 3 ? h('div', { class: 'aviso', style: { marginTop: '8px' } }, '⚠️ O servidor (Code.gs) está numa versão antiga, sujeita a perda de sincronismo. O administrador deve colar o Code.gs novo no Apps Script e publicar como nova versão (Guia de publicação, Parte G).') : null,
+        Sync.versaoServidor && Sync.versaoServidor < 4 ? h('div', { class: 'aviso', style: { marginTop: '8px' } }, '⚠️ O servidor (Code.gs) está numa versão antiga, sujeita a perda de sincronismo. O administrador deve colar o Code.gs novo no Apps Script e publicar como nova versão (Guia de publicação, Parte G).') : null,
         Sync.estado === 'erro' ? h('div', { class: 'aviso', style: { marginTop: '8px' } }, Sync.erro) : null,
         Sync.estado === 'sem_acesso' ? h('div', { class: 'aviso', style: { marginTop: '8px' } }, 'Seu e-mail não está autorizado. Peça ao administrador para incluí-lo.') : null,
         !Sync.token() ? h('div', { class: 'sub', style: { marginTop: '8px' } }, 'Sessão expirada — entre novamente para sincronizar:') : null,
@@ -1794,6 +1815,39 @@
       if (!Sync.token()) Sync.renderizarBotao(alvo);
     }
     cards.push(contaCard);
+
+    /* diagnostico */
+    if (Sync.habilitado()) {
+      const pendPor = {};
+      for (const e of ['registros', 'pessoas', 'visitas', 'notificacoes', 'fotos', 'config']) pendPor[e] = (await DB.all(e)).filter((o) => o._pendente).length;
+      const fotosSemDrive = (await DB.all('fotos')).filter((f) => !f.driveId && !f.excluido);
+      let semArquivo = 0;
+      for (const f of fotosSemDrive) if (!(await DB.blobGet(f.id))) semArquivo++;
+      const log = Sync.lerLog().slice().reverse();
+      const resumo = {
+        app: '2.8', servidor: Sync.versaoServidor || '?', usuario: (u || {}).email, perfil: perfil(), estado: Sync.estado, erro: Sync.erro || '',
+        online: navigator.onLine, ultimaSync: await DB.kvGet('ultimaSync', null), cursor: await DB.kvGet('servidorDesde', 0),
+        pendentes: pendPor, fotosAguardandoEnvio: fotosSemDrive.length - semArquivo, fotosDeOutroAparelhoSemEnvio: semArquivo,
+        aparelho: navigator.userAgent, log,
+      };
+      const txtDiag = JSON.stringify(resumo, null, 1);
+      cards.push(h('details', { class: 'card' },
+        h('summary', { style: { fontWeight: '600', cursor: 'pointer' } }, 'Diagnóstico da sincronização'),
+        h('div', { class: 'sub', style: { marginTop: '8px' } }, 'Pendentes neste aparelho: ' + (Object.entries(pendPor).filter((x) => x[1]).map(([k, v]) => v + ' ' + k).join(', ') || 'nenhum')),
+        h('div', { class: 'sub' }, 'Fotos aguardando envio: ' + resumo.fotosAguardandoEnvio + (semArquivo ? ' · ' + semArquivo + ' foto(s) registradas em outro aparelho ainda não enviadas por ele' : '')),
+        h('div', { class: 'sub' }, 'Servidor: versão ' + resumo.servidor + ' · estado: ' + (Sync.estado || '—')),
+        h('h3', {}, 'Últimos eventos'),
+        log.length ? h('div', { class: 'lista-log' }, log.slice(0, 15).map((x) => h('div', { class: 'sub', style: { borderBottom: '1px solid var(--linha)', padding: '4px 0' } },
+          h('b', {}, dataHoraBR(x.em) + ' · ' + x.tipo), ' — ', x.msg, x.extra ? h('div', { style: { fontSize: '11px', opacity: 0.8, wordBreak: 'break-word' } }, x.extra.slice(0, 200)) : null)))
+          : h('div', { class: 'sub' }, 'Nenhum problema registrado.'),
+        h('div', { class: 'acoes' },
+          h('button', { class: 'btn peq', onclick: async () => {
+            try { await navigator.clipboard.writeText(txtDiag); toast('Diagnóstico copiado — cole na conversa com o suporte'); }
+            catch (e) { baixarBlob(new Blob([txtDiag], { type: 'text/plain' }), 'diagnostico-sincronizacao.txt'); }
+          } }, '📋 Copiar diagnóstico'),
+          h('button', { class: 'btn peq', onclick: () => { Sync.limparLog(); telaConfig(); } }, 'Limpar eventos')),
+        h('p', { class: 'dica' }, 'Os erros do servidor também ficam na aba “log” da planilha.')));
+    }
 
     /* aparencia e camera */
     const seg = (opcoes, atual, aoEscolher) => {
@@ -1937,7 +1991,7 @@
         pode.admin() ? h('button', { class: 'btn', onclick: importarBackup }, '⬆️ Importar') : null,
         pode.admin() ? h('button', { class: 'btn', onclick: carregarExemplos }, 'Carregar exemplos dos modelos') : null)));
 
-    cards.push(h('p', { class: 'dica', style: { textAlign: 'center' } }, 'Fiscalização de Obras · v2.7 · dados salvos no aparelho' + (Sync.habilitado() ? ' e no Google Drive do administrador' : '') + ' · ', h('a', { href: 'privacidade.html' }, 'Política de privacidade')));
+    cards.push(h('p', { class: 'dica', style: { textAlign: 'center' } }, 'Fiscalização de Obras · v2.8 · dados salvos no aparelho' + (Sync.habilitado() ? ' e no Google Drive do administrador' : '') + ' · ', h('a', { href: 'privacidade.html' }, 'Política de privacidade')));
     rc($main, ...cards);
   }
 
@@ -2003,7 +2057,16 @@
         const zip = await JSZip.loadAsync(f);
         const j = JSON.parse(await zip.file('dados.json').async('string'));
         if (!(await confirmar('Importar ' + (j.dados.registros || []).length + ' cadastro(s) e ' + (j.dados.notificacoes || []).length + ' notificação(ões)? Itens com o mesmo identificador serão substituídos.', 'Importar'))) return;
-        for (const e of Object.keys(j.dados)) for (const o of j.dados[e]) { o._pendente = true; await DB.put(e, o); }
+        // não substitui o que já está mais novo no aparelho (senão o celular "voltaria no tempo")
+        let ignorados = 0;
+        for (const e of Object.keys(j.dados)) {
+          for (const o of j.dados[e]) {
+            const local = await DB.get(e, o.id);
+            if (local && (local.excluido || String(local.atualizadoEm || '') >= String(o.atualizadoEm || ''))) { ignorados++; continue; }
+            o._pendente = true; await DB.put(e, o);
+          }
+        }
+        if (ignorados) toast(ignorados + ' registro(s) do backup ignorados: o aparelho já tinha versão mais nova.');
         for (const name of Object.keys(zip.files)) {
           const m = /^fotos\/(.+)\.jpg$/.exec(name);
           if (m) await DB.blobSet(m[1], await zip.file(name).async('blob'));

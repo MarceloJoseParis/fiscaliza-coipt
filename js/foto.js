@@ -164,6 +164,8 @@
       }
     }
     const blob = await new Promise((res) => cv.toBlob(res, 'image/jpeg', opcoes.qualidade || 0.82));
+    // o iPhone pode devolver imagem vazia quando falta memória: melhor avisar agora do que ficar sem foto no Drive
+    if (!blob || !blob.size) throw new Error('Não foi possível gerar a imagem da foto (memória do aparelho). Feche outros apps e tente de novo.');
     // miniatura
     const tw = 240, th = Math.round(h * (tw / w));
     const cm = document.createElement('canvas');

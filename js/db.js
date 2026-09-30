@@ -20,21 +20,36 @@
         const fotos = rq.transaction.objectStore('fotos');
         if (!fotos.indexNames.contains('visitaId')) fotos.createIndex('visitaId', 'visitaId');
       };
-      rq.onsuccess = () => res(rq.result);
-      rq.onerror = () => rej(rq.error);
+      rq.onsuccess = () => {
+        const db = rq.result;
+        // o iPhone pode derrubar a conexão com o banco quando o app fica em segundo plano:
+        // esquece a conexão para reabrir na próxima operação (antes, tudo falhava até fechar o app)
+        const esquecer = () => { try { db.close(); } catch (e) { /* */ } dbp = null; };
+        db.onclose = esquecer;
+        db.onversionchange = esquecer;
+        res(db);
+      };
+      rq.onerror = () => { dbp = null; rej(rq.error || new Error('Não foi possível abrir o banco local.')); };
+      rq.onblocked = () => { dbp = null; rej(new Error('Banco local bloqueado por outra aba do app. Feche as outras abas e abra de novo.')); };
     });
     return dbp;
   }
 
-  function tx(store, mode, fn) {
+  function tx(store, mode, fn, tentativa) {
     return abrir().then((db) => new Promise((res, rej) => {
-      const t = db.transaction(store, mode);
+      let t;
+      try { t = db.transaction(store, mode); } catch (e) {
+        // conexão perdida (InvalidStateError): reabre e tenta uma vez
+        dbp = null;
+        if (!tentativa) { tx(store, mode, fn, 1).then(res, rej); return; }
+        rej(e); return;
+      }
       const os = t.objectStore(store);
       let out;
       Promise.resolve(fn(os)).then((v) => { out = v; });
       t.oncomplete = () => res(out);
-      t.onerror = () => rej(t.error);
-      t.onabort = () => rej(t.error);
+      t.onerror = (ev) => rej((ev && ev.target && ev.target.error) || t.error || new Error('Falha no banco local'));
+      t.onabort = () => rej(t.error || new Error('Operação no banco local cancelada'));
     }));
   }
   const req = (r) => new Promise((res, rej) => { r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); });
@@ -60,10 +75,33 @@
     return 'id-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 10);
   };
 
+  /* Lê e grava o mesmo registro numa única transação (ninguém grava no meio).
+     fn(atual) devolve o novo objeto, ou undefined para não gravar. Não use await dentro de fn. */
+  DB.atualizar = (store, id, fn) => tx(store, 'readwrite', (os) => new Promise((res, rej) => {
+    const g = os.get(id);
+    g.onerror = () => rej(g.error);
+    g.onsuccess = () => {
+      let novo;
+      try { novo = fn(g.result); } catch (e) { rej(e); return; }
+      if (novo === undefined) { res(g.result); return; }
+      const p = os.put(novo);
+      p.onsuccess = () => res(novo);
+      p.onerror = () => rej(p.error);
+    };
+  }));
+
+  /* Carimbo de alteração: nunca anterior ao da versão atual (relógio do celular atrasado não pode
+     fazer uma edição "perder" para a versão que ela mesma está alterando). */
+  DB.carimbo = function (anterior) {
+    const agora = Date.now();
+    const ant = Date.parse(anterior || '') || 0;
+    return new Date(Math.max(agora, ant + 1)).toISOString();
+  };
+
   /* Grava um registro sincronizavel (marca como pendente de envio) */
   DB.salvar = async function (store, obj, usuario) {
     obj.id = obj.id || DB.uuid();
-    const agora = new Date().toISOString();
+    const agora = DB.carimbo(obj.atualizadoEm);
     obj.criadoEm = obj.criadoEm || agora;
     obj.criadoPor = obj.criadoPor || usuario || '';
     obj.atualizadoEm = agora;
