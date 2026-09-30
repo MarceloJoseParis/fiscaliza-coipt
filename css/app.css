@@ -103,8 +103,8 @@ h3.sub { font-size: 11.5px; text-transform: uppercase; letter-spacing: .06em; fo
 .pend { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--alerta); margin-left: 6px; vertical-align: middle; }
 
 /* ============ Formularios ============ */
-label.campo { display: block; margin-bottom: 12px; }
-label.campo > span { display: block; font-size: 12.5px; color: var(--txt2); margin-bottom: 4px; font-weight: 500; }
+label.campo, .campo-bloco { display: block; margin-bottom: 12px; }
+label.campo > span, .campo-bloco > span { display: block; font-size: 12.5px; color: var(--txt2); margin-bottom: 4px; font-weight: 500; }
 input[type=text], input[type=number], input[type=date], input[type=time], input[type=email], input[type=url], input[type=search], select, textarea {
   width: 100%; padding: 10px 11px; border: 1px solid var(--linha); border-radius: 10px; background: var(--sup); outline: none; transition: border-color .15s, box-shadow .15s; }
 input:focus, select:focus, textarea:focus { border-color: var(--pri); box-shadow: 0 0 0 3px var(--pri-bg); }
@@ -196,29 +196,34 @@ details.card[open] > summary::before { content: '▾ '; }
 .seg button { flex: 1; border: 0; background: none; padding: 8px; border-radius: 8px; cursor: pointer; color: var(--txt2); font-weight: 500; }
 .seg button.ativo { background: var(--sup); color: var(--txt); box-shadow: 0 1px 2px rgba(0,0,0,.1); }
 
-/* ============ Camera do app ============ */
-.cam-overlay { position: fixed; inset: 0; z-index: 45; background: #000; color: #fff; display: flex; flex-direction: column; touch-action: none; user-select: none; }
-.cam-video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
-.cam-flash { position: absolute; inset: 0; background: #fff; opacity: 0; pointer-events: none; }
-.cam-flash.on { animation: camflash .25s ease-out; }
-@keyframes camflash { from { opacity: .7; } to { opacity: 0; } }
-.cam-topo { position: relative; display: flex; align-items: center; gap: 8px; padding: 10px 12px; padding-top: calc(10px + env(safe-area-inset-top)); background: linear-gradient(rgba(0,0,0,.55), transparent); }
-.cam-titulo { flex: 1; text-align: center; font-size: 13px; font-weight: 600; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; opacity: .9; }
-.cam-bt { border: 0; border-radius: 999px; background: rgba(0,0,0,.45); color: #fff; padding: 8px 13px; font-size: 14px; cursor: pointer; backdrop-filter: blur(6px); }
-.cam-bt.ativo { background: #facc15; color: #000; }
-.cam-msg { position: relative; margin: 8px auto 0; background: rgba(0,0,0,.6); padding: 6px 12px; border-radius: 999px; font-size: 13px; opacity: 0; transition: opacity .3s; pointer-events: none; }
-.cam-zoom { position: absolute; left: 0; right: 0; bottom: calc(132px + env(safe-area-inset-bottom)); display: flex; justify-content: center; gap: 8px; }
-.cam-zoom button { width: 44px; height: 44px; border-radius: 50%; border: 0; background: rgba(0,0,0,.5); color: #fff; font-size: 13px; font-weight: 600; cursor: pointer; }
-.cam-zoom button.ativo { background: rgba(255,255,255,.92); color: #000; }
-.cam-lentes { position: absolute; left: 0; right: 0; bottom: calc(184px + env(safe-area-inset-bottom)); display: flex; justify-content: center; gap: 6px; flex-wrap: wrap; padding: 0 12px; }
-.cam-lentes button { border: 0; border-radius: 999px; background: rgba(0,0,0,.5); color: #fff; font-size: 12px; padding: 6px 11px; cursor: pointer; }
-.cam-lentes button.ativo { background: rgba(255,255,255,.92); color: #000; }
-.cam-base { position: absolute; left: 0; right: 0; bottom: 0; display: flex; align-items: center; justify-content: space-between; padding: 16px 20px; padding-bottom: calc(22px + env(safe-area-inset-bottom)); background: linear-gradient(transparent, rgba(0,0,0,.6)); }
-.cam-esq { width: 84px; display: flex; flex-direction: column; align-items: center; gap: 4px; }
-.cam-thumb { width: 52px; height: 52px; border-radius: 12px; border: 2px solid #fff; background: #222 center/cover no-repeat; }
-.cam-cont { font-size: 11.5px; text-align: center; }
-.cam-disparo { width: 76px; height: 76px; border-radius: 50%; border: 4px solid #fff; background: rgba(255,255,255,.3); cursor: pointer; }
-.cam-disparo:active { background: #fff; transform: scale(.94); }
-.cam-irr { width: 84px; display: flex; flex-direction: column; align-items: center; gap: 2px; background: #dc2626; font-size: 19px; border-radius: 16px; padding: 8px 4px; }
-.cam-irr span { font-size: 11px; }
-.cam-foco { position: absolute; width: 70px; height: 70px; margin: -35px 0 0 -35px; border: 2px solid #facc15; border-radius: 12px; pointer-events: none; opacity: 0; transition: opacity .4s; }
+/* ============ Camera do app (visual de camera nativa) ============ */
+.cv { position: fixed; inset: 0; z-index: 45; background: #000; color: #fff; display: flex; flex-direction: column; user-select: none; -webkit-user-select: none; }
+.cv-topo { height: calc(56px + env(safe-area-inset-top)); padding: env(safe-area-inset-top) 10px 0; display: flex; align-items: center; gap: 6px; flex: none; }
+.cv-topo-dir { display: flex; gap: 4px; }
+.cv-cont { flex: 1; text-align: center; font-size: 13px; font-weight: 500; opacity: .85; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.cv-ic { width: 42px; height: 42px; border: 0; border-radius: 50%; background: transparent; color: #fff; display: grid; place-items: center; cursor: pointer; padding: 0; }
+.cv-ic svg { width: 24px; height: 24px; }
+.cv-ic.ativo { color: #facc15; }
+.cv-ic-grande { width: 52px; height: 52px; background: rgba(255,255,255,.14); }
+.cv-ic-grande svg { width: 26px; height: 26px; }
+.cv-visor { position: relative; width: 100%; aspect-ratio: 3 / 4; max-height: calc(100vh - 56px - 170px - env(safe-area-inset-top) - env(safe-area-inset-bottom)); margin: 0 auto; overflow: hidden; background: #111; flex: none; touch-action: none; }
+.cv-video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+.cv-flash { position: absolute; inset: 0; background: #000; opacity: 0; pointer-events: none; }
+.cv-flash.on { animation: cvflash .18s ease-out; }
+@keyframes cvflash { from { opacity: .85; } to { opacity: 0; } }
+.cv-foco { position: absolute; width: 64px; height: 64px; margin: -32px 0 0 -32px; border: 1.5px solid #fff; border-radius: 50%; pointer-events: none; opacity: 0; }
+.cv-foco.on { animation: cvfoco .9s ease-out; }
+@keyframes cvfoco { 0% { opacity: 1; transform: scale(1.3); } 30% { transform: scale(1); } 80% { opacity: 1; } 100% { opacity: 0; } }
+.cv-zoom { position: absolute; left: 50%; bottom: 14px; transform: translateX(-50%); display: flex; gap: 6px; padding: 4px; border-radius: 999px; background: rgba(0,0,0,.35); }
+.cv-zoom:empty { display: none; }
+.cv-zoom button { min-width: 34px; height: 34px; border-radius: 999px; border: 0; background: rgba(0,0,0,.45); color: #fff; font-size: 12px; font-weight: 600; cursor: pointer; padding: 0 6px; }
+.cv-zoom button.ativo { background: rgba(0,0,0,.6); color: #facc15; min-width: 44px; height: 38px; font-size: 13px; }
+.cv-msg { position: absolute; left: 50%; top: calc(70px + env(safe-area-inset-top)); transform: translateX(-50%); background: rgba(0,0,0,.6); padding: 6px 14px; border-radius: 999px; font-size: 13px; opacity: 0; transition: opacity .3s; pointer-events: none; white-space: nowrap; }
+.cv-modos { flex: none; display: flex; justify-content: center; gap: 22px; padding: 14px 0 4px; font-size: 13px; font-weight: 600; letter-spacing: .04em; color: rgba(255,255,255,.55); }
+.cv-modos .ativo { color: #facc15; }
+.cv-base { flex: 1; min-height: 110px; display: flex; align-items: center; justify-content: space-around; padding: 6px 24px calc(14px + env(safe-area-inset-bottom)); }
+.cv-thumb { position: relative; width: 52px; height: 52px; border-radius: 50%; border: 2px solid rgba(255,255,255,.85); background: #1c1c1c center/cover no-repeat; cursor: pointer; padding: 0; }
+.cv-badge { display: none; position: absolute; top: -6px; right: -8px; min-width: 22px; height: 22px; padding: 0 5px; border-radius: 999px; background: #fff; color: #000; font-size: 12px; font-weight: 700; place-items: center; }
+.cv-disparo { width: 78px; height: 78px; border-radius: 50%; border: 4px solid #fff; background: transparent; padding: 4px; cursor: pointer; }
+.cv-disparo span { display: block; width: 100%; height: 100%; border-radius: 50%; background: #fff; transition: transform .1s; }
+.cv-disparo:active span, .cv-disparo.ocupado span { transform: scale(.86); background: #ddd; }

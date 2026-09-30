@@ -79,6 +79,14 @@
   function campo(rotulo, input, dica) {
     return h('label', { class: 'campo' }, h('span', {}, rotulo), input, dica ? h('div', { class: 'dica' }, dica) : null);
   }
+  /* campo sem <label>: necessario quando o conteudo tem varios botoes (um <label> repassa o clique ao 1o botao) */
+  function campoBloco(rotulo, conteudo, dica) {
+    return h('div', { class: 'campo-bloco' }, h('span', {}, rotulo), conteudo, dica ? h('div', { class: 'dica' }, dica) : null);
+  }
+  /* campo sem <label>: necessario quando ha varios botoes (um <label> repassa o clique ao 1o botao) */
+  function campoBloco(rotulo, conteudo, dica) {
+    return h('div', { class: 'campo-bloco' }, h('span', {}, rotulo), conteudo, dica ? h('div', { class: 'dica' }, dica) : null);
+  }
   function inputTxt(obj, chave, attrs) {
     return h('input', Object.assign({ type: 'text', value: obj[chave] == null ? '' : obj[chave], oninput: (e) => { obj[chave] = e.target.value; } }, attrs || {}));
   }
@@ -764,7 +772,6 @@
           const res = await Camera.abrir({
             titulo: 'Visita nº ' + v0.numero + ' · ' + r.apelido,
             aoFoto: (blob) => { fila = fila.then(() => salvarFotos([blob], 'camera', r, v0, { irregular: false })).then((sv) => { nFotos += sv.length; }); return fila; },
-            aoIrregularidade: async (blob) => { await fila; const sv = await salvarFotos([blob], 'camera', r, v0, { irregular: true }); nFotos += sv.length; nIrr += sv.filter((x) => x.irregular).length; },
           });
           await fila;
           if (res && res.aparelho) {
@@ -800,7 +807,7 @@
         h('button', { class: 'btn peq', onclick: () => disparar(false, true) }, '🖼️ Galeria'),
         h('button', { class: 'btn peq', onclick: () => disparar(true, true) }, '🖼️ Irregularidade da galeria')),
       h('label', { class: 'linha sub', style: { marginTop: '8px' } }, chkGal, ' Carimbar data/hora/GPS nas fotos da galeria'),
-      h('div', { class: 'dica' }, 'Câmera: fica aberta para várias fotos seguidas; dentro dela, o botão ⚠️ registra uma irregularidade e volta para a câmera. Fotos normais não pedem descrição.'),
+      h('div', { class: 'dica' }, 'Câmera: fica aberta para várias fotos seguidas, sem pedir descrição. Para irregularidades use o botão ⚠️ Irregularidade.'),
       status, inpCam, inpGal) : null;
 
     /* --- fotos --- */
@@ -1519,9 +1526,9 @@
     let temaAtual = 'auto'; try { temaAtual = localStorage.getItem('tema') || 'auto'; } catch (e) { /* */ }
     let rapida = false; try { rapida = localStorage.getItem('cam_rapida') === '1'; } catch (e) { /* */ }
     cards.push(h('div', { class: 'card' }, h('h2', {}, 'Aparência e câmera'),
-      campo('Tema', seg([['auto', 'Automático'], ['claro', 'Claro'], ['escuro', 'Escuro']], temaAtual, aplicarTema)),
-      campo('Câmera nas visitas', seg([['app', 'Câmera do app'], ['aparelho', 'Câmera do celular']], prefCamera(), (v) => { try { localStorage.setItem('camera_pref', v); } catch (e) { /* */ } }),
-        'Câmera do app: fica aberta para várias fotos seguidas, com troca de lente (grande angular quando o celular permite), zoom 0,5x/1x/2x, toque para focar e lanterna. O botão 📱 dentro dela abre a câmera do celular para uma foto. Câmera do celular: todos os recursos do aparelho, uma foto por vez.'),
+      campoBloco('Tema', seg([['auto', 'Automático'], ['claro', 'Claro'], ['escuro', 'Escuro']], temaAtual, aplicarTema)),
+      campoBloco('Câmera nas visitas', seg([['app', 'Câmera do app'], ['aparelho', 'Câmera do celular']], prefCamera(), (v) => { try { localStorage.setItem('camera_pref', v); } catch (e) { /* */ } }),
+        'Câmera do app: fica aberta para várias fotos seguidas, com troca de lente (grande angular quando o celular permite), zoom, toque para focar e flash. Câmera do celular: todos os recursos do aparelho, uma foto por vez.'),
       h('label', { class: 'linha sub' }, h('input', { type: 'checkbox', checked: rapida ? 'checked' : null, onchange: (e) => { try { localStorage.setItem('cam_rapida', e.target.checked ? '1' : '0'); } catch (er) { /* */ } } }),
         'Captura rápida (usa o quadro do vídeo, resolução menor)')));
 
