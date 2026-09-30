@@ -45,11 +45,12 @@
         rej(e); return;
       }
       const os = t.objectStore(store);
-      let out;
-      Promise.resolve(fn(os)).then((v) => { out = v; });
-      t.oncomplete = () => res(out);
-      t.onerror = (ev) => rej((ev && ev.target && ev.target.error) || t.error || new Error('Falha no banco local'));
-      t.onabort = () => rej(t.error || new Error('Operação no banco local cancelada'));
+      let out, erroFn = null;
+      // erro dentro da operação: cancela a transação e avisa quem chamou (antes o erro sumia e parecia "salvo")
+      Promise.resolve(fn(os)).then((v) => { out = v; }, (e) => { erroFn = e || new Error('Falha no banco local'); try { t.abort(); } catch (x) { /* já terminou */ } });
+      t.oncomplete = () => (erroFn ? rej(erroFn) : res(out));
+      t.onerror = (ev) => rej(erroFn || (ev && ev.target && ev.target.error) || t.error || new Error('Falha no banco local'));
+      t.onabort = () => rej(erroFn || t.error || new Error('Operação no banco local cancelada'));
     }));
   }
   const req = (r) => new Promise((res, rej) => { r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); });
@@ -98,16 +99,43 @@
     return new Date(Math.max(agora, ant + 1)).toISOString();
   };
 
+  /* Controle por campo: enquanto um registro está pendente, guarda QUAIS campos foram alterados neste
+     aparelho (_campos: campo -> hora da alteração) e o valor que tinham antes (_base, em JSON).
+     Assim, se outro aparelho alterou OUTROS campos do mesmo registro, as duas alterações são mantidas
+     (antes, a versão inteira mais nova vencia e a outra alteração se perdia). */
+  const SISTEMA = new Set(['id', 'atualizadoEm', 'atualizadoPor', 'criadoEm', 'criadoPor', '_pendente', '_campos', '_base']);
+  const js = (v) => String(JSON.stringify(v));
+  DB.CAMPOS_LOCAIS = ['_pendente', '_campos', '_base'];
+  DB.marcarCampos = function (antes, depois, quando) {
+    if (!antes || !depois) return depois;
+    if (antes._pendente && !antes._campos) { delete depois._campos; delete depois._base; return depois; } // pendente de versão antiga: sem controle
+    const campos = Object.assign({}, antes._pendente ? antes._campos : null);
+    const base = Object.assign({}, antes._pendente ? antes._base : null);
+    for (const k of new Set([...Object.keys(antes), ...Object.keys(depois)])) {
+      if (SISTEMA.has(k)) continue;
+      const a = js(antes[k]);
+      if (a === js(depois[k])) continue;
+      if (!(k in campos)) base[k] = a;
+      campos[k] = quando;
+    }
+    depois._campos = campos; depois._base = base;
+    return depois;
+  };
+
   /* Grava um registro sincronizavel (marca como pendente de envio) */
   DB.salvar = async function (store, obj, usuario) {
     obj.id = obj.id || DB.uuid();
-    const agora = DB.carimbo(obj.atualizadoEm);
-    obj.criadoEm = obj.criadoEm || agora;
-    obj.criadoPor = obj.criadoPor || usuario || '';
-    obj.atualizadoEm = agora;
-    obj.atualizadoPor = usuario || '';
-    obj._pendente = true;
-    await DB.put(store, obj);
+    await DB.atualizar(store, obj.id, (antes) => {
+      const ref = antes && String(antes.atualizadoEm || '') > String(obj.atualizadoEm || '') ? antes.atualizadoEm : obj.atualizadoEm;
+      const agora = DB.carimbo(ref);
+      obj.criadoEm = obj.criadoEm || agora;
+      obj.criadoPor = obj.criadoPor || usuario || '';
+      obj.atualizadoEm = agora;
+      obj.atualizadoPor = usuario || '';
+      if (antes) DB.marcarCampos(antes, obj, agora); else { delete obj._campos; delete obj._base; }
+      obj._pendente = true;
+      return obj;
+    });
     if (root.App && App.agendarSync) App.agendarSync();
     return obj;
   };

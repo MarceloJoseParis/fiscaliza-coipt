@@ -113,9 +113,10 @@
     }
     return new Promise((res, rej) => {
       const img = new Image();
-      img.onload = () => res(img);
-      img.onerror = () => rej(new Error('Não foi possível ler a imagem.'));
-      img.src = URL.createObjectURL(blob);
+      const u = URL.createObjectURL(blob);
+      img.onload = () => { URL.revokeObjectURL(u); res(img); };
+      img.onerror = () => { URL.revokeObjectURL(u); rej(new Error('Não foi possível ler a imagem.')); };
+      img.src = u;
     });
   }
 

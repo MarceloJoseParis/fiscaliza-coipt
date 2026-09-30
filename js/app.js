@@ -157,10 +157,14 @@
       let m = /(\d{1,2})\/(\d{1,2})\/(\d{4})/.exec(t);
       if (m) set.add(m[3] + '-' + m[2].padStart(2, '0') + '-' + m[1].padStart(2, '0'));
       else if ((m = /\d{4}-\d{2}-\d{2}/.exec(t))) set.add(m[0]);
+      else if ((m = /(\d{1,2})\/(\d{1,2})\/(\d{2})\b/.exec(t))) set.add('20' + m[3] + '-' + m[2].padStart(2, '0') + '-' + m[1].padStart(2, '0'));
+      else if ((m = /(\d{1,2})\/(\d{1,2})(?!\/?\d)/.exec(t))) set.add(m[2].padStart(2, '0') + '-' + m[1].padStart(2, '0')); // "25/12": todo ano
     });
     return set;
   }
-  function ehDiaUtil(d, fer) { const w = d.getDay(); return w !== 0 && w !== 6 && !fer.has(isoDe(d)); }
+  function ehDiaUtil(d, fer) { const w = d.getDay(), iso = isoDe(d); return w !== 0 && w !== 6 && !fer.has(iso) && !fer.has(iso.slice(5)); }
+  /* prazo final sempre recalculado (um feriado cadastrado depois do envio passa a contar) */
+  const prazoDe = (n) => (n.enviadaEm ? prazoFinalUteis(n.enviadaEm, n.prazoDiasEnvio || n.prazo_dias) : n.prazoFinal);
   function prazoFinalUteis(isoEnvio, dias) {
     const fer = feriados();
     const d = new Date(String(isoEnvio).slice(0, 10) + 'T12:00:00');
@@ -183,10 +187,10 @@
     if (n.status !== 'emitida') return { k: 'rascunho', txt: 'Rascunho', cls: 'alerta', ordem: 4 };
     if (!n.enviadaEm) return { k: 'nao_enviada', txt: 'Emitida · não enviada', cls: 'info', ordem: 2 };
     if (n.respondidaEm) {
-      const atraso = n.prazoFinal && n.respondidaEm > n.prazoFinal;
+      const atraso = prazoDe(n) && n.respondidaEm > prazoDe(n);
       return { k: 'respondida', txt: 'Respondida em ' + X.dataBR(n.respondidaEm) + (atraso ? ' (fora do prazo)' : ''), cls: 'ok', ordem: 3 };
     }
-    const pf = n.prazoFinal || prazoFinalUteis(n.enviadaEm, n.prazoDiasEnvio || n.prazo_dias);
+    const pf = prazoDe(n);
     const r = uteisRestantes(pf);
     if (r < 0) return { k: 'vencida', txt: 'Prazo encerrado em ' + X.dataBR(pf) + ' (há ' + -r + (r === -1 ? ' dia)' : ' dias)'), cls: 'perigo', ordem: 0, restante: r };
     return { k: 'aguardando', txt: r === 0 ? 'Prazo termina hoje' : r === 1 ? 'Falta 1 dia útil' : 'Faltam ' + r + ' dias úteis', cls: r <= 1 ? 'alerta' : 'info', ordem: 1, restante: r };
@@ -326,15 +330,35 @@
     atualizarChip();
     if (!Sync.habilitado()) return;
     clearTimeout(timerSync);
+    Sync._atividade = Date.now(); // há movimento: procura novidades dos colegas com mais frequência
     timerSync = setTimeout(() => Sync.sincronizar(), 2500);
   };
+  /* Dados novos de outro aparelho: redesenha a tela sem voltar ao topo, sem apagar o que foi digitado na
+     busca e sem fechar o teclado (se o usuário estiver digitando, espera ele terminar). */
+  let redesenhoPendente = false;
+  function redesenharMantendo() {
+    const ativo = document.activeElement;
+    if (ativo && $main.contains(ativo) && /^(INPUT|TEXTAREA|SELECT)$/.test(ativo.tagName)) {
+      if (!redesenhoPendente) { redesenhoPendente = true; ativo.addEventListener('blur', () => { redesenhoPendente = false; setTimeout(redesenharMantendo, 300); }, { once: true }); }
+      return;
+    }
+    const hash = location.hash, y = window.scrollY;
+    const buscas = [...$main.querySelectorAll('input[type=search]')].map((i) => i.value);
+    manterRolagem = true;
+    Promise.resolve(rotear()).finally(() => {
+      manterRolagem = false;
+      if (location.hash !== hash) return;
+      $main.querySelectorAll('input[type=search]').forEach((i, k) => { if (buscas[k] && !i.value) { i.value = buscas[k]; i.dispatchEvent(new Event('input')); } });
+      window.scrollTo(0, y);
+    });
+  }
   App.aoReceberDados = async function () {
     await carregarConfig();
     await repararConsistencia();
     verificarPrazos();
     const r = location.hash;
     if (document.querySelector('.modal-fundo') || document.querySelector('.cv')) return; // não mexe na tela com janela ou câmera abertas
-    if (!/notificacao|editar|novo|config|visita|coleta|irregularidade/.test(r)) rotear();
+    if (!/notificacao|editar|novo|config|visita|coleta|irregularidade/.test(r)) redesenharMantendo();
     else if (App._atualizarTela) { try { await App._atualizarTela(); } catch (e) { /* */ } } // telas com edição: atualiza só as partes seguras
   };
 
@@ -351,13 +375,21 @@
     document.querySelectorAll('#nav a').forEach((a) => a.classList.toggle('ativo', a.dataset.r === r));
   }
 
+  /* Cada navegação recebe um número. Uma tela lenta que termina depois de o usuário ter ido para outra
+     não desenha por cima da nova (nem liga temporizadores): rcT lança RotaVelha e ela para ali. */
+  let rotaSeq = 0, manterRolagem = false;
+  function rcT(tk, ...k) {
+    if (tk !== rotaSeq) { const e = new Error('rota antiga'); e.rotaVelha = true; throw e; }
+    return rc($main, ...k);
+  }
   async function rotear() {
+    rotaSeq++;
     App._atualizarTela = null;
     if (App._sairTela) { const f = App._sairTela; App._sairTela = null; try { f(); } catch (e) { console.error(e); } }
     if (App._sairNotif) { const f = App._sairNotif; App._sairNotif = null; try { await f(); } catch (e) { console.error(e); } }
     const partes = (location.hash || '#/contratos').slice(2).split('/');
     const [r, a, b] = partes;
-    window.scrollTo(0, 0);
+    if (!manterRolagem) window.scrollTo(0, 0);
     document.querySelectorAll('.fab').forEach((f) => f.remove());
     if (Sync.habilitado() && !App.usuario() && r !== 'config') return telaLogin();
     if (Sync.habilitado() && Sync.estado === 'sem_acesso' && r !== 'config') return telaLogin(Sync.erro);
@@ -376,6 +408,7 @@
       if (r === 'config') { marcarNav('config'); return await telaConfig(a); }
       location.hash = '#/contratos';
     } catch (e) {
+      if (e && e.rotaVelha) return;
       console.error(e);
       rc($main, h('div', { class: 'card' }, h('h2', {}, 'Ocorreu um erro'), h('p', {}, e.message)));
     }
@@ -437,6 +470,7 @@
   /* Lista de contratos / convenios                                      */
   /* ================================================================== */
   async function telaLista(tipo) {
+    const tk = rotaSeq; // a tela desiste se o usuário já foi para outra
     titulo(PLURAL[tipo]);
     const regs = (await DB.listar('registros', (r) => r.tipo === tipo)).sort((a, b) => String(a.apelido || '').localeCompare(b.apelido || ''));
     const notifs = await DB.listar('notificacoes');
@@ -471,7 +505,7 @@
     };
     busca.addEventListener('input', desenhar);
     desenhar();
-    rc($main, h('div', { class: 'linha-busca' }, busca, filtroSt), lista);
+    rcT(tk, h('div', { class: 'linha-busca' }, busca, filtroSt), lista);
     if (pode.cadastro() && location.hash.indexOf(tipo === 'convenio' ? 'convenios' : 'contratos') >= 0 || (pode.cadastro() && tipo === 'contrato' && !location.hash)) document.body.appendChild(h('button', { class: 'fab', title: 'Novo', onclick: () => { location.hash = '#/novo/' + tipo; } }, '+'));
   }
 
@@ -484,8 +518,9 @@
   }
 
   async function telaRegistro(id) {
+    const tk = rotaSeq; // a tela desiste se o usuário já foi para outra
     const r = await DB.get('registros', id);
-    if (!r || r.excluido) { rc($main, h('div', { class: 'vazio' }, 'Cadastro não encontrado.')); return; }
+    if (!r || r.excluido) { rcT(tk, h('div', { class: 'vazio' }, 'Cadastro não encontrado.')); return; }
     titulo(r.apelido || ROTULO[r.tipo], true);
     marcarNav(r.tipo === 'convenio' ? 'convenios' : 'contratos');
     const notifs = await notificacoesDe(id);
@@ -539,7 +574,7 @@
         h('span', { class: 'badge ' + (n.status === 'emitida' ? 'emit' : 'rasc') }, n.status === 'emitida' ? 'Emitida' : 'Rascunho'),
         h('div', { class: 't' }, (n.ordinal || '?') + 'ª Notificação', n._pendente ? h('span', { class: 'pend' }) : null),
         h('div', { class: 'd' }, 'Nº ' + (n.numero || '—') + ' · ' + X.dataBR(n.data)),
-        n.status === 'emitida' ? h('div', { class: 'etqs' }, etq(situacaoNotif(n).txt, situacaoNotif(n).cls), n.prazoFinal && !n.respondidaEm ? etq('prazo até ' + X.dataBR(n.prazoFinal), '') : null) : null,
+        n.status === 'emitida' ? h('div', { class: 'etqs' }, etq(situacaoNotif(n).txt, situacaoNotif(n).cls), n.enviadaEm && !n.respondidaEm ? etq('prazo até ' + X.dataBR(prazoDe(n)), '') : null) : null,
         h('div', { class: 'd' }, (n.itens && n.itens.length ? n.itens.length + ' item(ns) · ' : '') + ((n.fotos || []).length) + ' foto(s) · por ' + (n.criadoPor || '—'))))
         : [h('div', { class: 'vazio' }, 'Nenhuma notificação registrada no app para este ' + ROTULO[r.tipo].toLowerCase() + '.',
           r.ultima_notif_anterior ? h('div', { class: 'sub' }, 'Notificações emitidas antes do app: ' + r.ultima_notif_anterior) : null)]));
@@ -547,19 +582,21 @@
       ap(conteudo, gradeFotos(fotos, { onclick: (f) => abrirFoto(f, () => telaRegistro(id)) }));
       if (!fotos.length) ap(conteudo, h('div', { class: 'vazio' }, 'Nenhuma foto coletada.'));
     }
-    rc($main, cab, r.tipo === 'convenio' ? cartaoFilaConvenio(r) : null, abas, conteudo);
+    rcT(tk, cab, r.tipo === 'convenio' ? cartaoFilaConvenio(r) : null, abas, conteudo);
   }
 
   /* ---------------- fotos ---------------- */
   const cacheUrls = new Map();
   async function urlFoto(f, grande) {
     if (!grande && f.miniatura) return f.miniatura;
-    if (cacheUrls.has(f.id)) return cacheUrls.get(f.id);
+    if (cacheUrls.has(f.id)) { const u = cacheUrls.get(f.id); cacheUrls.delete(f.id); cacheUrls.set(f.id, u); return u; }
     let blob = await DB.blobGet(f.id);
     if (!blob && grande && Sync.habilitado() && navigator.onLine) { try { blob = await Sync.baixarFoto(f); } catch (e) { /* */ } }
     if (!blob) return f.miniatura || '';
     const u = URL.createObjectURL(blob);
     cacheUrls.set(f.id, u);
+    // guarda só as 30 últimas fotos grandes abertas (antes ficavam todas na memória até fechar o app)
+    while (cacheUrls.size > 30) { const [k, v] = cacheUrls.entries().next().value; cacheUrls.delete(k); setTimeout(() => URL.revokeObjectURL(v), 60000); }
     return u;
   }
 
@@ -581,7 +618,7 @@
   }
 
   /* ---------------- gravação sem apagar alterações de outros aparelhos ---------------- */
-  const CAMPOS_SISTEMA = ['id', '_pendente', 'atualizadoEm', 'atualizadoPor', 'criadoEm', 'criadoPor'];
+  const CAMPOS_SISTEMA = ['id', '_pendente', '_campos', '_base', 'atualizadoEm', 'atualizadoPor', 'criadoEm', 'criadoPor'];
   const clonar = (o) => (o === undefined ? undefined : JSON.parse(JSON.stringify(o)));
   /* Grava só os campos que o usuário mudou na tela (base = cópia de quando a tela abriu),
      aplicando-os sobre a versão mais recente guardada no aparelho (que pode ter chegado de outro celular). */
@@ -602,9 +639,11 @@
     const quem = email();
     const r = await DB.atualizar(store, id, (o) => {
       if (!o) return undefined;
+      const antes = JSON.parse(JSON.stringify(o));
       fn(o);
       o.atualizadoEm = DB.carimbo(o.atualizadoEm);
       o.atualizadoPor = quem;
+      DB.marcarCampos(antes, o, o.atualizadoEm);
       o._pendente = true;
       return o;
     });
@@ -613,7 +652,12 @@
     return r;
   }
   async function salvarConfig(fn) {
-    const o = (await DB.get('config', 'geral')) || clonar(CONFIG);
+    let o = await DB.get('config', 'geral');
+    if (!o) {
+      // aparelho novo que ainda não recebeu os ajustes da equipe: gravar agora apagaria os ajustes de todos
+      if (Sync.habilitado() && !(await DB.kvGet('ultimaSync', null))) throw new Error('Aguarde a primeira sincronização deste aparelho: os ajustes da equipe ainda não chegaram.');
+      o = clonar(CONFIG);
+    }
     await fn(o);
     await DB.salvar('config', o, email());
     return carregarConfig();
@@ -820,6 +864,7 @@
   }
 
   async function telaFormRegistro(id, tipoNovo) {
+    const tk = rotaSeq; // a tela desiste se o usuário já foi para outra
     if (!pode.cadastro()) { toast('Apenas administradores editam cadastros.', true); history.back(); return; }
     const existente = id ? await DB.get('registros', id) : null;
     const baseReg = existente ? clonar(existente) : null;
@@ -931,7 +976,7 @@
           location.replace('#/' + (tipo === 'convenio' ? 'convenios' : 'contratos'));
         }
       } }, 'Excluir') : null));
-    rc($main, secDados, secNotificada, secAss, secSanc, secPad, acoes);
+    rcT(tk, secDados, secNotificada, secAss, secSanc, secPad, acoes);
   }
 
   /* ================================================================== */
@@ -944,6 +989,7 @@
   const CLIMAS = ['', 'Ensolarado', 'Parcialmente nublado', 'Nublado', 'Chuvoso', 'Chuva forte', 'Após chuva (solo úmido)'];
 
   async function telaColeta(registroId) {
+    const tk = rotaSeq; // a tela desiste se o usuário já foi para outra
     if (!registroId) {
       titulo('Visita à obra');
       const regs = (await DB.listar('registros')).sort((a, b) => String(a.apelido).localeCompare(b.apelido));
@@ -951,7 +997,7 @@
       const andamento = (await DB.listar('visitas', (v) => v.status !== 'concluida' && v.criadoPor === email()));
       const bloco = (lista) => lista.map((r) => h('a', { class: 'item', href: '#/coleta/' + r.id },
         h('span', { class: 'badge' }, ROTULO[r.tipo]), h('div', { class: 't' }, r.apelido), h('div', { class: 'd' }, descricaoRegistro(r))));
-      rc($main,
+      rcT(tk,
         andamento.length ? h('h3', { class: 'sub' }, 'Suas visitas em andamento') : null,
         andamento.map((v) => { const r = regs.find((x) => x.id === v.registroId); return r ? h('a', { class: 'item', href: '#/visita/' + v.id },
           h('span', { class: 'badge rasc' }, 'Em andamento'), h('div', { class: 't' }, r.apelido), h('div', { class: 'd' }, 'Visita nº ' + v.numero + ' · ' + X.dataBR(v.data))) : null; }),
@@ -962,7 +1008,7 @@
     }
     const r = await DB.get('registros', registroId);
     if (!r) { location.replace('#/coleta'); return; }
-    if (!pode.coletar()) { rc($main, h('div', { class: 'aviso' }, 'Seu perfil permite apenas consulta.')); return; }
+    if (!pode.coletar()) { rcT(tk, h('div', { class: 'aviso' }, 'Seu perfil permite apenas consulta.')); return; }
     const rec = (await DB.kvGet('coletaRecentes', [])).filter((x) => x !== registroId);
     rec.unshift(registroId);
     DB.kvSet('coletaRecentes', rec.slice(0, 5));
@@ -1042,10 +1088,11 @@
   }
 
   async function telaVisita(id) {
+    const tk = rotaSeq; // a tela desiste se o usuário já foi para outra
     const v0 = await DB.get('visitas', id);
-    if (!v0 || v0.excluido) { rc($main, h('div', { class: 'vazio' }, 'Visita não encontrada.')); return; }
+    if (!v0 || v0.excluido) { rcT(tk, h('div', { class: 'vazio' }, 'Visita não encontrada.')); return; }
     const r = await DB.get('registros', v0.registroId);
-    if (!r) { rc($main, h('div', { class: 'vazio' }, 'Obra desta visita não encontrada.')); return; }
+    if (!r) { rcT(tk, h('div', { class: 'vazio' }, 'Obra desta visita não encontrada.')); return; }
     marcarNav(r.tipo === 'convenio' ? 'convenios' : 'contratos');
     titulo('Visita nº ' + v0.numero + ' · ' + r.apelido, true);
     const v = JSON.parse(JSON.stringify(v0));
@@ -1220,7 +1267,7 @@
           location.replace('#/registro/' + r.id);
         } }, 'Excluir visita') : null));
 
-    rc($main, cab, v.status !== 'concluida' ? gps : null, captura, boxPend, boxFotos, boxIrr, dados, acoes);
+    rcT(tk, cab, v.status !== 'concluida' ? gps : null, captura, boxPend, boxFotos, boxIrr, dados, acoes);
     await desenharFotos();
     App._atualizarTela = () => (document.body.contains(boxFotos) ? desenharFotos() : null); // fotos de outros aparelhos aparecem sem sair da tela
     if (v.status !== 'concluida' && podeEd) {
@@ -1230,7 +1277,9 @@
         if (p) { gps.className = 'gps ' + (p.precisao <= 30 ? 'bom' : ''); rc(gps, '📍 ' + Foto.textoCoord(p.lat, p.lng) + ' · precisão ±' + p.precisao + ' m'); }
         else if (err) { gps.className = 'gps ruim'; rc(gps, '⚠️ GPS indisponível: ' + (err.code === 1 ? 'permissão negada — libere a localização para este app.' : 'ative a localização do aparelho.')); }
       });
-    }
+      // ao sair da visita o GPS é desligado (antes ficava ligado até fechar o app, gastando bateria)
+      App._sairTela = () => { off(); Foto.pararGPS(); };
+    } else Foto.pararGPS();
   }
 
   // irregularidades de visitas anteriores verificadas como "nao sanada" nesta visita
@@ -1354,10 +1403,11 @@
   }
 
   async function telaIrregularidade(id, visitaId) {
+    const tk = rotaSeq; // a tela desiste se o usuário já foi para outra
     const f = await DB.get('fotos', id);
-    if (!f || f.excluido) { rc($main, h('div', { class: 'vazio' }, 'Irregularidade não encontrada.')); return; }
+    if (!f || f.excluido) { rcT(tk, h('div', { class: 'vazio' }, 'Irregularidade não encontrada.')); return; }
     const r = await DB.get('registros', f.registroId);
-    if (!r) { rc($main, h('div', { class: 'vazio' }, 'Obra não encontrada.')); return; }
+    if (!r) { rcT(tk, h('div', { class: 'vazio' }, 'Obra não encontrada.')); return; }
     titulo('Irregularidade · ' + r.apelido, true);
     marcarNav(r.tipo === 'convenio' ? 'convenios' : 'contratos');
     const st = situacao(f);
@@ -1417,7 +1467,7 @@
         if (await excluirFotos([f.id], 'Excluir esta irregularidade (foto, descrição e todo o histórico)? Ela não aparecerá mais para ninguém do grupo.')) { toast('Irregularidade excluída'); history.back(); }
       } }, '🗑 Excluir irregularidade')) : null,
       h('p', { class: 'dica' }, st === 'pendente' ? 'Irregularidades pendentes aparecem como opção nas notificações. Ao marcar como sanada, ela sai das opções de notificação e fica no histórico.' : 'Sanada: não aparece mais nas opções de notificação.'));
-    rc($main, cab, acoes, hist);
+    rcT(tk, cab, acoes, hist);
     App._atualizarTela = () => telaIrregularidade(id, visitaId);
   }
 
@@ -1730,6 +1780,7 @@
 
   /* ---------- Tela "Notificações": todas, com prazo de resposta ---------- */
   async function telaNotificacoes() {
+    const tk = rotaSeq; // a tela desiste se o usuário já foi para outra
     titulo('Notificações');
     const regs = new Map((await DB.all('registros')).map((r) => [r.id, r]));
     const todas = (await DB.listar('notificacoes')).filter((n) => { const r = regs.get(n.registroId); return r && !r.excluido; })
@@ -1745,7 +1796,7 @@
     let filtro = sessionStorage.getItem('filtro_notifs') || 'pendentes';
     const g = grupos.find((x) => x[0] === filtro) || grupos[0];
     const lista = todas.filter(g[2]).sort((a, b) => a.sit.ordem - b.sit.ordem
-      || (a.sit.k === 'vencida' || a.sit.k === 'aguardando' ? String(a.n.prazoFinal).localeCompare(String(b.n.prazoFinal)) : String(b.n.data || '').localeCompare(String(a.n.data || ''))));
+      || (a.sit.k === 'vencida' || a.sit.k === 'aguardando' ? String(prazoDe(a.n)).localeCompare(String(prazoDe(b.n))) : String(b.n.data || '').localeCompare(String(a.n.data || ''))));
     const filtros = h('div', { class: 'filtros' }, grupos.map(([k, rot, f]) => {
       const c = todas.filter(f).length;
       return h('button', { class: k === g[0] ? 'ativo' : '', onclick: () => { sessionStorage.setItem('filtro_notifs', k); telaNotificacoes(); } }, rot + ' (' + c + ')');
@@ -1754,13 +1805,13 @@
       ? h('div', { class: 'aviso' }, '🔔 Quer ser avisado no celular quando um prazo terminar? ',
         h('button', { class: 'btn peq', onclick: async () => { try { await Notification.requestPermission(); } catch (e) { /* */ } telaNotificacoes(); } }, 'Ativar avisos'))
       : null;
-    rc($main, avisoPermissao, filtros,
+    rcT(tk, avisoPermissao, filtros,
       lista.length ? lista.map(({ n, sit, r }) => h('a', { class: 'item', href: '#/notificacao/' + n.id },
         h('div', { class: 't' }, (n.ordinal || '?') + 'ª Notificação · ' + (r.apelido || ROTULO[r.tipo])),
         h('div', { class: 'd' }, ROTULO[r.tipo] + ' nº ' + (r.numero || '—') + ' · Nº ' + (n.numero || '—') + ' · emitida em ' + dataLocalBR(n.emitidaEm || n.data)),
         h('div', { class: 'etqs' }, etq(sit.txt, sit.cls),
           n.enviadaEm ? etq('enviada ' + X.dataBR(n.enviadaEm), '') : null,
-          n.prazoFinal && !n.respondidaEm ? etq('prazo até ' + X.dataBR(n.prazoFinal), '') : null)))
+          n.enviadaEm && !n.respondidaEm ? etq('prazo até ' + X.dataBR(prazoDe(n)), '') : null)))
         : h('div', { class: 'vazio' }, g[0] === 'pendentes' ? 'Nenhuma notificação aguardando resposta. 👍' : 'Nada por aqui.'),
       h('p', { class: 'dica' }, 'O prazo conta em dias úteis a partir do dia seguinte ao envio (sábados, domingos e os feriados cadastrados em Ajustes › Padrões não contam). Para registrar envio ou resposta, abra a notificação.'));
     App._atualizarTela = () => telaNotificacoes();
@@ -1773,7 +1824,11 @@
   const semAc = (s) => String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
   // "0961-2024", "961/2024", "Conv. nº 0961/2024" -> "961/2024"
   function chaveConvenio(s) {
-    const m = String(s || '').replace(/(\d)\.(\d)/g, '$1$2').match(/\d+/g);
+    const t = String(s || '').replace(/(\d)\.(\d)/g, '$1$2');
+    // primeiro "número/ano" do texto ("0961/2024 - 1º TA", "961-2024 lote 03")
+    const na = /(\d+)\s*[\/-]\s*(\d{4}|\d{2})(?!\d)/.exec(t);
+    if (na) return String(parseInt(na[1], 10)) + '/' + (na[2].length === 2 ? '20' + na[2] : na[2]);
+    const m = t.match(/\d+/g);
     if (!m) return '';
     if (m.length >= 2) {
       const ano = m[m.length - 1], num = m[m.length - 2];
@@ -1848,9 +1903,10 @@
   };
 
   async function telaFila() {
+    const tk = rotaSeq; // a tela desiste se o usuário já foi para outra
     titulo('Fila de atendimento');
     if (!Sync.habilitado()) {
-      rc($main, h('div', { class: 'vazio' }, 'A Fila de atendimento lê uma planilha do Google pelo servidor do app, então só funciona no modo compartilhado (com login).'));
+      rcT(tk, h('div', { class: 'vazio' }, 'A Fila de atendimento lê uma planilha do Google pelo servidor do app, então só funciona no modo compartilhado (com login).'));
       return;
     }
     const regs = (await DB.listar('registros')).filter((r) => r.tipo === 'convenio');
@@ -1869,7 +1925,7 @@
     const lista = h('div');
     const historico = h('div');
     const st = (() => { try { return JSON.parse(sessionStorage.getItem('fila_filtros') || '{}'); } catch (e) { return {}; } })();
-    let verHist = !!st.hist;
+    let verHist = !!st.hist, primeiraMontagem = true;
     busca.value = st.q || ''; soApp.checked = !!st.soApp;
     let sit = st.sit || '';
     const guardar = () => { try { sessionStorage.setItem('fila_filtros', JSON.stringify({ q: busca.value, sol: selSol.value, st: selSt.value, sit, soApp: soApp.checked, hist: verHist })); } catch (e) { /* */ } };
@@ -1896,7 +1952,7 @@
         ...[...cont.entries()].sort((a, b) => b[1] - a[1]).map(([v, n]) => h('button', { class: sit === v ? 'ativo' : '', onclick: () => { sit = sit === v ? '' : v; desenhar(); } }, v + ' (' + n + ')')));
       const vis = base.filter((l) => !sit || (l.situacao || '(sem situação)') === sit);
       rc(lista, ...(vis.length ? vis.map((l) => itemFila(l, regDa(l))) : [h('div', { class: 'vazio' }, !ls.length ? 'A planilha não tem linhas preenchidas.' : hist.length && !base.length ? 'Nenhum processo pendente com esses filtros. 👍' : 'Nada encontrado com esses filtros.')]));
-      const abrir = verHist || (selSt.value && atendido({ status: selSt.value }));
+      const abrir = verHist;
       rc(historico, hist.length ? h('div', { class: 'fila-hist' },
         btnHistorico(abrir, hist.length, () => { verHist = !abrir; desenhar(); }),
         abrir ? h('div', {}, h('h3', {}, 'Histórico de atendimento'), h('p', { class: 'dica', style: { marginTop: 0 } }, 'Processos já atendidos pela Fiscalização (status: ' + String(CONFIG.fila_atendidos || '').split(/\n/).filter((x) => x.trim()).join(', ') + ').'), ...hist.map((l) => itemFila(l, regDa(l)))) : null) : null);
@@ -1913,8 +1969,10 @@
         h('div', { class: 'linha', style: { marginBottom: '10px' } },
           h('div', { class: 'cresce sub' }, '📄 ' + (dados.titulo || 'Planilha') + (dados.aba ? ' › ' + dados.aba : '') + ' · ' + dados.linhas.filter((l) => !atendido(l)).length + ' pendente(s) · ' + dados.linhas.filter(atendido).length + ' atendido(s)', h('br'), 'Lido em ' + dataHoraBR(dados.lidoEm)),
           h('button', { class: 'btn peq', onclick: () => atualizar(true) }, '↻ Atualizar')));
-      opcoes(selSol, 'solicitacao', 'Todas as solicitações', selSol.value || st.sol);
-      opcoes(selSt, 'status', 'Todos os status', selSt.value || st.st);
+      // o filtro salvo só vale ao abrir a tela; depois, vale o que o usuário escolheu (inclusive "Todas")
+      opcoes(selSol, 'solicitacao', 'Todas as solicitações', primeiraMontagem ? st.sol : selSol.value);
+      opcoes(selSt, 'status', 'Todos os status', primeiraMontagem ? st.st : selSt.value);
+      primeiraMontagem = false;
       desenhar();
     };
     const controles = h('div', {},
@@ -1923,10 +1981,11 @@
       resumo);
     busca.addEventListener('input', desenhar);
     selSol.addEventListener('change', desenhar);
-    selSt.addEventListener('change', desenhar);
+    // escolher um status "já atendido" no filtro abre o histórico (e o botão continua podendo fechá-lo)
+    selSt.addEventListener('change', () => { if (selSt.value && atendido({ status: selSt.value })) verHist = true; desenhar(); });
     soApp.addEventListener('change', desenhar);
     const rodape = h('p', { class: 'dica' }, 'Somente leitura: estas informações vêm da planilha da fila de atendimento. Para alterar algo, edite a própria planilha no Google Planilhas — o app busca de novo a cada minuto enquanto esta tela está aberta.');
-    rc($main, topo, controles, lista, historico, rodape);
+    rcT(tk, topo, controles, lista, historico, rodape);
     if (!dados) rc(topo, h('div', { class: 'vazio' }, h('span', { class: 'carregando' }), ' Lendo a planilha…'));
     else montar();
 
@@ -1944,7 +2003,7 @@
     const aoVoltar = () => { if (document.visibilityState === 'visible' && (!dados || Date.now() - new Date(dados.lidoEm).getTime() > 30000)) atualizar(false); };
     document.addEventListener('visibilitychange', aoVoltar);
     App._sairTela = () => { ativo = false; clearInterval(timer); document.removeEventListener('visibilitychange', aoVoltar); };
-    atualizar(false);
+    if (!manterRolagem) atualizar(false); // redesenho por dados de outro aparelho: não precisa reler a planilha
   }
 
   /* Cartão "Fila de atendimento" dentro de um convênio */
@@ -1997,7 +2056,7 @@
       if (b) { b.textContent = vencidas.length || hoje.length || ''; b.className = 'nav-badge' + (vencidas.length ? ' on' : hoje.length ? ' on alerta' : ''); }
       const avisadas = await DB.kvGet('avisosPrazo', {});
       const novos = [];
-      const pf = (n) => n.prazoFinal || prazoFinalUteis(n.enviadaEm, n.prazoDiasEnvio || n.prazo_dias);
+      const pf = prazoDe;
       for (const n of vencidas) { const c = n.id + ':' + pf(n); if (!avisadas[c]) novos.push({ n, chave: c, txt: 'terminou em ' + X.dataBR(pf(n)) + ' sem resposta registrada.' }); }
       for (const n of hoje) { const c = n.id + ':hoje:' + pf(n); if (!avisadas[c]) novos.push({ n, chave: c, txt: 'termina HOJE (' + X.dataBR(pf(n)) + ').' }); }
       if (!novos.length) return;
@@ -2064,7 +2123,7 @@
       h('div', { class: 'etqs', style: { marginTop: 0, marginBottom: '8px' } }, etq(sit.txt, sit.cls)),
       h('table', { class: 'tabela-info' },
         h('tr', {}, h('td', {}, 'Enviada em'), h('td', {}, X.dataBR(n.enviadaEm) + (n.enviadaPor ? ' · por ' + n.enviadaPor : ''))),
-        h('tr', {}, h('td', {}, 'Prazo para resposta'), h('td', {}, (n.prazoDiasEnvio || n.prazo_dias || 3) + ' dia(s) útil(eis) → até ' + X.dataBR(n.prazoFinal))),
+        h('tr', {}, h('td', {}, 'Prazo para resposta'), h('td', {}, (n.prazoDiasEnvio || n.prazo_dias || 3) + ' dia(s) útil(eis) → até ' + X.dataBR(prazoDe(n)))),
         n.respondidaEm ? h('tr', {}, h('td', {}, 'Respondida em'), h('td', {}, X.dataBR(n.respondidaEm) + (n.respondidaPor ? ' · registrado por ' + n.respondidaPor : ''))) : null,
         n.respostaObs ? h('tr', {}, h('td', {}, 'Observação'), h('td', {}, n.respostaObs)) : null));
     if (pode.notificar()) {
@@ -2096,10 +2155,11 @@
   }
 
   async function telaNotificacao(id) {
+    const tk = rotaSeq; // a tela desiste se o usuário já foi para outra
     const original = await DB.get('notificacoes', id);
-    if (!original || original.excluido) { rc($main, h('div', { class: 'vazio' }, 'Notificação não encontrada.')); return; }
+    if (!original || original.excluido) { rcT(tk, h('div', { class: 'vazio' }, 'Notificação não encontrada.')); return; }
     const r = await DB.get('registros', original.registroId);
-    if (!r) { rc($main, h('div', { class: 'vazio' }, 'Cadastro desta notificação não encontrado.')); return; }
+    if (!r) { rcT(tk, h('div', { class: 'vazio' }, 'Cadastro desta notificação não encontrado.')); return; }
     marcarNav('notificacoes');
     const n = JSON.parse(JSON.stringify(original));
     let nBase = clonar(original);
@@ -2314,7 +2374,7 @@
       } else if (!(await confirmar('Ao emitir, o conteúdo fica bloqueado e registrado no histórico. Continuar?', 'Emitir'))) return;
       await salvar(true);
       const snap = Object.assign({}, r);
-      for (const k of ['_pendente', 'atualizadoEm', 'atualizadoPor', 'criadoEm', 'criadoPor']) delete snap[k];
+      for (const k of ['_pendente', '_campos', '_base', 'atualizadoEm', 'atualizadoPor', 'criadoEm', 'criadoPor']) delete snap[k];
       n.status = 'emitida'; n.emitidaEm = new Date().toISOString(); n.emitidaPor = email();
       sujo = false;
       const emit = await atualizarCampos('notificacoes', id, (o) => {
@@ -2353,7 +2413,7 @@
         } }, 'Excluir') : null),
       h('p', { class: 'dica' }, 'Dica: para PDF, abra o .docx no Word (celular ou computador) e use “Salvar como PDF”.'));
 
-    rc($main, secCab, emitida ? cartaoEnvio(original, r, () => telaNotificacao(id)) : null, secFatos, secProv, secAss, secFotos, acoes);
+    rcT(tk, secCab, emitida ? cartaoEnvio(original, r, () => telaNotificacao(id)) : null, secFatos, secProv, secAss, secFotos, acoes);
     // salvamento automatico do rascunho ao sair da tela
     App._sairNotif = async () => { if (sujo && !ro) await salvar(true); };
   }
@@ -2362,6 +2422,7 @@
   /* Ajustes                                                             */
   /* ================================================================== */
   async function telaConfig(sub) {
+    const tk = rotaSeq; // a tela desiste se o usuário já foi para outra
     titulo('Ajustes', !!sub);
     if (sub === 'pessoas') return telaPessoas();
     const u = App.usuario();
@@ -2426,7 +2487,7 @@
       for (const f of fotosSemDrive) if (!(await DB.blobGet(f.id))) semArquivo++;
       const log = Sync.lerLog().slice().reverse();
       const resumo = {
-        app: '3.3.1', servidor: Sync.versaoServidor || '?', usuario: (u || {}).email, perfil: perfil(), estado: Sync.estado, erro: Sync.erro || '',
+        app: '3.4', servidor: Sync.versaoServidor || '?', usuario: (u || {}).email, perfil: perfil(), estado: Sync.estado, erro: Sync.erro || '',
         online: navigator.onLine, ultimaSync: await DB.kvGet('ultimaSync', null), cursor: await DB.kvGet('servidorDesde', 0),
         pendentes: pendPor, fotosAguardandoEnvio: fotosSemDrive.length - semArquivo, fotosDeOutroAparelhoSemEnvio: semArquivo,
         aparelho: navigator.userAgent, log,
@@ -2504,7 +2565,7 @@
         campo('Providências padrão — Convênio', inputArea(c.providencias_padrao, 'convenio'), '{nome_texto} é trocado pelo nome da notificada. **texto** = negrito.'),
         campo('Providências complementares padrão — Contrato', inputArea(c.providencias_padrao, 'contrato')),
         campo('Prazo padrão (dias úteis)', inputTxt(c, 'prazo_padrao', { type: 'number', min: '1' })),
-        campo('Feriados (não contam no prazo das notificações)', inputArea(c, 'feriados', { placeholder: '01/01/2026\n20/11/2026\n25/12/2026' }), 'Um por linha, no formato dd/mm/aaaa (nacionais, estaduais e municipais). Sábados e domingos já não contam.'),
+        campo('Feriados (não contam no prazo das notificações)', inputArea(c, 'feriados', { placeholder: '01/01/2026\n20/11/2026\n25/12/2026' }), 'Um por linha: dd/mm/aaaa, ou só dd/mm para os que se repetem todo ano (ex.: 25/12). Nacionais, estaduais e municipais. Sábados e domingos já não contam.'),
         h('h3', {}, 'Fotos no Google Drive'),
         campo('Pastas das fotos', inputTxt(c, 'pasta_fotos', { placeholder: '{tipo}-{numero}/{data}' }),
           'Dentro da pasta Fotos. Use / para criar subpastas. {tipo} = Conv ou Contr · {numero} = nº do contrato/convênio · {apelido} = nome curto · {data} = data da visita (29.09.2026) · {ano} · {visita} = “Visita 3”. Ex.: {tipo}-{numero}/{data} → Conv-013-2023/29.09.2026. Vale para as próximas fotos enviadas.'),
@@ -2645,8 +2706,8 @@
         pode.admin() ? h('button', { class: 'btn', onclick: importarBackup }, '⬆️ Importar') : null,
         pode.admin() ? h('button', { class: 'btn', onclick: carregarExemplos }, 'Carregar exemplos dos modelos') : null)));
 
-    cards.push(h('p', { class: 'dica', style: { textAlign: 'center' } }, 'Fiscalização de Obras · v3.3.1 · dados salvos no aparelho' + (Sync.habilitado() ? ' e no Google Drive do administrador' : '') + ' · ', h('a', { href: 'privacidade.html' }, 'Política de privacidade')));
-    rc($main, ...cards);
+    cards.push(h('p', { class: 'dica', style: { textAlign: 'center' } }, 'Fiscalização de Obras · v3.4 · dados salvos no aparelho' + (Sync.habilitado() ? ' e no Google Drive do administrador' : '') + ' · ', h('a', { href: 'privacidade.html' }, 'Política de privacidade')));
+    rcT(tk, ...cards);
   }
 
   /* Lista as câmeras que o navegador libera, com o zoom de cada uma, e permite escolher a do botão 0,5 */
@@ -2707,6 +2768,7 @@
   }
 
   async function telaPessoas() {
+    const tk = rotaSeq; // a tela desiste se o usuário já foi para outra
     titulo('Assinantes', true);
     const pessoas = (await DB.listar('pessoas')).sort((a, b) => (a.papel + a.nome).localeCompare(b.papel + b.nome));
     const editar = async (p) => {
@@ -2733,7 +2795,7 @@
     };
     const bloco = (papel) => pessoas.filter((p) => p.papel === papel).map((p) => h('div', { class: 'item', style: { cursor: pode.admin() ? 'pointer' : 'default' }, onclick: () => pode.admin() && editar(p) },
       h('div', { class: 't' }, p.nome), h('div', { class: 'd' }, [p.cargo, p.lotacao, p.extra].filter(Boolean).join(' · '))));
-    rc($main, 
+    rcT(tk, 
       h('p', { class: 'sub' }, 'Alterações aqui valem para as próximas notificações. As já emitidas guardam os nomes da época.'),
       h('h3', { class: 'sub' }, 'Fiscais'), ...bloco('fiscal'),
       h('h3', { class: 'sub' }, 'Coordenadores'), ...bloco('coordenador'));
@@ -2774,7 +2836,7 @@
           for (const o of j.dados[e]) {
             const local = await DB.get(e, o.id);
             if (local && (local.excluido || String(local.atualizadoEm || '') >= String(o.atualizadoEm || ''))) { ignorados++; continue; }
-            o._pendente = true; await DB.put(e, o);
+            delete o._campos; delete o._base; o._pendente = true; await DB.put(e, o);
           }
         }
         if (ignorados) toast(ignorados + ' registro(s) do backup ignorados: o aparelho já tinha versão mais nova.');

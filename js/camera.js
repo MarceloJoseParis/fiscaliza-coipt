@@ -425,7 +425,7 @@
           const item = { blob, url: URL.createObjectURL(blob), angulo, foto: Promise.resolve(opts.aoFoto(blob)) };
           item.foto.then(async (foto) => {
             // troca a miniatura pela foto ja processada (girada e com carimbo)
-            if (foto && opts.urlFoto) { try { const u = await opts.urlFoto(foto); if (u) { item.url = u; atualizarContador(); } } catch (e) { /* */ } }
+            if (foto && opts.urlFoto) { try { const u = await opts.urlFoto(foto); if (u) { const velha = item.url; item.url = u; atualizarContador(); if (fechado) URL.revokeObjectURL(u); setTimeout(() => URL.revokeObjectURL(velha), 1500); } } catch (e) { /* */ } }
           }).catch((e) => aviso('Erro ao salvar: ' + e.message, 3000));
           sessao.push(item);
           total++;
@@ -442,6 +442,8 @@
         if (stream) stream.getTracks().forEach((t) => t.stop());
         if (wake) { try { wake.release(); } catch (e) { /* */ } }
         ov.remove();
+        // libera a memória das pré-visualizações (antes, uma visita com muitas fotos esgotava a memória do iPhone)
+        sessao.forEach((f) => { try { if (/^blob:/.test(f.url)) URL.revokeObjectURL(f.url); } catch (e) { /* */ } });
         document.body.style.overflow = '';
         window.removeEventListener('popstate', aoVoltar);
         window.removeEventListener('devicemotion', aoMovimento);

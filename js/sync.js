@@ -263,14 +263,15 @@
         const guardar = (e) => { if (!primeiroErro) primeiroErro = e; if (e.rede && !e.tempoEsgotado) throw e; };
         // 1) dados primeiro (são pequenos): uma conexão fraca não segura cadastros, visitas e notificações atrás das fotos
         try { await enviarAlteracoes(); } catch (e) { guardar(e); }
-        // 2) fotos (grandes)
-        let fotos = { falhas: [], grave: null };
-        try { fotos = await enviarFotos(); } catch (e) { guardar(e); }
-        // 3) endereço das fotos no Drive
-        try { await enviarAlteracoes(); } catch (e) { guardar(e); }
-        // 4) o que os outros aparelhos gravaram — mesmo que algum envio acima tenha falhado
+        // 2) o que os outros aparelhos gravaram — ANTES das fotos (enviar muitas fotos levava minutos e
+        //    atrasava tudo o que os colegas registraram)
         await receberAlteracoes();
         const falhaModelo = await sincronizarModelos();
+        // 3) fotos (grandes); o endereço no Drive vai sendo enviado durante o envio
+        let fotos = { falhas: [], grave: null };
+        try { fotos = await enviarFotos(); } catch (e) { guardar(e); }
+        // 4) endereço das fotos no Drive (o que faltou)
+        try { await enviarAlteracoes(); } catch (e) { guardar(e); }
         if (primeiroErro) throw primeiroErro;
         await DB.kvSet('ultimaSync', new Date().toISOString());
         falhasSeguidas = 0; clearTimeout(tentativaAuto);
@@ -280,7 +281,7 @@
           falhasSeguidas = 3; agendarNovaTentativa();
           emitir('erro', { erro: fotos.grave });
         } else {
-          if (fotos.falhas.length) { falhasSeguidas = 1; agendarNovaTentativa(); }
+          if (fotos.falhas.length || fotos.passageira) { falhasSeguidas = 1; agendarNovaTentativa(); }
           emitir('ok', { erro: null });
         }
       } catch (e) {
@@ -309,25 +310,34 @@
   /* Fotos: cada foto que falha espera mais antes de tentar de novo (1 min, 5 min, 30 min, 2 h, 6 h),
      para uma foto com problema não deixar o indicador vermelho nem gastar dados sem parar. */
   const ESPERA_FOTO = [60, 300, 1800, 7200, 21600];
+  let fotosEmEnvio = false, novidadeDurante = false;
+  const FOTOS_JUNTAS = 2;               // duas fotos por vez (o Apps Script atende pedidos em paralelo)
+  const DATA_PASTAS = '2026-09-29';     // antes disso as fotos iam soltas para Fotos/<id>.jpg
   async function enviarFotos() {
     const res = { falhas: [], grave: null };
     if (perfilAtual() === 'consulta') return res;
     const controle = await DB.kvGet('falhasFotos', {});
     const salvarControle = () => DB.kvSet('falhasFotos', controle);
-    const fotos = (await DB.all('fotos')).filter((f) => !f.driveId && !f.excluido);
-    let i = 0;
+    const todas = await DB.all('fotos');
+    const fotos = todas.filter((f) => !f.driveId && !f.excluido);
+    // limpa marcas de fotos que já foram enviadas ou excluídas
+    const ativas = new Set(fotos.map((f) => f.id));
+    let limpou = false;
+    for (const id of Object.keys(controle)) if (!ativas.has(id)) { delete controle[id]; limpou = true; }
+    if (limpou) await salvarControle();
     const inicio = Date.now();
-    for (const f of fotos) {
-      i++;
-      if (Date.now() - inicio > 4 * 60000) break; // o restante vai na próxima rodada (deixa receber os dados dos outros)
+    let feitas = 0, desdeEnvio = 0, ultimoEnvio = Date.now(), parar = false, i = 0, enviandoDados = false;
+    const fila = fotos.slice();
+    fotosEmEnvio = true;
+    async function umaFoto(f, num) {
       const c = controle[f.id];
-      if (c && (c.danificada || c.proxima > Date.now())) continue;
+      if (c && (c.danificada || c.proxima > Date.now())) return;
       // irregularidade recém-registrada ainda sem descrição: espera a descrição (vai no nome do arquivo no Drive)
-      if (f.irregular && !String(f.descricao || '').trim() && Date.now() - Date.parse(f.criadoEm || 0) < 180000) continue;
+      if (f.irregular && !String(f.descricao || '').trim() && Date.now() - Date.parse(f.criadoEm || 0) < 180000) return;
       let blob;
       try { blob = await DB.blobGet(f.id); } catch (e) { blob = null; }
-      if (!blob) continue;
-      emitir('sincronizando', { detalhe: 'Enviando foto ' + i + ' de ' + fotos.length + '…' });
+      if (!blob) return;
+      emitir('sincronizando', { detalhe: 'Enviando foto ' + num + ' de ' + fotos.length + '…' });
       try {
         let b64;
         try { b64 = await Foto.blobParaBase64(blob); } catch (e) {
@@ -335,19 +345,31 @@
           controle[f.id] = { danificada: true, msg: 'arquivo da foto ilegível neste aparelho (' + (e.name || e.message) + ')' };
           await salvarControle();
           Sync.log('foto', 'Foto ' + f.id.slice(0, 8) + ' danificada neste aparelho: ' + (e.message || e.name));
-          continue;
+          return;
         }
         let destino = {};
         try { if (root.App && App.infoFotoDrive) destino = await App.infoFotoDrive(f); } catch (e) { /* usa a pasta Fotos */ }
-        const j = await Sync.chamar('enviarFoto', { id: f.id, registroId: f.registroId, base64: b64, mime: blob.type || 'image/jpeg', pastas: destino.pastas, nome: destino.nome });
+        // "repetida": já houve tentativa (a resposta pode ter se perdido) — só então o servidor procura duplicata
+        const repetida = !!(controle[f.id] && (controle[f.id].tentando || controle[f.id].n));
+        if (!repetida) { controle[f.id] = { tentando: true }; await salvarControle(); }
+        const j = await Sync.chamar('enviarFoto', { id: f.id, registroId: f.registroId, base64: b64, mime: blob.type || 'image/jpeg', pastas: destino.pastas, nome: destino.nome,
+          repetida, antiga: String(f.criadoEm || '') < DATA_PASTAS });
         if (!j.driveId) throw new Error('Resposta inesperada do servidor ao enviar foto.');
-        await DB.atualizar('fotos', f.id, (a) => (a ? Object.assign(a, { driveId: j.driveId, _pendente: true }) : undefined));
-        if (controle[f.id]) { delete controle[f.id]; await salvarControle(); }
+        await DB.atualizar('fotos', f.id, (a) => {
+          if (!a) return undefined;
+          // o endereço no Drive entra no controle por campo (assim uma edição feita em outro aparelho não o apaga)
+          if (!a._pendente) { a._campos = {}; a._base = {}; }
+          if (a._campos) { a._campos.driveId = a.atualizadoEm; if (!('driveId' in (a._base || {}))) a._base = Object.assign({}, a._base, { driveId: 'undefined' }); }
+          a.driveId = j.driveId; a._pendente = true;
+          return a;
+        });
+        delete controle[f.id]; await salvarControle();
+        feitas++; desdeEnvio++;
       } catch (e) {
-        if (e.codigo === 'TOKEN' || e.codigo === 'SEM_ACESSO' || e.codigo === 'PERFIL' || e.semRede || /redirecionado|pediu login/.test(e.message)) throw e;
-        if (e.codigo === 'DRIVE_CHEIO') { res.grave = e.message; break; }
-        // conexão lenta demais para esta foto: para de enviar fotos nesta rodada, mas segue recebendo os dados
-        if (e.tempoEsgotado || e.rede) { Sync.log('foto', 'Envio de fotos interrompido: ' + e.message); break; }
+        if (e.codigo === 'TOKEN' || e.codigo === 'SEM_ACESSO' || e.codigo === 'PERFIL' || e.semRede || /redirecionado|pediu login/.test(e.message)) { parar = true; throw e; }
+        if (e.codigo === 'DRIVE_CHEIO') { res.grave = e.message; parar = true; return; }
+        // conexão lenta ou Google ocupado/instável: para nesta rodada SEM contar como defeito da foto
+        if (e.tempoEsgotado || e.rede || passageira(e)) { Sync.log('foto', 'Envio de fotos interrompido: ' + e.message); parar = true; res.passageira = true; return; }
         const n = ((controle[f.id] || {}).n || 0) + 1;
         controle[f.id] = { n, proxima: Date.now() + ESPERA_FOTO[Math.min(n - 1, ESPERA_FOTO.length - 1)] * 1000, msg: e.message };
         await salvarControle();
@@ -356,9 +378,34 @@
         if (n >= 4) res.grave = 'Uma foto não consegue ser enviada ao Drive (' + e.message + '). Veja Ajustes › Diagnóstico.';
       }
     }
+    let erroParar = null;
+    async function trabalhador() {
+      try { await trabalhar(); } catch (e) { parar = true; if (!erroParar) erroParar = e; }
+    }
+    async function trabalhar() {
+      while (fila.length && !parar) {
+        if (Date.now() - inicio > 4 * 60000) { res.restam = true; pedidoDurante = true; break; } // continua na próxima rodada, logo em seguida
+        const f = fila.shift();
+        await umaFoto(f, ++i);
+        // os colegas passam a ver as fotos já enviadas sem esperar o fim de todas; e o que eles gravarem
+        // enquanto isso chega aqui também (antes, só depois de terminar todas as fotos)
+        const novidade = novidadeDurante;
+        if (((desdeEnvio && (desdeEnvio >= 6 || Date.now() - ultimoEnvio > 45000)) || novidade) && !parar && !enviandoDados) {
+          desdeEnvio = 0; ultimoEnvio = Date.now(); enviandoDados = true; novidadeDurante = false;
+          try { await enviarAlteracoes(); if (novidade) await receberAlteracoes(); } catch (e) { if (e.rede) { parar = true; throw e; } } finally { enviandoDados = false; }
+        }
+      }
+    }
+    // espera os dois terminarem (um erro num deles para o outro, sem deixar envio "solto" em segundo plano)
+    try { await Promise.all(Array.from({ length: Math.min(FOTOS_JUNTAS, fila.length) }, trabalhador)); } finally { fotosEmEnvio = false; }
+    if (erroParar) throw erroParar;
     return res;
   }
 
+  function igualAoEnviado(a, o) {
+    const c = Object.assign({}, a); for (const k of DB.CAMPOS_LOCAIS) delete c[k];
+    return JSON.stringify(c) === JSON.stringify(o);
+  }
   const LOTE_MAX_ITENS = 60;
   const LOTE_MAX_BYTES = 700000;
   async function enviarAlteracoes() {
@@ -372,7 +419,7 @@
           await DB.atualizar(e, o.id, (a) => (a && a._pendente ? (delete a._pendente, a) : undefined));
           continue;
         }
-        const c = Object.assign({}, o); delete c._pendente;
+        const c = Object.assign({}, o); for (const k of DB.CAMPOS_LOCAIS) delete c[k];
         itens.push({ e, o: c, tam: JSON.stringify(c).length });
       }
     }
@@ -392,13 +439,17 @@
       if (typeof j.gravados !== 'number') throw new Error('Resposta inesperada do servidor ao enviar. Os dados continuam no aparelho.');
       const servidorAntigo = !j.versao || j.versao < 2;
       const falhou = new Set((j.falhas || []).map((x) => x.e + ':' + x.id));
+      // recusados pelo servidor (ele tem versão mais nova): tratados abaixo, juntando campo a campo
+      for (const e of Object.keys(j.rejeitados || {})) for (const srv of j.rejeitados[e] || []) if (srv && srv.id) falhou.add(e + ':' + srv.id);
       (j.falhas || []).forEach((x) => Sync.log('registro recusado', x.e + ' ' + String(x.id).slice(0, 8) + ': ' + x.erro));
       for (const e of Object.keys(lote)) {
         if (servidorAntigo && e === 'visitas') continue; // servidor desatualizado nao grava visitas: mantem pendente
         for (const o of lote[e]) {
           if (falhou.has(e + ':' + o.id)) continue; // continua pendente
           // só limpa se ninguém alterou o registro enquanto ele era enviado
-          await DB.atualizar(e, o.id, (a) => (a && a._pendente && a.atualizadoEm === o.atualizadoEm ? (delete a._pendente, a) : undefined));
+          // só limpa se o registro continua IGUAL ao que foi enviado (ex.: o endereço da foto no Drive pode ter
+          // chegado durante o envio sem mudar a data de alteração — antes ele se perdia)
+          await DB.atualizar(e, o.id, (a) => { if (!(a && a._pendente && a.atualizadoEm === o.atualizadoEm && igualAoEnviado(a, o))) return undefined; for (const k of DB.CAMPOS_LOCAIS) delete a[k]; return a; });
         }
       }
       // o servidor tinha versão mais nova (ou o registro foi excluído por outro aparelho): o aparelho fica igual ao servidor
@@ -407,9 +458,11 @@
           const enviado = (lote[e] || []).find((x) => x.id === srv.id);
           if (!enviado) continue;
           await DB.atualizar(e, srv.id, (a) => {
-            if (!a || (a._pendente && a.atualizadoEm !== enviado.atualizadoEm)) return undefined;
-            if (a.miniatura && !srv.miniatura) srv.miniatura = a.miniatura;
-            return srv;
+            if (!a) return undefined;
+            // alterações deste aparelho em campos que o outro não mexeu são mantidas (e reenviadas)
+            if (a._pendente && a._campos && !srv.excluido) return mesclar(e, a, srv);
+            if (a._pendente && a.atualizadoEm !== enviado.atualizadoEm) return undefined;
+            return mesclar(e, a, srv);
           });
           Sync.log('versão do servidor', e + ' ' + String(srv.id).slice(0, 8) + ' — outra alteração mais nova prevaleceu');
         }
@@ -419,14 +472,76 @@
     }
   }
 
+  /* Junta a versão do servidor com as alterações ainda não enviadas deste aparelho, campo a campo.
+     Campo alterado só aqui: fica o daqui. Campo alterado só lá: fica o de lá. Alterado nos dois: vence a
+     alteração mais recente. Exclusão vence sempre. */
+  const jsn = (v) => String(JSON.stringify(v));
+  function mesclar(e, local, srv) {
+    const out = Object.assign({}, srv);
+    if (local && local.miniatura && !out.miniatura) out.miniatura = local.miniatura;
+    if (!local) return out;
+    // não perde o endereço da foto no Drive por causa de uma edição feita em outro aparelho
+    let pend = false;
+    if (e === 'fotos' && local.driveId && !out.driveId) { out.driveId = local.driveId; pend = true; }
+    const campos = {}, base = {};
+    if (local._pendente && local._campos && !srv.excluido) {
+      const tSrv = Date.parse(srv.atualizadoEm) || 0;
+      for (const k of Object.keys(local._campos)) {
+        if (k === 'driveId' && out.driveId) continue;
+        const sv = jsn(srv[k]);
+        if (sv === jsn(local[k])) continue;
+        const servidorMudou = local._base && k in local._base && sv !== local._base[k];
+        if (servidorMudou && tSrv > (Date.parse(local._campos[k]) || 0)) continue; // os dois mexeram: vale a mais recente
+        if (local[k] === undefined) delete out[k]; else out[k] = local[k];
+        campos[k] = local._campos[k]; base[k] = sv;
+      }
+    }
+    if (Object.keys(campos).length) {
+      out._campos = campos; out._base = base; out._pendente = true;
+      const ref = String(local.atualizadoEm || '') > String(srv.atualizadoEm || '') ? local.atualizadoEm : srv.atualizadoEm;
+      out.atualizadoEm = DB.carimbo(ref); out.atualizadoPor = local.atualizadoPor || srv.atualizadoPor;
+      pedidoDurante = true;
+    } else if (pend) { out._pendente = true; pedidoDurante = true; }
+    return out;
+  }
+  async function aplicarRecebido(e, o) {
+    let mudou = false;
+    await DB.atualizar(e, o.id, (local) => {
+      if (local) {
+        // mesma versao que o aparelho ja tem: nada a fazer
+        if (!local._pendente && String(local.atualizadoEm) === String(o.atualizadoEm) && !!local.excluido === !!o.excluido && (e !== 'fotos' || !o.driveId || local.driveId === o.driveId)) return undefined;
+        // exclusao e definitiva: uma copia antiga do servidor nao "ressuscita" o que foi excluido aqui
+        if (local.excluido && !o.excluido) {
+          if (local._pendente) return undefined;
+          local._pendente = true; local.atualizadoEm = DB.carimbo(o.atualizadoEm); pedidoDurante = true;
+          return local;
+        }
+        if (local._pendente && !o.excluido) {
+          // alterações ainda não enviadas: junta campo a campo (registros de versões antigas: vence a mais nova)
+          if (local._campos) { mudou = true; return mesclar(e, local, o); }
+          if (String(local.atualizadoEm) > String(o.atualizadoEm)) return undefined;
+        }
+      }
+      mudou = true;
+      return mesclar(e, local, o);
+    });
+    return mudou;
+  }
+
   async function receberAlteracoes() {
     // cursor vale para um servidor/planilha: se mudou, baixa tudo de novo
     const url = Sync.config().apiUrl;
     if ((await DB.kvGet('cursorUrl', null)) !== url) { await DB.kvSet('servidorDesde', 0); await DB.kvSet('cursorUrl', url); }
     let total = 0;
+    // registros recebidos antes que não puderam ser gravados no aparelho
+    const falhos = await DB.kvGet('recebidosFalhos', {}) || {};
+    for (const k of Object.keys(falhos)) {
+      try { if (await aplicarRecebido(falhos[k].e, falhos[k].o)) total++; delete falhos[k]; } catch (err) { /* tenta na próxima */ }
+    }
+    await DB.kvSet('recebidosFalhos', falhos);
     for (let pagina = 0; pagina < 300; pagina++) {
       const desde = await DB.kvGet('servidorDesde', 0);
-      const j = await Sync.chamar('receber', { desde });
+      const j = await Sync.chamar('receber', { desde, visto: await DB.kvGet('vistoServidor', 0) });
       if (!j.dados) throw new Error('Resposta inesperada do servidor ao receber dados.');
       if (j.planilha) {
         const ant = await DB.kvGet('planilhaId', null);
@@ -438,35 +553,17 @@
       for (const e of ENTIDADES) {
         for (const o of (j.dados[e] || [])) {
           if (!o || !o.id) continue;
-          let mudou = false;
-          try {
-            await DB.atualizar(e, o.id, (local) => {
-              if (local) {
-                // mesma versao que o aparelho ja tem: nada a fazer
-                if (!local._pendente && String(local.atualizadoEm) === String(o.atualizadoEm) && !!local.excluido === !!o.excluido && (e !== 'fotos' || !o.driveId || local.driveId === o.driveId)) return undefined;
-                // alteracao local mais nova ainda nao enviada: mantem a local
-                if (local._pendente && String(local.atualizadoEm) > String(o.atualizadoEm)) return undefined;
-                // exclusao e definitiva: uma copia antiga do servidor nao "ressuscita" o que foi excluido aqui
-                if (local.excluido && !o.excluido) {
-                  if (local._pendente) return undefined;
-                  local._pendente = true; local.atualizadoEm = DB.carimbo(o.atualizadoEm); pedidoDurante = true;
-                  return local;
-                }
-                if (local.miniatura && !o.miniatura) o.miniatura = local.miniatura;
-                // nao perde o endereco da foto no Drive por causa de uma edicao feita em outro aparelho
-                if (e === 'fotos' && local.driveId && !o.driveId) { o.driveId = local.driveId; o._pendente = true; pedidoDurante = true; }
-              }
-              mudou = true;
-              return o;
-            });
-          } catch (err) {
-            // um registro com problema não pode travar o recebimento dos outros
+          try { if (await aplicarRecebido(e, o)) total++; } catch (err) {
+            // não conseguiu gravar no aparelho (memória cheia, app em segundo plano…): guarda para tentar de novo
+            // (antes o registro era pulado para sempre, porque o cursor avançava)
+            falhos[e + ':' + o.id] = { e, o };
             Sync.log('erro ao gravar recebido', e + ' ' + String(o.id).slice(0, 8) + ': ' + err.message);
           }
-          if (mudou) total++;
         }
       }
+      if (Object.keys(falhos).length) { try { await DB.kvSet('recebidosFalhos', falhos); } catch (err) { continue; /* nem isso: repete a página */ } }
       await DB.kvSet('servidorDesde', j.servidorAgora);
+      await DB.kvSet('vistoServidor', j.mais ? 0 : (j.ultima || 0)); // última gravação já recebida por inteiro
       if (j.ultima) Sync._ultimaVista = Math.max(Sync._ultimaVista || 0, j.ultima);
       if (!j.mais) break;
       emitir('sincronizando', { detalhe: 'Recebendo dados… (' + total + ')' });
@@ -526,17 +623,29 @@
   Sync._ultimaVista = 0;
   let semNovidades = false;
   Sync.verificarNovidades = async function () {
-    if (semNovidades || emAndamento || !Sync.habilitado() || !navigator.onLine || (root.document && document.visibilityState !== 'visible')) return;
+    if (semNovidades || (emAndamento && !fotosEmEnvio) || falhasSeguidas > 0 || !Sync.habilitado() || !navigator.onLine || (root.document && document.visibilityState !== 'visible')) return;
     if (!Sync.token() || Sync.estado === 'login' || Sync.estado === 'sem_acesso') return; // nunca abre tela de login sozinho
     try {
       const j = await chamarUmaVez('novidades');
       if (!Sync._ultimaVista) Sync._ultimaVista = j.ultima; // primeira consulta: a sincronização normal já acontece ao abrir
-      else if (j.ultima > Sync._ultimaVista) { Sync.log('novidades', 'Outro aparelho gravou dados — sincronizando'); Sync.sincronizar(); }
+      else if (j.ultima > Sync._ultimaVista) {
+        Sync._atividade = Date.now();
+        if (emAndamento && fotosEmEnvio) { novidadeDurante = true; return; } // recebe no intervalo entre as fotos
+        Sync.log('novidades', 'Outro aparelho gravou dados — sincronizando'); Sync.sincronizar();
+      }
     } catch (e) {
       if (/desconhecida/i.test(e.message || '')) semNovidades = true; // servidor antigo: fica só com a sincronização a cada 5 min
     }
   };
-  setInterval(() => Sync.verificarNovidades(), 20000);
+  // a cada 10 s quando há movimento (alguém gravou algo nos últimos 5 min); senão a cada 20 s
+  Sync._atividade = 0;
+  let ultimaConsulta = 0;
+  setInterval(() => {
+    const ritmo = Date.now() - Math.max(Sync._atividade, Sync._ultimaVista || 0) < 300000 ? 10000 : 20000;
+    if (Date.now() - ultimaConsulta < ritmo - 500) return;
+    ultimaConsulta = Date.now();
+    Sync.verificarNovidades();
+  }, 5000);
 
   root.addEventListener('online', () => { Sync.log('conexão', 'internet voltou'); Sync.sincronizar(); });
   // ao voltar para o app (iPhone/Android suspendem o app em segundo plano): sincroniza se já faz um tempo
