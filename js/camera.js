@@ -10,6 +10,9 @@
     flashOff: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M13 3L6 13h5l-1 8 7-10h-5l1-8z"/><path d="M3 3l18 18"/></svg>',
     flashOn: '<svg viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"><path d="M13 3L6 13h5l-1 8 7-10h-5l1-8z"/></svg>',
     celular: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="7" y="2.5" width="10" height="19" rx="2"/><path d="M11 18.5h2"/></svg>',
+    lixo: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"/></svg>',
+    esq: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg>',
+    dir: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18l6-6-6-6"/></svg>',
     lente: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 12a8 8 0 0 1-14.3 4.9M4 12A8 8 0 0 1 18.3 7.1"/><path d="M18.5 3v4.3h-4.3M5.5 21v-4.3h4.3"/></svg>',
   };
 
@@ -39,7 +42,8 @@
     opts = opts || {};
     return new Promise(async (resolve, reject) => {
       let stream = null, track = null, cap = {}, wake = null, fechado = false, total = 0, ocupado = false, torch = false;
-      let lentes = [], lenteAtual = ls.get('cam_lente') || '', zoom = 1, imgCap = null;
+      let facing = 'environment', temFrontal = false, zoom = 1, imgCap = null, gravidade = null;
+      const sessao = []; // fotos desta sessao: {url, blob, foto: Promise}
 
       const video = el('video', { autoplay: '', playsinline: '', muted: '', class: 'cv-video' });
       video.muted = true;
@@ -48,7 +52,7 @@
       const msg = el('div', { class: 'cv-msg' });
       const zoomBar = el('div', { class: 'cv-zoom' });
       const cont = el('div', { class: 'cv-cont' }, opts.modo === 'unica' ? (opts.titulo || '') : (opts.titulo || ''));
-      const thumb = el('button', { class: 'cv-thumb', 'aria-label': 'Concluir', onclick: () => fechar() });
+      const thumb = el('button', { class: 'cv-thumb', 'aria-label': 'Fotos desta sessão', onclick: () => abrirGaleria() });
       const badge = el('span', { class: 'cv-badge' });
       thumb.append(badge);
       const inpNativo = el('input', { type: 'file', accept: 'image/*', capture: 'environment', style: { display: 'none' } });
@@ -57,7 +61,7 @@
         if (files && files.length) { fechar(true); resolve({ aparelho: files, total }); }
       });
       const btnFlash = el('button', { class: 'cv-ic', 'aria-label': 'Flash', html: SVG.flashOff, style: { visibility: 'hidden' }, onclick: () => alternarFlash() });
-      const btnLente = el('button', { class: 'cv-ic cv-ic-grande', 'aria-label': 'Trocar lente', html: SVG.lente, style: { visibility: 'hidden' }, onclick: () => proximaLente() });
+      const btnLente = el('button', { class: 'cv-ic cv-ic-grande', 'aria-label': 'Câmera frontal / traseira', html: SVG.lente, style: { visibility: 'hidden' }, onclick: () => alternarFrontal() });
       const btnDisparo = el('button', { class: 'cv-disparo', 'aria-label': 'Tirar foto', onclick: () => disparar() }, el('span'));
 
       const visor = el('div', { class: 'cv-visor' }, video, foco, flash, zoomBar);
@@ -79,11 +83,15 @@
         clearTimeout(aviso._t); aviso._t = setTimeout(() => { msg.style.opacity = '0'; }, ms || 1600);
       }
 
-      async function abrirStream(deviceId) {
+      async function abrirStream() {
         if (stream) stream.getTracks().forEach((t) => t.stop());
         const tam = { width: { ideal: 4096 }, height: { ideal: 3072 } };
-        const c = deviceId ? Object.assign({ deviceId: { exact: deviceId } }, tam) : Object.assign({ facingMode: { ideal: 'environment' } }, tam);
-        stream = await navigator.mediaDevices.getUserMedia({ audio: false, video: c });
+        try {
+          stream = await navigator.mediaDevices.getUserMedia({ audio: false, video: Object.assign({ facingMode: { exact: facing } }, tam) });
+        } catch (e) {
+          stream = await navigator.mediaDevices.getUserMedia({ audio: false, video: Object.assign({ facingMode: { ideal: facing } }, tam) });
+        }
+        video.classList.toggle('espelho', facing === 'user');
         track = stream.getVideoTracks()[0];
         video.srcObject = stream;
         await video.play().catch(() => {});
@@ -93,36 +101,90 @@
         torch = false; btnFlash.innerHTML = SVG.flashOff; btnFlash.classList.remove('ativo');
         try { if (cap.focusMode && cap.focusMode.includes('continuous')) await track.applyConstraints({ advanced: [{ focusMode: 'continuous' }] }); } catch (e) { /* */ }
         const s = track.getSettings ? track.getSettings() : {};
-        lenteAtual = s.deviceId || deviceId || '';
         zoom = s.zoom || 1;
         montarZoom();
       }
 
-      async function listarLentes() {
+      async function detectarFrontal() {
         try {
           const devs = (await navigator.mediaDevices.enumerateDevices()).filter((d) => d.kind === 'videoinput');
-          const traseiras = devs.filter((d) => !/front|frontal|user|selfie/i.test(d.label || ''));
-          lentes = traseiras.length ? traseiras : devs;
-        } catch (e) { lentes = []; }
-        btnLente.style.visibility = lentes.length > 1 ? 'visible' : 'hidden';
+          temFrontal = devs.length > 1;
+        } catch (e) { temFrontal = false; }
+        btnLente.style.visibility = temFrontal ? 'visible' : 'hidden';
       }
 
-      function nomeLente(d, i) {
-        const l = (d.label || '').toLowerCase();
-        if (/ultra|wide|grande/.test(l)) return 'Grande angular';
-        if (/tele/.test(l)) return 'Teleobjetiva';
-        return 'Lente ' + (i + 1) + ' de ' + lentes.length;
+      async function alternarFrontal() {
+        const antes = facing;
+        facing = facing === 'environment' ? 'user' : 'environment';
+        try { await abrirStream(); aviso(facing === 'user' ? 'Câmera frontal' : 'Câmera traseira'); }
+        catch (e) { facing = antes; try { await abrirStream(); } catch (e2) { /* */ } aviso('Não foi possível trocar a câmera'); }
       }
 
-      async function proximaLente() {
-        if (lentes.length < 2) return;
-        let i = lentes.findIndex((d) => d.deviceId === lenteAtual);
-        for (let t = 0; t < lentes.length; t++) {
-          i = (i + 1) % lentes.length;
-          try { await abrirStream(lentes[i].deviceId); ls.set('cam_lente', lentes[i].deviceId); aviso(nomeLente(lentes[i], i)); return; }
-          catch (e) { /* tenta a proxima */ }
+      /* posicao do celular no momento da foto (para salvar na horizontal quando estiver na horizontal) */
+      function aoMovimento(e) {
+        const a = e.accelerationIncludingGravity;
+        if (a && a.x !== null) gravidade = { x: a.x, y: a.y };
+      }
+      window.addEventListener('devicemotion', aoMovimento);
+      function anguloAtual() {
+        let ang = 0;
+        if (screen.orientation && typeof screen.orientation.angle === 'number') ang = screen.orientation.angle;
+        else if (typeof window.orientation === 'number') ang = (window.orientation + 360) % 360;
+        if (ang === 0 && gravidade && Math.abs(gravidade.x) > 6 && Math.abs(gravidade.x) > Math.abs(gravidade.y) * 1.3) {
+          // tela travada em retrato, mas o celular esta deitado
+          const ios = /iPhone|iPad|iPod/.test(navigator.userAgent);
+          const topoEsquerda = ios ? gravidade.x > 0 : gravidade.x < 0;
+          ang = topoEsquerda ? 90 : 270;
         }
-        aviso('Não foi possível trocar de lente');
+        return ang;
+      }
+
+      /* galeria das fotos tiradas nesta sessao */
+      function abrirGaleria() {
+        if (!sessao.some((f) => !f.excluida)) { aviso('Nenhuma foto nesta sessão ainda'); return; }
+        video.pause();
+        const gal = el('div', { class: 'cv-gal' });
+        const vivas = () => sessao.filter((f) => !f.excluida);
+        const fecharGal = () => { gal.remove(); video.play().catch(() => {}); };
+        const desenharGrade = () => {
+          const v = vivas();
+          gal.replaceChildren(
+            el('div', { class: 'cv-gal-topo' },
+              el('button', { class: 'cv-ic', 'aria-label': 'Voltar à câmera', html: SVG.esq, onclick: fecharGal }),
+              el('div', { class: 'cv-cont' }, v.length + (v.length === 1 ? ' foto nesta sessão' : ' fotos nesta sessão')),
+              el('div', { style: { width: '42px' } })),
+            el('div', { class: 'cv-gal-grade' }, v.map((f) => el('button', { class: 'cv-gal-item', style: { backgroundImage: 'url(' + f.url + ')' }, onclick: () => verFoto(f) }))),
+            el('div', { class: 'cv-gal-base' }, el('button', { class: 'cv-gal-bt', onclick: fecharGal }, 'Voltar à câmera')));
+        };
+        const verFoto = (f) => {
+          const v = vivas();
+          const pos = v.indexOf(f);
+          gal.replaceChildren(
+            el('div', { class: 'cv-gal-topo' },
+              el('button', { class: 'cv-ic', 'aria-label': 'Voltar', html: SVG.esq, onclick: desenharGrade }),
+              el('div', { class: 'cv-cont' }, 'Foto ' + (pos + 1) + ' de ' + v.length),
+              el('button', { class: 'cv-ic', 'aria-label': 'Excluir foto', html: SVG.lixo, onclick: async () => {
+                if (!confirm('Excluir esta foto?')) return;
+                f.excluida = true;
+                try { const foto = await f.foto; if (opts.aoExcluir) await opts.aoExcluir(foto); } catch (e) { /* */ }
+                total--; atualizarContador();
+                if (vivas().length) desenharGrade(); else fecharGal();
+              } })),
+            el('div', { class: 'cv-ver' }, el('img', { class: 'cv-ver-img', src: f.url }),
+              pos > 0 ? el('button', { class: 'cv-ver-nav esq', html: SVG.esq, onclick: () => verFoto(v[pos - 1]) }) : null,
+              pos < v.length - 1 ? el('button', { class: 'cv-ver-nav dir', html: SVG.dir, onclick: () => verFoto(v[pos + 1]) }) : null),
+            el('div', { class: 'cv-gal-base' }, el('button', { class: 'cv-gal-bt', onclick: fecharGal }, 'Voltar à câmera')));
+        };
+        desenharGrade();
+        ov.append(gal);
+      }
+
+      function atualizarContador() {
+        const v = sessao.filter((f) => !f.excluida);
+        badge.textContent = v.length;
+        badge.style.display = v.length ? 'grid' : 'none';
+        const ult = v[v.length - 1];
+        thumb.style.backgroundImage = ult ? 'url(' + ult.url + ')' : '';
       }
 
       function montarZoom() {
@@ -213,14 +275,19 @@
         try {
           flash.classList.remove('on'); void flash.offsetWidth; flash.classList.add('on');
           if (navigator.vibrate) navigator.vibrate(25);
+          const angulo = anguloAtual();
           const blob = await capturar();
           if (!blob) { aviso('Câmera iniciando…'); return; }
-          thumb.style.backgroundImage = 'url(' + URL.createObjectURL(blob) + ')';
+          blob.angulo = angulo;
           if (opts.modo === 'unica') { fechar(true); resolve(blob); return; }
-          opts.aoFoto(blob).catch((e) => aviso('Erro ao salvar: ' + e.message, 3000));
+          const item = { blob, url: URL.createObjectURL(blob), angulo, foto: Promise.resolve(opts.aoFoto(blob)) };
+          item.foto.then(async (foto) => {
+            // troca a miniatura pela foto ja processada (girada e com carimbo)
+            if (foto && opts.urlFoto) { try { const u = await opts.urlFoto(foto); if (u) { item.url = u; atualizarContador(); } } catch (e) { /* */ } }
+          }).catch((e) => aviso('Erro ao salvar: ' + e.message, 3000));
+          sessao.push(item);
           total++;
-          badge.textContent = total;
-          badge.style.display = 'grid';
+          atualizarContador();
         } finally {
           ocupado = false;
           btnDisparo.classList.remove('ocupado');
@@ -235,6 +302,7 @@
         ov.remove();
         document.body.style.overflow = '';
         window.removeEventListener('popstate', aoVoltar);
+        window.removeEventListener('devicemotion', aoMovimento);
         if (!silencioso) resolve(opts.modo === 'unica' ? null : { total });
       };
       function fechar(silencioso) {
@@ -247,9 +315,8 @@
       window.addEventListener('popstate', aoVoltar);
 
       try {
-        try { await abrirStream(lenteAtual || null); }
-        catch (e) { if (lenteAtual) { ls.set('cam_lente', ''); await abrirStream(null); } else throw e; }
-        await listarLentes();
+        await abrirStream();
+        await detectarFrontal();
         try { if (navigator.wakeLock) wake = await navigator.wakeLock.request('screen'); } catch (e) { /* */ }
       } catch (e) {
         fechar(true);

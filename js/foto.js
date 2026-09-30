@@ -127,13 +127,24 @@
     opcoes = opcoes || {};
     const img = await carregarImagem(arquivo);
     const iw = img.width || img.naturalWidth, ih = img.height || img.naturalHeight;
+    // giro para acompanhar a posicao do celular no momento da foto (angulo da tela: 0, 90, 180, 270)
+    let giro = 0;
+    const ang = opcoes.angulo;
+    if ((ang === 90 || ang === 270) && ih > iw) giro = ang === 90 ? -90 : 90;
     const max = opcoes.maxLado || 2000;
     const esc = Math.min(1, max / Math.max(iw, ih));
-    const w = Math.round(iw * esc), h = Math.round(ih * esc);
+    const dw = Math.round(iw * esc), dh = Math.round(ih * esc);
+    const w = giro ? dh : dw, h = giro ? dw : dh;
     const cv = document.createElement('canvas');
     cv.width = w; cv.height = h;
     const g = cv.getContext('2d');
-    g.drawImage(img, 0, 0, w, h);
+    if (giro) {
+      g.save();
+      g.translate(w / 2, h / 2);
+      g.rotate(giro * Math.PI / 180);
+      g.drawImage(img, -dw / 2, -dh / 2, dw, dh);
+      g.restore();
+    } else g.drawImage(img, 0, 0, w, h);
     if (opcoes.carimbo) {
       const linhas = opcoes.carimbo.filter(Boolean);
       const fs = Math.max(14, Math.round(Math.min(w, h) * 0.034));

@@ -698,7 +698,7 @@
         }
         const carimbar = origem === 'camera' || opt.carimbarGaleria;
         const linhas = carimbar ? [Foto.textoDataHora(dataHora), lat != null ? Foto.textoCoord(lat, lng) : 'sem coordenadas', r.apelido] : null;
-        const res = await Foto.processar(arq, { carimbo: linhas });
+        const res = await Foto.processar(arq, { carimbo: linhas, angulo: arq.angulo, origemCamera: arq.angulo !== undefined });
         const foto = { id: DB.uuid(), registroId: r.id, visitaId: v ? v.id : null, tipo: r.tipo, dataHora, lat, lng, precisao, origem,
           carimbada: !!carimbar, largura: res.largura, altura: res.altura, miniatura: res.miniatura, descricao: '', irregular: !!opt.irregular };
         await DB.blobSet(foto.id, res.blob);
@@ -771,7 +771,13 @@
         } else {
           const res = await Camera.abrir({
             titulo: 'Visita nº ' + v0.numero + ' · ' + r.apelido,
-            aoFoto: (blob) => { fila = fila.then(() => salvarFotos([blob], 'camera', r, v0, { irregular: false })).then((sv) => { nFotos += sv.length; }); return fila; },
+            aoFoto: (blob) => {
+              const pr = fila.then(() => salvarFotos([blob], 'camera', r, v0, { irregular: false })).then((sv) => { nFotos += sv.length; return sv[0]; });
+              fila = pr.catch(() => {});
+              return pr;
+            },
+            urlFoto: async (foto) => { const bl = await DB.blobGet(foto.id); return bl ? URL.createObjectURL(bl) : null; },
+            aoExcluir: async (foto) => { if (foto) { await DB.excluir('fotos', foto.id, email()); nFotos--; } },
           });
           await fila;
           if (res && res.aparelho) {
