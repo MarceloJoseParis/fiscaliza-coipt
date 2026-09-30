@@ -1825,7 +1825,7 @@
       for (const f of fotosSemDrive) if (!(await DB.blobGet(f.id))) semArquivo++;
       const log = Sync.lerLog().slice().reverse();
       const resumo = {
-        app: '2.9', servidor: Sync.versaoServidor || '?', usuario: (u || {}).email, perfil: perfil(), estado: Sync.estado, erro: Sync.erro || '',
+        app: '2.9.2', servidor: Sync.versaoServidor || '?', usuario: (u || {}).email, perfil: perfil(), estado: Sync.estado, erro: Sync.erro || '',
         online: navigator.onLine, ultimaSync: await DB.kvGet('ultimaSync', null), cursor: await DB.kvGet('servidorDesde', 0),
         pendentes: pendPor, fotosAguardandoEnvio: fotosSemDrive.length - semArquivo, fotosDeOutroAparelhoSemEnvio: semArquivo,
         aparelho: navigator.userAgent, log,
@@ -1863,7 +1863,9 @@
       campoBloco('Câmera nas visitas', seg([['app', 'Câmera do app'], ['aparelho', 'Câmera do celular']], prefCamera(), (v) => { try { localStorage.setItem('camera_pref', v); } catch (e) { /* */ } }),
         'Câmera do app: fica aberta para várias fotos seguidas, com troca de lente (grande angular quando o celular permite), zoom, toque para focar e flash. Câmera do celular: todos os recursos do aparelho, uma foto por vez.'),
       h('label', { class: 'linha sub' }, h('input', { type: 'checkbox', checked: rapida ? 'checked' : null, onchange: (e) => { try { localStorage.setItem('cam_rapida', e.target.checked ? '1' : '0'); } catch (er) { /* */ } } }),
-        'Captura rápida (usa o quadro do vídeo, resolução menor)')));
+        'Captura rápida (usa o quadro do vídeo, resolução menor)'),
+      h('div', { class: 'acoes' }, h('button', { class: 'btn peq', onclick: testarCameras }, '🔍 Testar câmeras deste celular')),
+      h('div', { class: 'dica' }, 'Mostra quais lentes o celular libera para o app (grande angular, principal, teleobjetiva) e permite escolher qual é usada no botão 0,5.')));
 
     /* assinantes */
     const pessoas = await DB.listar('pessoas');
@@ -1991,8 +1993,65 @@
         pode.admin() ? h('button', { class: 'btn', onclick: importarBackup }, '⬆️ Importar') : null,
         pode.admin() ? h('button', { class: 'btn', onclick: carregarExemplos }, 'Carregar exemplos dos modelos') : null)));
 
-    cards.push(h('p', { class: 'dica', style: { textAlign: 'center' } }, 'Fiscalização de Obras · v2.9 · dados salvos no aparelho' + (Sync.habilitado() ? ' e no Google Drive do administrador' : '') + ' · ', h('a', { href: 'privacidade.html' }, 'Política de privacidade')));
+    cards.push(h('p', { class: 'dica', style: { textAlign: 'center' } }, 'Fiscalização de Obras · v2.9.2 · dados salvos no aparelho' + (Sync.habilitado() ? ' e no Google Drive do administrador' : '') + ' · ', h('a', { href: 'privacidade.html' }, 'Política de privacidade')));
     rc($main, ...cards);
+  }
+
+  /* Lista as câmeras que o navegador libera, com o zoom de cada uma, e permite escolher a do botão 0,5 */
+  async function testarCameras() {
+    const corpo = h('div', {}, h('p', {}, h('span', { class: 'carregando' }), ' Verificando as câmeras…'));
+    const fechar = modal('Câmeras deste celular', corpo, [{ txt: 'Fechar', valor: true }]);
+    const info = [];
+    try {
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) throw new Error('Este navegador não permite usar a câmera no app.');
+      try { localStorage.removeItem('cam_perfil'); } catch (e) { /* a câmera do app reconhece as lentes de novo */ }
+      const s0 = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' }, audio: false });
+      const principal = (s0.getVideoTracks()[0].getSettings() || {}).deviceId;
+      const c0 = s0.getVideoTracks()[0].getCapabilities ? s0.getVideoTracks()[0].getCapabilities() : {};
+      s0.getTracks().forEach((t) => t.stop());
+      const devs = (await navigator.mediaDevices.enumerateDevices()).filter((d) => d.kind === 'videoinput');
+      for (const d of devs) {
+        const it = { label: d.label || '(sem nome)', id: d.deviceId, principal: d.deviceId === principal };
+        try {
+          const st = await navigator.mediaDevices.getUserMedia({ video: { deviceId: { exact: d.deviceId } }, audio: false });
+          const t = st.getVideoTracks()[0];
+          const c = t.getCapabilities ? t.getCapabilities() : {};
+          it.facing = (c.facingMode || [])[0] || (t.getSettings() || {}).facingMode || '';
+          it.zmin = c.zoom ? c.zoom.min : null;
+          it.zoom = c.zoom ? 'zoom ' + String(c.zoom.min).replace('.', ',') + '–' + String(c.zoom.max).replace('.', ',') : 'sem zoom';
+          it.res = c.width && c.height ? c.width.max + '×' + c.height.max : '';
+          it.foco = (c.focusMode || []).join('/') || '—';
+          st.getTracks().forEach((x) => x.stop());
+        } catch (e) { it.erro = e.name || e.message; }
+        info.push(it);
+      }
+      const escolhida = localStorage.getItem('lente_05');
+      const logico = c0.zoom && c0.zoom.min < 1;
+      const combinada = !logico && info.find((x) => x.zmin != null && x.zmin < 1 && x.facing !== 'user');
+      rc(corpo,
+        h('p', { class: 'sub', style: { marginTop: 0 } }, devs.length + ' câmera(s) liberada(s) para o app. ' + (logico
+          ? 'A câmera principal tem zoom abaixo de 1x (' + c0.zoom.min + '): o botão ' + String(c0.zoom.min).replace('.', ',') + ' usa esse zoom.'
+          : combinada ? 'A câmera “' + combinada.label + '” tem zoom a partir de ' + String(combinada.zmin).replace('.', ',') + 'x: a câmera do app passa a usá-la, com o botão ' + String(combinada.zmin).replace('.', ',') + ' (grande angular).'
+            : 'Nenhuma câmera tem zoom abaixo de 1x: o botão 0,5 troca para outra câmera traseira.')),
+        info.map((it) => h('div', { class: 'item' },
+          h('div', { class: 't' }, it.label, it.principal ? h('span', { class: 'badge', style: { marginLeft: '6px' } }, 'principal') : null,
+            escolhida === it.label ? h('span', { class: 'badge ok', style: { marginLeft: '6px' } }, 'botão 0,5') : null),
+          h('div', { class: 'd' }, [it.facing === 'user' ? 'frontal' : it.facing === 'environment' ? 'traseira' : it.facing, it.zoom, it.res && 'máx. ' + it.res, it.foco && 'foco ' + it.foco, it.erro && 'erro: ' + it.erro].filter(Boolean).join(' · ')),
+          !it.principal && it.facing !== 'user' ? h('button', { class: 'btn peq', style: { marginTop: '6px' }, onclick: (e) => {
+            try { localStorage.setItem('lente_05', it.label); } catch (er) { /* */ }
+            toast('“' + it.label + '” será usada no botão 0,5'); e.target.textContent = '✓ Usada no botão 0,5';
+          } }, 'Usar esta no botão 0,5') : null)),
+        !info.some((x) => !x.principal && x.facing !== 'user')
+          ? h('div', { class: 'aviso', style: { marginTop: '8px' } }, 'Este celular só libera a câmera traseira principal (e a frontal) para aplicativos da web — a grande angular fica disponível só na câmera do próprio celular. Para fotos com grande angular, use o ícone de celular dentro da câmera do app, ou escolha “Câmera do celular” acima.')
+          : null,
+        h('button', { class: 'btn peq', style: { marginTop: '8px' }, onclick: async () => {
+          const txt = navigator.userAgent + '\n' + JSON.stringify({ zoomPrincipal: c0.zoom || null, cameras: info.map((x) => Object.assign({}, x, { id: undefined })) }, null, 1);
+          try { await navigator.clipboard.writeText(txt); toast('Copiado'); } catch (er) { baixarBlob(new Blob([txt], { type: 'text/plain' }), 'cameras.txt'); }
+        } }, '📋 Copiar resultado'));
+    } catch (e) {
+      rc(corpo, h('div', { class: 'aviso' }, 'Não foi possível verificar as câmeras: ' + (e.message || e.name)));
+    }
+    await fechar;
   }
 
   async function telaPessoas() {

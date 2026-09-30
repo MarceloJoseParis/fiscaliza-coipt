@@ -113,18 +113,62 @@
       }
 
       const FRONTAL = /front|frontal|user|selfie|facing front|dianteira/i;
+
+      /* Perfil das lentes do celular (feito uma vez e guardado): abre cada câmera traseira por um instante
+         e lê o zoom de cada uma. Em muitos Android existe uma câmera "combinada" com zoom abaixo de 1x
+         (ex.: 0,6x) que NÃO é a que o navegador abre por padrão — é ela que dá a grande angular. */
+      async function perfilLentes(devs) {
+        const assinatura = devs.map((d) => d.label).join('|');
+        let perf = null;
+        try { perf = JSON.parse(ls.get('cam_perfil') || 'null'); } catch (e) { /* */ }
+        if (perf && perf.assinatura === assinatura) return perf;
+        aviso('Reconhecendo as lentes deste celular…', 5000);
+        if (stream) { stream.getTracks().forEach((t) => t.stop()); stream = null; }
+        perf = { assinatura, cams: [] };
+        for (const d of devs) {
+          if (!d.deviceId) continue;
+          try {
+            const st = await navigator.mediaDevices.getUserMedia({ audio: false, video: { deviceId: { exact: d.deviceId } } });
+            const t = st.getVideoTracks()[0];
+            const c = t.getCapabilities ? t.getCapabilities() : {};
+            perf.cams.push({ label: d.label, zmin: c.zoom ? c.zoom.min : null, zmax: c.zoom ? c.zoom.max : null, facing: (c.facingMode || [])[0] || (t.getSettings() || {}).facingMode || '' });
+            st.getTracks().forEach((x) => x.stop());
+          } catch (e) { perf.cams.push({ label: d.label, erro: e.name || 'erro' }); }
+        }
+        ls.set('cam_perfil', JSON.stringify(perf));
+        return perf;
+      }
+
       async function detectarFrontal() {
         let devs = [];
         try { devs = (await navigator.mediaDevices.enumerateDevices()).filter((d) => d.kind === 'videoinput'); } catch (e) { /* */ }
         temFrontal = devs.length > 1;
         btnLente.style.visibility = temFrontal ? 'visible' : 'hidden';
-        // outras câmeras traseiras (grande angular, teleobjetiva...) — usadas quando o zoom 0,5 não existe
         const s = track && track.getSettings ? track.getSettings() : {};
         lentes.principal = s.deviceId || lentes.principal;
+        let perf = null;
+        // a câmera aberta não tem zoom abaixo de 1x e há outras câmeras: descobre as lentes (uma vez por celular)
+        if (facing === 'environment' && !(cap.zoom && cap.zoom.min < 1) && devs.length > 1 && devs.every((d) => d.label)) {
+          try { perf = await perfilLentes(devs); } catch (e) { perf = null; }
+          const infoDe = (d) => (perf ? perf.cams.find((c) => c.label === d.label) : null) || {};
+          const combinada = devs.filter((d) => { const i = infoDe(d); return i.zmin != null && i.zmin < 1 && i.facing !== 'user' && !FRONTAL.test(d.label); })
+            .sort((a, b) => infoDe(a).zmin - infoDe(b).zmin)[0];
+          const abrir = combinada ? combinada.deviceId : lentes.principal;
+          if (!stream || (track && track.getSettings && track.getSettings().deviceId !== abrir)) {
+            try { await abrirStream(abrir); } catch (e) { await abrirStream(); }
+            const s2 = track.getSettings ? track.getSettings() : {};
+            lentes.principal = s2.deviceId || abrir;
+          }
+          // na próxima vez já abre direto na câmera com grande angular
+          ls.set('cam_principal', combinada ? combinada.label : '');
+        }
+        // outras câmeras traseiras (grande angular, teleobjetiva...) — usadas quando o zoom abaixo de 1x não existe
+        const frontalPerfil = (d) => { const i = perf ? perf.cams.find((c) => c.label === d.label) : null; return i && i.facing === 'user'; };
         const num = (d) => { const m = /(\d+)/.exec(d.label || ''); return m ? +m[1] : 99; };
         const ultraNome = (d) => (/ultra|wide|grande.?angular|0[.,]5/i.test(d.label || '') ? 0 : 1);
-        lentes.extras = devs.filter((d) => d.deviceId && d.deviceId !== lentes.principal && d.label && !FRONTAL.test(d.label))
-          .sort((a, b) => ultraNome(a) - ultraNome(b) || num(a) - num(b));
+        const escolhida = ls.get('lente_05');
+        lentes.extras = devs.filter((d) => d.deviceId && d.deviceId !== lentes.principal && (d.label === escolhida || (d.label && !FRONTAL.test(d.label) && !frontalPerfil(d))))
+          .sort((a, b) => (b.label === escolhida) - (a.label === escolhida) || ultraNome(a) - ultraNome(b) || num(a) - num(b));
         montarZoom();
       }
 
@@ -378,7 +422,11 @@
       window.addEventListener('popstate', aoVoltar);
 
       try {
-        await abrirStream();
+        // câmera combinada (com grande angular) já reconhecida neste celular: abre direto nela
+        let inicial = null;
+        const rot = ls.get('cam_principal');
+        if (rot) { try { const d = (await navigator.mediaDevices.enumerateDevices()).find((x) => x.kind === 'videoinput' && x.label === rot); if (d) inicial = d.deviceId; } catch (e) { /* */ } }
+        try { await abrirStream(inicial); } catch (e) { if (!inicial) throw e; await abrirStream(); }
         await detectarFrontal();
         try { if (navigator.wakeLock) wake = await navigator.wakeLock.request('screen'); } catch (e) { /* */ }
       } catch (e) {
