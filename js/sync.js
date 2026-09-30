@@ -17,7 +17,16 @@
     const c = root.APP_CONFIG || {};
     let local = {};
     try { local = JSON.parse(localStorage.getItem('app_config_local') || '{}'); } catch (e) { /* */ }
-    return { apiUrl: local.apiUrl || c.API_URL || '', clientId: local.clientId || c.GOOGLE_CLIENT_ID || '' };
+    return { apiUrl: Sync.normalizarUrl(local.apiUrl || c.API_URL || ''), clientId: (local.clientId || c.GOOGLE_CLIENT_ID || '').trim() };
+  };
+  /* URLs de contas Google Workspace (…/a/macros/dominio/s/…) redirecionam e transformam o POST em GET:
+     usa sempre o formato direto https://script.google.com/macros/s/ID/exec */
+  Sync.normalizarUrl = function (u) {
+    u = String(u || '').trim();
+    u = u.replace(/^https:\/\/script\.google\.com\/a\/macros\/[^/]+\/s\//, 'https://script.google.com/macros/s/');
+    u = u.replace(/^https:\/\/script\.google\.com\/(?:macros\/)?u\/\d+\/s\//, 'https://script.google.com/macros/s/');
+    u = u.replace(/\/dev(\?.*)?$/, '/exec');
+    return u;
   };
   Sync.salvarConfigLocal = (cfg) => localStorage.setItem('app_config_local', JSON.stringify(cfg || {}));
   Sync.habilitado = () => !!(Sync.config().apiUrl && Sync.config().clientId);
@@ -122,7 +131,15 @@
       body: JSON.stringify(Object.assign({ acao, token }, dados || {})),
     });
     if (!resp.ok) throw new Error('Servidor respondeu ' + resp.status);
-    const j = await resp.json();
+    const txt = await resp.text();
+    let j;
+    try { j = JSON.parse(txt); } catch (e) {
+      throw new Error('O servidor devolveu uma página em vez de dados. Confira no Apps Script: Implantar › Gerenciar implantações › “Quem pode acessar: Qualquer pessoa”, e use a URL que termina em /exec.');
+    }
+    if (j.ok && j.mensagem === 'Backend ativo.') {
+      // resposta do doGet: o pedido foi redirecionado e chegou sem os dados
+      throw new Error('O pedido ao servidor foi redirecionado e chegou incompleto (a URL do Apps Script precisa ser no formato https://script.google.com/macros/s/…/exec). Nada foi perdido: os dados continuam no aparelho.');
+    }
     if (!j.ok) {
       if (j.codigo === 'TOKEN') { localStorage.removeItem('id_token'); emitir('login'); }
       if (j.codigo === 'SEM_ACESSO') emitir('sem_acesso', { erro: j.erro });
@@ -133,6 +150,7 @@
 
   Sync.quemSou = async function () {
     const j = await Sync.chamar('quemSou');
+    if (!j.usuario) throw new Error('Resposta inesperada do servidor (quemSou).');
     const u = Object.assign({}, Sync.usuarioLocal() || {}, j.usuario);
     localStorage.setItem('usuario', JSON.stringify(u));
     Sync.usuario = u;
@@ -177,6 +195,7 @@
       emitir('sincronizando', { detalhe: 'Enviando fotos…' });
       const b64 = await Foto.blobParaBase64(blob);
       const j = await Sync.chamar('enviarFoto', { id: f.id, registroId: f.registroId, base64: b64, mime: blob.type || 'image/jpeg' });
+      if (!j.driveId) throw new Error('Resposta inesperada do servidor ao enviar foto.');
       const atual = await DB.get('fotos', f.id);
       atual.driveId = j.driveId;
       atual._pendente = true;
@@ -197,6 +216,7 @@
     if (!total) return;
     emitir('sincronizando', { detalhe: 'Enviando ' + total + ' alteração(ões)…' });
     const j = await Sync.chamar('enviar', { dados: lote });
+    if (typeof j.gravados !== 'number') throw new Error('Resposta inesperada do servidor ao enviar. Os dados continuam no aparelho.');
     const servidorAntigo = !j.versao || j.versao < 2;
     for (const e of Object.keys(lote)) {
       if (servidorAntigo && e === 'visitas') continue; // servidor desatualizado nao grava visitas: mantem pendente
@@ -212,6 +232,7 @@
   async function receberAlteracoes() {
     const desde = await DB.kvGet('servidorDesde', 0);
     const j = await Sync.chamar('receber', { desde });
+    if (!j.dados) throw new Error('Resposta inesperada do servidor ao receber dados.');
     let n = 0;
     for (const e of ENTIDADES) {
       for (const o of (j.dados[e] || [])) {
@@ -247,6 +268,15 @@
     const blob = Foto.base64ParaBlob(r.base64, r.mime || 'image/jpeg');
     await DB.blobSet(foto.id, blob);
     return blob;
+  };
+
+  /** Marca todos os registros deste aparelho para reenvio (recupera envios que falharam). */
+  Sync.reenviarTudo = async function () {
+    let n = 0;
+    for (const e of ENTIDADES) {
+      for (const o of await DB.all(e)) { if (!o._pendente) { o._pendente = true; await DB.put(e, o); n++; } }
+    }
+    return n;
   };
 
   Sync.enviarArquivo = async function (nome, blob) {

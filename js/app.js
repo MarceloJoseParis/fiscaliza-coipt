@@ -1517,7 +1517,13 @@
         h('div', { class: 'acoes' },
           h('button', { class: 'btn pri', onclick: async () => { await Sync.sincronizar(); telaConfig(); } }, '🔄 Sincronizar agora'),
           h('button', { class: 'btn', onclick: async () => { if (await confirmar('Sair da conta neste aparelho? Os dados locais continuam guardados.', 'Sair')) { Sync.sair(); rotear(); } } }, 'Sair'),
-          h('button', { class: 'btn', onclick: forcarAtualizacao }, 'Recarregar app')));
+          h('button', { class: 'btn', onclick: forcarAtualizacao }, 'Recarregar app'),
+          h('button', { class: 'btn peq', onclick: async () => {
+            if (!(await confirmar('Reenviar ao servidor todos os dados guardados neste aparelho? Use se algo registrado aqui não aparece nos outros celulares. Nada é apagado.', 'Reenviar'))) return;
+            const n = await Sync.reenviarTudo();
+            toast(n + ' registro(s) marcados para reenvio');
+            await Sync.sincronizar(); telaConfig();
+          } }, 'Reenviar dados deste aparelho')));
       if (!Sync.token()) Sync.renderizarBotao(alvo);
     }
     cards.push(contaCard);
