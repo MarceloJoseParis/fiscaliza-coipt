@@ -280,3 +280,7 @@ details.card[open] > summary::before { content: '▾ '; }
 .fila-linha { padding: 8px 0; border-top: 1px solid var(--linha); }
 .fila-linha:first-of-type { border-top: 0; padding-top: 2px; }
 .fila-linha .etqs { margin-bottom: 3px; }
+.fila-hist { margin: 12px 0 4px; }
+.fila-hist h3 { margin: 12px 0 4px; }
+.fila-item.atendida, .fila-linha.atendida { opacity: .78; }
+.fila-linha.atendida:first-of-type { border-top: 1px solid var(--linha); padding-top: 8px; }

@@ -225,6 +225,7 @@
     modelos: {},
     pasta_fotos: '{tipo}-{numero}/{data}',
     feriados: '',
+    fila_atendidos: 'ENCAMINHADO - CCP', // STATUS da planilha da fila que significam "já atendido pela Fiscalização" (um por linha)
   };
 
   const PESSOAS_INICIAIS = [
@@ -1818,6 +1819,11 @@
     if (!k || !dados || !dados.linhas) return [];
     return dados.linhas.filter((l) => chaveConvenio(l.convenio) === k);
   }
+  // Processos já atendidos pela Fiscalização (ex.: STATUS "ENCAMINHADO - CCP") ficam no histórico, ocultos por padrão
+  const chaveSt = (s) => semAc(s).replace(/[^a-z0-9]+/g, ' ').trim();
+  const statusAtendidos = () => String((CONFIG && CONFIG.fila_atendidos != null) ? CONFIG.fila_atendidos : CONFIG_PADRAO.fila_atendidos).split(/\n/).map(chaveSt).filter(Boolean);
+  const atendido = (l) => { const k = chaveSt(l.status); return !!k && statusAtendidos().includes(k); };
+  const btnHistorico = (aberto, n, onclick) => h('button', { class: 'btn peq btn-hist', onclick }, (aberto ? '▾ Ocultar' : '▸ Ver') + ' histórico de atendimento (' + n + ')');
   function itemFila(l, reg) {
     const cab = [l.convenio ? 'Convênio ' + l.convenio : 'Convênio não informado', l.municipio].filter(Boolean).join(' · ');
     const filhos = [
@@ -1825,13 +1831,14 @@
       l.escola ? h('div', { class: 'd' }, l.escola) : null,
       h('div', { class: 'etqs' },
         l.solicitacao ? etq(l.solicitacao, 'info') : null,
-        l.status ? etq(l.status, '') : null,
+        l.status ? etq(l.status, atendido(l) ? 'ok' : '') : null,
         l.situacao ? etq(l.situacao, corSituacao(l.situacao)) : null),
       h('div', { class: 'd' }, [l.protocolo ? 'Protocolo nº ' + l.protocolo : '', 'linha ' + l.linha + ' da planilha'].filter(Boolean).join(' · ')),
       ...(l.extras || []).map(([k, v]) => h('div', { class: 'd' }, k + ': ' + v)),
       reg ? h('div', { class: 'd', style: { color: 'var(--pri)' } }, 'Abrir “' + (reg.apelido || reg.numero) + '” no app ›') : null,
     ];
-    return reg ? h('a', { class: 'item fila-item', href: '#/registro/' + reg.id }, ...filhos) : h('div', { class: 'item fila-item' }, ...filhos);
+    const cls = 'item fila-item' + (atendido(l) ? ' atendida' : '');
+    return reg ? h('a', { class: cls, href: '#/registro/' + reg.id }, ...filhos) : h('div', { class: cls }, ...filhos);
   }
   const avisoLeitura = (dados, erro) => {
     if (!erro || erro === 'local') return null;
@@ -1860,10 +1867,12 @@
     const selSt = h('select', {});
     const soApp = h('input', { type: 'checkbox' });
     const lista = h('div');
+    const historico = h('div');
     const st = (() => { try { return JSON.parse(sessionStorage.getItem('fila_filtros') || '{}'); } catch (e) { return {}; } })();
+    let verHist = !!st.hist;
     busca.value = st.q || ''; soApp.checked = !!st.soApp;
     let sit = st.sit || '';
-    const guardar = () => { try { sessionStorage.setItem('fila_filtros', JSON.stringify({ q: busca.value, sol: selSol.value, st: selSt.value, sit, soApp: soApp.checked })); } catch (e) { /* */ } };
+    const guardar = () => { try { sessionStorage.setItem('fila_filtros', JSON.stringify({ q: busca.value, sol: selSol.value, st: selSt.value, sit, soApp: soApp.checked, hist: verHist })); } catch (e) { /* */ } };
     const opcoes = (sel, campo, rotuloTodos, valor) => {
       const ls = (dados && dados.linhas) || [];
       const cont = new Map();
@@ -1876,27 +1885,33 @@
       guardar();
       const ls = (dados && dados.linhas) || [];
       const q = semAc(busca.value).trim();
-      const base = ls.filter((l) => (!selSol.value || l.solicitacao === selSol.value) && (!selSt.value || l.status === selSt.value) && (!soApp.checked || regDa(l))
+      const filtradas = ls.filter((l) => (!selSol.value || l.solicitacao === selSol.value) && (!selSt.value || l.status === selSt.value) && (!soApp.checked || regDa(l))
         && (!q || semAc([l.convenio, l.protocolo, l.municipio, l.escola, l.solicitacao, l.status, l.situacao, ...(l.extras || []).map((x) => x[1])].join(' ')).includes(q)));
+      const base = filtradas.filter((l) => !atendido(l));
+      const hist = filtradas.filter(atendido);
       const cont = new Map();
       for (const l of base) { const v = l.situacao || '(sem situação)'; cont.set(v, (cont.get(v) || 0) + 1); }
       if (sit && !cont.has(sit)) sit = '';
       rc(resumo, h('button', { class: sit ? '' : 'ativo', onclick: () => { sit = ''; desenhar(); } }, 'Todas (' + base.length + ')'),
         ...[...cont.entries()].sort((a, b) => b[1] - a[1]).map(([v, n]) => h('button', { class: sit === v ? 'ativo' : '', onclick: () => { sit = sit === v ? '' : v; desenhar(); } }, v + ' (' + n + ')')));
       const vis = base.filter((l) => !sit || (l.situacao || '(sem situação)') === sit);
-      rc(lista, ...(vis.length ? vis.map((l) => itemFila(l, regDa(l))) : [h('div', { class: 'vazio' }, ls.length ? 'Nada encontrado com esses filtros.' : 'A planilha não tem linhas preenchidas.')]));
+      rc(lista, ...(vis.length ? vis.map((l) => itemFila(l, regDa(l))) : [h('div', { class: 'vazio' }, !ls.length ? 'A planilha não tem linhas preenchidas.' : hist.length && !base.length ? 'Nenhum processo pendente com esses filtros. 👍' : 'Nada encontrado com esses filtros.')]));
+      const abrir = verHist || (selSt.value && atendido({ status: selSt.value }));
+      rc(historico, hist.length ? h('div', { class: 'fila-hist' },
+        btnHistorico(abrir, hist.length, () => { verHist = !abrir; desenhar(); }),
+        abrir ? h('div', {}, h('h3', {}, 'Histórico de atendimento'), h('p', { class: 'dica', style: { marginTop: 0 } }, 'Processos já atendidos pela Fiscalização (status: ' + String(CONFIG.fila_atendidos || '').split(/\n/).filter((x) => x.trim()).join(', ') + ').'), ...hist.map((l) => itemFila(l, regDa(l)))) : null) : null);
     };
     const montar = () => {
       if (!dados || !dados.configurada) {
         rc(topo, avisoLeitura(dados, erro), dados || !erro ? h('div', { class: 'vazio' }, 'A planilha da fila ainda não foi vinculada.',
           pode.admin() ? h('div', { style: { marginTop: '12px' } }, h('a', { class: 'btn pri', href: '#/config' }, 'Vincular em Ajustes')) : h('div', { class: 'sub' }, 'Peça ao administrador para vincular em Ajustes.')) : null);
-        rc(resumo); rc(lista); controles.classList.add('oculto');
+        rc(resumo); rc(lista); rc(historico); controles.classList.add('oculto');
         return;
       }
       controles.classList.remove('oculto');
       rc(topo, avisoLeitura(dados, erro),
         h('div', { class: 'linha', style: { marginBottom: '10px' } },
-          h('div', { class: 'cresce sub' }, '📄 ' + (dados.titulo || 'Planilha') + (dados.aba ? ' › ' + dados.aba : '') + ' · ' + dados.linhas.length + ' processo(s)', h('br'), 'Lido em ' + dataHoraBR(dados.lidoEm)),
+          h('div', { class: 'cresce sub' }, '📄 ' + (dados.titulo || 'Planilha') + (dados.aba ? ' › ' + dados.aba : '') + ' · ' + dados.linhas.filter((l) => !atendido(l)).length + ' pendente(s) · ' + dados.linhas.filter(atendido).length + ' atendido(s)', h('br'), 'Lido em ' + dataHoraBR(dados.lidoEm)),
           h('button', { class: 'btn peq', onclick: () => atualizar(true) }, '↻ Atualizar')));
       opcoes(selSol, 'solicitacao', 'Todas as solicitações', selSol.value || st.sol);
       opcoes(selSt, 'status', 'Todos os status', selSt.value || st.st);
@@ -1911,7 +1926,7 @@
     selSt.addEventListener('change', desenhar);
     soApp.addEventListener('change', desenhar);
     const rodape = h('p', { class: 'dica' }, 'Somente leitura: estas informações vêm da planilha da fila de atendimento. Para alterar algo, edite a própria planilha no Google Planilhas — o app busca de novo a cada minuto enquanto esta tela está aberta.');
-    rc($main, topo, controles, lista, rodape);
+    rc($main, topo, controles, lista, historico, rodape);
     if (!dados) rc(topo, h('div', { class: 'vazio' }, h('span', { class: 'carregando' }), ' Lendo a planilha…'));
     else montar();
 
@@ -1935,17 +1950,24 @@
   /* Cartão "Fila de atendimento" dentro de um convênio */
   function cartaoFilaConvenio(r) {
     const box = h('div', { class: 'card oculto' });
+    let verHist = false;
+    let ultimo = null;
+    const linha = (l) => h('div', { class: 'fila-linha' + (atendido(l) ? ' atendida' : '') },
+      h('div', { class: 'etqs' }, l.solicitacao ? etq(l.solicitacao, 'info') : null, l.status ? etq(l.status, atendido(l) ? 'ok' : '') : null, l.situacao ? etq(l.situacao, corSituacao(l.situacao)) : null),
+      h('div', { class: 'sub' }, [l.protocolo ? 'Protocolo nº ' + l.protocolo : '', l.escola].filter(Boolean).join(' · ')),
+      ...(l.extras || []).map(([k, v]) => h('div', { class: 'sub' }, k + ': ' + v)));
     const pintar = (dados, erro) => {
+      ultimo = [dados, erro];
       if (!dados || !dados.configurada) { box.classList.add('oculto'); return; }
       const ls = linhasDoConvenio(dados, r);
+      const pend = ls.filter((l) => !atendido(l)), hist = ls.filter(atendido);
       box.classList.remove('oculto');
       rc(box, h('h2', {}, 'Fila de atendimento'),
         !chaveConvenio(r.numero) ? h('p', { class: 'sub' }, 'Informe o número do convênio no cadastro para ver os processos dele na fila.')
-          : ls.length ? ls.map((l) => h('div', { class: 'fila-linha' },
-            h('div', { class: 'etqs' }, l.solicitacao ? etq(l.solicitacao, 'info') : null, l.status ? etq(l.status, '') : null, l.situacao ? etq(l.situacao, corSituacao(l.situacao)) : null),
-            h('div', { class: 'sub' }, [l.protocolo ? 'Protocolo nº ' + l.protocolo : '', l.escola].filter(Boolean).join(' · ')),
-            ...(l.extras || []).map(([k, v]) => h('div', { class: 'sub' }, k + ': ' + v))))
-            : h('p', { class: 'sub' }, 'Nenhum processo deste convênio (' + r.numero + ') na planilha da fila.'),
+          : !ls.length ? h('p', { class: 'sub' }, 'Nenhum processo deste convênio (' + r.numero + ') na planilha da fila.')
+            : pend.length ? pend.map(linha) : h('p', { class: 'sub' }, 'Nenhum processo pendente deste convênio na fila. 👍'),
+        hist.length ? h('div', { class: 'fila-hist' }, btnHistorico(verHist, hist.length, () => { verHist = !verHist; pintar(...ultimo); }),
+          verHist ? h('div', {}, ...hist.map(linha)) : null) : null,
         erro && erro !== 'local' ? h('div', { class: 'dica' }, 'Última leitura: ' + dataHoraBR(dados.lidoEm) + ' (sem atualização agora).') : h('div', { class: 'dica' }, 'Somente leitura · atualizado em ' + dataHoraBR(dados.lidoEm) + ' · ', h('a', { href: '#/fila' }, 'ver fila completa')));
     };
     if (r.tipo !== 'convenio' || !Sync.habilitado()) return box;
@@ -2404,7 +2426,7 @@
       for (const f of fotosSemDrive) if (!(await DB.blobGet(f.id))) semArquivo++;
       const log = Sync.lerLog().slice().reverse();
       const resumo = {
-        app: '3.3', servidor: Sync.versaoServidor || '?', usuario: (u || {}).email, perfil: perfil(), estado: Sync.estado, erro: Sync.erro || '',
+        app: '3.3.1', servidor: Sync.versaoServidor || '?', usuario: (u || {}).email, perfil: perfil(), estado: Sync.estado, erro: Sync.erro || '',
         online: navigator.onLine, ultimaSync: await DB.kvGet('ultimaSync', null), cursor: await DB.kvGet('servidorDesde', 0),
         pendentes: pendPor, fotosAguardandoEnvio: fotosSemDrive.length - semArquivo, fotosDeOutroAparelhoSemEnvio: semArquivo,
         aparelho: navigator.userAgent, log,
@@ -2504,6 +2526,7 @@
       const box = h('div', {}, h('span', { class: 'carregando' }));
       cards.push(h('div', { class: 'card' }, h('h2', {}, 'Fila de atendimento (somente leitura)'), box));
       const f = { url: '', aba: '' };
+      const at = { v: CONFIG.fila_atendidos == null ? CONFIG_PADRAO.fila_atendidos : CONFIG.fila_atendidos };
       const passos = (conta) => h('ol', { class: 'sub', style: { paddingLeft: '20px', margin: '6px 0' } },
         h('li', {}, 'Abra a planilha da fila no Google Planilhas e copie o endereço da barra do navegador.'),
         h('li', {}, conta ? h('span', {}, 'Se a planilha não for da conta ', h('b', {}, conta), ', clique em Compartilhar e adicione essa conta como ', h('b', {}, 'Leitor'), '.') : h('span', {}, 'Se a planilha for de outra conta, compartilhe-a como ', h('b', {}, 'Leitor'), ' com a conta que publicou o servidor do app.')),
@@ -2517,6 +2540,10 @@
           h('p', { class: 'sub' }, 'Mostra na aba “Fila” e em cada convênio a situação dos processos, lida de uma planilha do Google. O app só LÊ essa planilha — nunca altera nada nela. Compartilhando como Leitor, o próprio Google impede qualquer alteração.'),
           d && d.configurada ? previa(d) : h('div', { class: 'aviso' }, 'Nenhuma planilha vinculada.'),
           msgErro ? h('div', { class: 'aviso' }, msgErro) : null,
+          d && d.configurada ? h('div', { style: { margin: '10px 0' } },
+            campo('STATUS que significam “já atendido pela Fiscalização” (um por linha)', inputArea(at, 'v', { rows: 2, placeholder: 'ENCAMINHADO - CCP' }),
+              'Processos com esses status ficam ocultos e só aparecem em “Ver histórico de atendimento”. Maiúsculas, acentos e traços não importam.'),
+            h('button', { class: 'btn peq', onclick: async () => { await salvarConfig((o) => { o.fila_atendidos = String(at.v || '').split(/\n/).map((x) => x.trim()).filter(Boolean).join('\n'); }); toast('Status de atendido salvos'); } }, 'Salvar status de atendido')) : null,
           passos(conta),
           campo('Endereço (link) da planilha da fila', inputTxt(f, 'url', { placeholder: 'https://docs.google.com/spreadsheets/d/…' })),
           campo('Nome da aba (opcional)', inputTxt(f, 'aba', { placeholder: 'ex.: CONVÊNIOS — em branco usa a primeira aba' })),
@@ -2618,7 +2645,7 @@
         pode.admin() ? h('button', { class: 'btn', onclick: importarBackup }, '⬆️ Importar') : null,
         pode.admin() ? h('button', { class: 'btn', onclick: carregarExemplos }, 'Carregar exemplos dos modelos') : null)));
 
-    cards.push(h('p', { class: 'dica', style: { textAlign: 'center' } }, 'Fiscalização de Obras · v3.3 · dados salvos no aparelho' + (Sync.habilitado() ? ' e no Google Drive do administrador' : '') + ' · ', h('a', { href: 'privacidade.html' }, 'Política de privacidade')));
+    cards.push(h('p', { class: 'dica', style: { textAlign: 'center' } }, 'Fiscalização de Obras · v3.3.1 · dados salvos no aparelho' + (Sync.habilitado() ? ' e no Google Drive do administrador' : '') + ' · ', h('a', { href: 'privacidade.html' }, 'Política de privacidade')));
     rc($main, ...cards);
   }
 
