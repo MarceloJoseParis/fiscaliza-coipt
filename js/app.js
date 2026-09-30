@@ -30,6 +30,16 @@
   const rc = (el, ...k) => el.replaceChildren(...limpar(k));
   const ap = (el, ...k) => el.append(...limpar(k));
 
+  const prefCamera = () => { try { return localStorage.getItem('camera_pref') || 'app'; } catch (e) { return 'app'; } };
+  function aplicarTema(t) {
+    try { localStorage.setItem('tema', t); } catch (e) { /* */ }
+    const escuro = t === 'escuro' || (t === 'auto' && window.matchMedia && matchMedia('(prefers-color-scheme: dark)').matches);
+    document.documentElement.setAttribute('data-theme', escuro ? 'dark' : 'light');
+    const m = document.getElementById('meta-tema');
+    if (m) m.setAttribute('content', escuro ? '#171a20' : '#ffffff');
+  }
+  if (window.matchMedia) matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => { let t = 'auto'; try { t = localStorage.getItem('tema') || 'auto'; } catch (e) { /* */ } if (t === 'auto') aplicarTema('auto'); });
+
   function toast(msg, erro) {
     const t = h('div', { class: 'toast' + (erro ? ' erro' : '') }, msg);
     document.body.appendChild(t);
@@ -743,19 +753,24 @@
     let fila = Promise.resolve();
     const disparar = async (irregular, galeria) => {
       opt.irregular = irregular;
-      if (galeria || !Camera.suportada()) { (galeria ? inpGal : inpCam).click(); return; }
+      if (galeria || !Camera.suportada() || prefCamera() === 'aparelho') { (galeria ? inpGal : inpCam).click(); return; }
       let nFotos = 0, nIrr = 0;
       try {
         if (irregular) {
-          const blob = await Camera.abrir({ modo: 'unica', titulo: '⚠️ Irregularidade · ' + r.apelido });
+          const res = await Camera.abrir({ modo: 'unica', titulo: '⚠️ Irregularidade · ' + r.apelido });
+          const blob = res && res.aparelho ? res.aparelho[0] : res;
           if (blob) { const sv = await salvarFotos([blob], 'camera', r, v0, { irregular: true }); nIrr += sv.filter((x) => x.irregular).length; nFotos += sv.length; }
         } else {
-          await Camera.abrir({
+          const res = await Camera.abrir({
             titulo: 'Visita nº ' + v0.numero + ' · ' + r.apelido,
             aoFoto: (blob) => { fila = fila.then(() => salvarFotos([blob], 'camera', r, v0, { irregular: false })).then((sv) => { nFotos += sv.length; }); return fila; },
             aoIrregularidade: async (blob) => { await fila; const sv = await salvarFotos([blob], 'camera', r, v0, { irregular: true }); nFotos += sv.length; nIrr += sv.filter((x) => x.irregular).length; },
           });
           await fila;
+          if (res && res.aparelho) {
+            const sv = await salvarFotos(Array.from(res.aparelho), 'camera', r, v0, { irregular: false }, status);
+            nFotos += sv.length;
+          }
         }
       } catch (e) {
         console.warn(e);
@@ -1024,7 +1039,10 @@
   async function escolherFoto(titulo, fundo) {
     if (Camera.suportada()) {
       if (fundo) fundo.style.display = 'none';
-      try { return await Camera.abrir({ modo: 'unica', titulo }); } catch (e) { /* cai para o seletor */ } finally { if (fundo) fundo.style.display = ''; }
+      if (prefCamera() !== 'aparelho') {
+        try { const res = await Camera.abrir({ modo: 'unica', titulo }); return res && res.aparelho ? res.aparelho[0] : res; }
+        catch (e) { /* cai para o seletor */ } finally { if (fundo) fundo.style.display = ''; }
+      } else if (fundo) fundo.style.display = '';
     }
     return new Promise((res) => {
       const inp = h('input', { type: 'file', accept: 'image/*', capture: 'environment' });
@@ -1490,6 +1508,22 @@
       if (!Sync.token()) Sync.renderizarBotao(alvo);
     }
     cards.push(contaCard);
+
+    /* aparencia e camera */
+    const seg = (opcoes, atual, aoEscolher) => {
+      const box = h('div', { class: 'seg' });
+      const desenhar = (v) => rc(box, opcoes.map(([val, txt]) => h('button', { class: v === val ? 'ativo' : '', onclick: () => { aoEscolher(val); desenhar(val); } }, txt)));
+      desenhar(atual);
+      return box;
+    };
+    let temaAtual = 'auto'; try { temaAtual = localStorage.getItem('tema') || 'auto'; } catch (e) { /* */ }
+    let rapida = false; try { rapida = localStorage.getItem('cam_rapida') === '1'; } catch (e) { /* */ }
+    cards.push(h('div', { class: 'card' }, h('h2', {}, 'Aparência e câmera'),
+      campo('Tema', seg([['auto', 'Automático'], ['claro', 'Claro'], ['escuro', 'Escuro']], temaAtual, aplicarTema)),
+      campo('Câmera nas visitas', seg([['app', 'Câmera do app'], ['aparelho', 'Câmera do celular']], prefCamera(), (v) => { try { localStorage.setItem('camera_pref', v); } catch (e) { /* */ } }),
+        'Câmera do app: fica aberta para várias fotos seguidas, com troca de lente (grande angular quando o celular permite), zoom 0,5x/1x/2x, toque para focar e lanterna. O botão 📱 dentro dela abre a câmera do celular para uma foto. Câmera do celular: todos os recursos do aparelho, uma foto por vez.'),
+      h('label', { class: 'linha sub' }, h('input', { type: 'checkbox', checked: rapida ? 'checked' : null, onchange: (e) => { try { localStorage.setItem('cam_rapida', e.target.checked ? '1' : '0'); } catch (er) { /* */ } } }),
+        'Captura rápida (usa o quadro do vídeo, resolução menor)')));
 
     /* assinantes */
     const pessoas = await DB.listar('pessoas');
