@@ -36,7 +36,7 @@
     const escuro = t === 'escuro' || (t === 'auto' && window.matchMedia && matchMedia('(prefers-color-scheme: dark)').matches);
     document.documentElement.setAttribute('data-theme', escuro ? 'dark' : 'light');
     const m = document.getElementById('meta-tema');
-    if (m) m.setAttribute('content', escuro ? '#171a20' : '#ffffff');
+    if (m) m.setAttribute('content', escuro ? '#0f1020' : '#f3f4fa');
   }
   if (window.matchMedia) matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => { let t = 'auto'; try { t = localStorage.getItem('tema') || 'auto'; } catch (e) { /* */ } if (t === 'auto') aplicarTema('auto'); });
 
@@ -405,6 +405,7 @@
     if (App._sairNotif) { const f = App._sairNotif; App._sairNotif = null; try { await f(); } catch (e) { console.error(e); } }
     const partes = (location.hash || '#/contratos').slice(2).split('/');
     const [r, a, b] = partes;
+    document.body.dataset.tela = r || 'contratos'; // o layout de computador muda conforme a tela
     if (!manterRolagem) window.scrollTo(0, 0);
     document.querySelectorAll('.fab').forEach((f) => f.remove());
     if (Sync.habilitado() && !App.usuario() && r !== 'config') return telaLogin();
@@ -416,7 +417,7 @@
       if (r === 'novo') { return await telaFormRegistro(null, a); }
       if (r === 'notificacao') { return await telaNotificacao(a); }
       if (r === 'nova-notificacao') { return await criarNotificacao(a); }
-      if (r === 'coleta') { marcarNav('coleta'); return await telaColeta(a); }
+      if (r === 'coleta') { marcarNav(''); return await telaColeta(a); }
       if (r === 'notificacoes') { marcarNav('notificacoes'); return await telaNotificacoes(); }
       if (r === 'fila') { marcarNav('fila'); return await telaFila(); }
       if (r === 'visita') { return await telaVisita(a); }
@@ -433,11 +434,11 @@
 
   function telaLogin(aviso) {
     App._login = !aviso;
-    titulo('Notificações');
+    titulo('Fiscalização de Obras');
     const alvo = h('div', { style: { display: 'flex', justifyContent: 'center', margin: '18px 0' } });
     rc($main, h('div', { class: 'card login-box' },
       h('div', { class: 'logo' }, '📋'),
-      h('h2', {}, 'Notificações Extrajudiciais'),
+      h('h2', {}, 'Fiscalização de Obras'),
       h('p', { class: 'sub' }, 'Entre com sua conta Google. Somente e-mails autorizados pelo administrador têm acesso.'),
       alvo,
       aviso ? h('p', { class: 'aviso' }, aviso) : null,
@@ -499,7 +500,7 @@
       regs.some((r) => !r.status_obra) ? h('option', { value: '__sem' }, 'Sem status informado (' + regs.filter((r) => !r.status_obra).length + ')') : null);
     filtroSt.value = sessionStorage.getItem(chaveFiltro) || '';
     if (filtroSt.selectedIndex < 0) filtroSt.value = '';
-    const lista = h('div');
+    const lista = h('div', { class: 'lista-obras' });
     const desenhar = () => {
       const q = busca.value.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
       const fs = filtroSt.value;
@@ -894,7 +895,7 @@
     if (!r.coordenadores) r.coordenadores = (CONFIG.coordenadores_padrao || []).slice();
     const coords = r.coordenadores.map((pid) => ({ pessoaId: pid }));
     const pessoas = await pessoasMap();
-    titulo((existente ? 'Editar ' : 'Novo ') + ROTULO[tipo].toLowerCase(), true);
+    titulo((existente ? 'Editar ' : 'Novo ') + ROTULO[tipo].toLowerCase(), true); marcarNav(tipo === 'convenio' ? 'convenios' : 'contratos');
 
     const valorInp = (chave, chaveExt) => {
       const inpExt = inputTxt(r, chaveExt, { placeholder: 'gerado automaticamente' });
@@ -1939,7 +1940,7 @@
     const selSol = h('select', {});
     const selSt = h('select', {});
     const soApp = h('input', { type: 'checkbox' });
-    const lista = h('div');
+    const lista = h('div', { class: 'lista-fila' });
     const historico = h('div');
     const st = (() => { try { return JSON.parse(sessionStorage.getItem('fila_filtros') || '{}'); } catch (e) { return {}; } })();
     let verHist = !!st.hist, primeiraMontagem = true;
@@ -2586,7 +2587,7 @@
       for (const f of fotosSemDrive) if (!(await DB.blobGet(f.id))) semArquivo++;
       const log = Sync.lerLog().slice().reverse();
       const resumo = {
-        app: '3.4.1', servidor: Sync.versaoServidor || '?', usuario: (u || {}).email, perfil: perfil(), estado: Sync.estado, erro: Sync.erro || '',
+        app: '3.5', servidor: Sync.versaoServidor || '?', usuario: (u || {}).email, perfil: perfil(), estado: Sync.estado, erro: Sync.erro || '',
         online: navigator.onLine, ultimaSync: await DB.kvGet('ultimaSync', null), cursor: await DB.kvGet('servidorDesde', 0),
         pendentes: pendPor, fotosAguardandoEnvio: fotosSemDrive.length - semArquivo, fotosDeOutroAparelhoSemEnvio: semArquivo,
         aparelho: navigator.userAgent, log,
@@ -2808,7 +2809,7 @@
         pode.admin() ? h('button', { class: 'btn', onclick: importarBackup }, '⬆️ Importar') : null,
         pode.admin() ? h('button', { class: 'btn', onclick: carregarExemplos }, 'Carregar exemplos dos modelos') : null)));
 
-    cards.push(h('p', { class: 'dica', style: { textAlign: 'center' } }, 'Fiscalização de Obras · v3.4.1 · dados salvos no aparelho' + (Sync.habilitado() ? ' e no Google Drive do administrador' : '') + ' · ', h('a', { href: 'privacidade.html' }, 'Política de privacidade')));
+    cards.push(h('p', { class: 'dica', style: { textAlign: 'center' } }, 'Fiscalização de Obras · v3.5 · dados salvos no aparelho' + (Sync.habilitado() ? ' e no Google Drive do administrador' : '') + ' · ', h('a', { href: 'privacidade.html' }, 'Política de privacidade')));
     rcT(tk, ...cards);
   }
 
