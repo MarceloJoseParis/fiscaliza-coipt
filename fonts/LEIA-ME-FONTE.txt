@@ -1,0 +1,3 @@
+Poppins (Regular, Medium, Bold) — subconjunto latino em WOFF.
+Copyright 2020 The Poppins Project Authors (https://github.com/itfoundry/Poppins)
+Licença: SIL Open Font License 1.1 — https://scripts.sil.org/OFL
