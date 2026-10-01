@@ -103,9 +103,9 @@
      aparelho (_campos: campo -> hora da alteração) e o valor que tinham antes (_base, em JSON).
      Assim, se outro aparelho alterou OUTROS campos do mesmo registro, as duas alterações são mantidas
      (antes, a versão inteira mais nova vencia e a outra alteração se perdia). */
-  const SISTEMA = new Set(['id', 'atualizadoEm', 'atualizadoPor', 'criadoEm', 'criadoPor', '_pendente', '_campos', '_base']);
+  const SISTEMA = new Set(['id', 'atualizadoEm', 'atualizadoPor', 'criadoEm', 'criadoPor', '_pendente', '_campos', '_base', '_versaoBase']);
   const js = (v) => String(JSON.stringify(v));
-  DB.CAMPOS_LOCAIS = ['_pendente', '_campos', '_base'];
+  DB.CAMPOS_LOCAIS = ['_pendente', '_campos', '_base', '_versaoBase'];
   DB.marcarCampos = function (antes, depois, quando) {
     if (!antes || !depois) return depois;
     if (antes._pendente && !antes._campos) { delete depois._campos; delete depois._base; return depois; } // pendente de versão antiga: sem controle
@@ -119,6 +119,8 @@
       campos[k] = quando;
     }
     depois._campos = campos; depois._base = base;
+    // versão do servidor a partir da qual estas alterações foram feitas (o servidor recusa se ela mudou)
+    depois._versaoBase = antes._pendente ? antes._versaoBase : antes.atualizadoEm;
     return depois;
   };
 

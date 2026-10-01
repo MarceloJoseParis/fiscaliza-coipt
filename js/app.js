@@ -43,7 +43,10 @@
   function toast(msg, erro) {
     const t = h('div', { class: 'toast' + (erro ? ' erro' : '') }, msg);
     document.body.appendChild(t);
-    setTimeout(() => t.remove(), erro ? 5000 : 2600);
+    // vários avisos ao mesmo tempo: empilha (o mais novo embaixo) em vez de um cobrir o outro
+    const empilhar = () => { let soma = 0; const ts = [...document.querySelectorAll('body > .toast')]; for (let i = ts.length - 1; i >= 0; i--) { ts[i].style.marginBottom = soma + 'px'; soma += ts[i].offsetHeight + 8; } };
+    empilhar();
+    setTimeout(() => { t.remove(); empilhar(); }, erro ? 5000 : 2600);
   }
 
   function modal(titulo, conteudo, botoes) {
@@ -352,10 +355,20 @@
   /* Dados novos de outro aparelho: redesenha a tela sem voltar ao topo, sem apagar o que foi digitado na
      busca e sem fechar o teclado (se o usuário estiver digitando, espera ele terminar). */
   let redesenhoPendente = false;
+  async function redesenharSeSeguro() {
+    const r = location.hash;
+    if (document.querySelector('.modal-fundo') || document.querySelector('.cv')) return; // não mexe na tela com janela ou câmera abertas
+    if (!/notificacao|editar|novo|config|visita|coleta|irregularidade/.test(r)) redesenharMantendo();
+    else if (App._atualizarTela) { try { await App._atualizarTela(); } catch (e) { /* */ } } // telas com edição: atualiza só as partes seguras
+  }
   function redesenharMantendo() {
     const ativo = document.activeElement;
     if (ativo && $main.contains(ativo) && /^(INPUT|TEXTAREA|SELECT)$/.test(ativo.tagName)) {
-      if (!redesenhoPendente) { redesenhoPendente = true; ativo.addEventListener('blur', () => { redesenhoPendente = false; setTimeout(redesenharMantendo, 300); }, { once: true }); }
+      if (!redesenhoPendente) {
+        redesenhoPendente = true;
+        const seq = rotaSeq;
+        ativo.addEventListener('blur', () => { setTimeout(() => { if (!redesenhoPendente || seq !== rotaSeq) return; redesenhoPendente = false; redesenharSeSeguro(); }, 300); }, { once: true });
+      }
       return;
     }
     const hash = location.hash, y = window.scrollY;
@@ -374,8 +387,7 @@
     verificarPrazos();
     const r = location.hash;
     if (document.querySelector('.modal-fundo') || document.querySelector('.cv')) return; // não mexe na tela com janela ou câmera abertas
-    if (!/notificacao|editar|novo|config|visita|coleta|irregularidade/.test(r)) redesenharMantendo();
-    else if (App._atualizarTela) { try { await App._atualizarTela(); } catch (e) { /* */ } } // telas com edição: atualiza só as partes seguras
+    await redesenharSeSeguro();
   };
 
   /* ================================================================== */
@@ -400,6 +412,7 @@
   }
   async function rotear() {
     rotaSeq++;
+    redesenhoPendente = false;
     App._atualizarTela = null;
     if (App._sairTela) { const f = App._sairTela; App._sairTela = null; try { f(); } catch (e) { console.error(e); } }
     if (App._sairNotif) { const f = App._sairNotif; App._sairNotif = null; try { await f(); } catch (e) { console.error(e); } }
@@ -434,6 +447,7 @@
 
   function telaLogin(aviso) {
     App._login = !aviso;
+    document.body.dataset.tela = 'login';
     titulo('Fiscalização de Obras');
     const alvo = h('div', { style: { display: 'flex', justifyContent: 'center', margin: '18px 0' } });
     rc($main, h('div', { class: 'card login-box' },
@@ -479,6 +493,7 @@
   }
   /* ---------- Linha de lista (formato caixa de entrada) ---------- */
   const COR_AVATAR = { ok: '#12b076', alerta: '#f59e0b', perigo: '#ef4462', info: '#4f8df7', neutro: '#9aa0bd', '': '#9aa0bd' };
+  const dataCurtaLocal = (v) => { const s = String(v || ''); if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return dataCurta(s); const d = new Date(s); return isNaN(d) ? '' : dataCurta(isoDe(d)); };
   const dataCurta = (iso) => { const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(iso || '')); return m ? m[3] + '/' + m[2] + '/' + m[1].slice(2) : ''; };
   // ícone de prédio (prefeitura), igual ao do menu Convênios
   const icoPredio = () => { const d = document.createElement('span'); d.className = 'lin-ico'; d.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 21h18M5 21V10l7-5 7 5v11"/><path d="M10 21v-6h4v6"/></svg>'; return d; };
@@ -702,7 +717,9 @@
     return r;
   }
   async function salvarConfig(fn) {
-    let o = await DB.get('config', 'geral');
+    // já existe: lê e grava na mesma transação (uma sincronização no meio não é desfeita)
+    if (await DB.get('config', 'geral')) { await atualizarCampos('config', 'geral', (o) => { fn(o); }); return carregarConfig(); }
+    let o = null;
     if (!o) {
       // aparelho novo que ainda não recebeu os ajustes da equipe: gravar agora apagaria os ajustes de todos
       if (Sync.habilitado() && !(await DB.kvGet('ultimaSync', null))) throw new Error('Aguarde a primeira sincronização deste aparelho: os ajustes da equipe ainda não chegaram.');
@@ -1063,6 +1080,7 @@
     rec.unshift(registroId);
     DB.kvSet('coletaRecentes', rec.slice(0, 5));
     const abertas = (await visitasDe(registroId)).filter((v) => v.status !== 'concluida');
+    if (tk !== rotaSeq) return; // saiu da tela enquanto carregava
     if (abertas.length) {
       const v = abertas[0];
       const esc = await modal('Visita em andamento', h('p', {}, 'Há uma visita em andamento nesta obra (nº ' + v.numero + ', ' + X.dataBR(v.data) + '). Deseja continuar nela?'),
@@ -1319,6 +1337,7 @@
 
     rcT(tk, cab, v.status !== 'concluida' ? gps : null, captura, boxPend, boxFotos, boxIrr, dados, acoes);
     await desenharFotos();
+    if (tk !== rotaSeq) return; // o usuário já foi para outra tela: não liga GPS nem registra limpeza
     App._atualizarTela = () => (document.body.contains(boxFotos) ? desenharFotos() : null); // fotos de outros aparelhos aparecem sem sair da tela
     if (v.status !== 'concluida' && podeEd) {
       Foto.iniciarGPS();
@@ -1864,7 +1883,7 @@
         prazos: [n.enviadaEm && !n.respondidaEm
           ? { rot: 'Prazo de resposta', data: dataCurta(prazoDe(n)), cls: sit.k === 'vencida' ? 'perigo' : sit.restante <= 1 ? 'alerta' : 'info',
             txt: sit.k === 'vencida' ? 'encerrado há ' + -sit.restante + (sit.restante === -1 ? ' dia' : ' dias') : sit.restante === 0 ? 'termina hoje' : sit.restante === 1 ? 'falta 1 dia útil' : 'faltam ' + sit.restante + ' dias úteis' }
-          : { rot: n.status === 'emitida' ? 'Emitida em' : 'Criada em', data: dataCurta(String(n.emitidaEm || n.data || '').slice(0, 10)), cls: '' }],
+          : { rot: n.status === 'emitida' ? 'Emitida em' : 'Criada em', data: dataCurtaLocal(n.emitidaEm || n.data), cls: '' }],
         chips: [sit.k === 'vencida' || sit.k === 'aguardando' ? null : etq(sit.txt, sit.cls), n.enviadaEm ? etq('enviada ' + X.dataBR(n.enviadaEm), '') : null],
       })))
         : h('div', { class: 'vazio' }, g[0] === 'pendentes' ? 'Nenhuma notificação aguardando resposta. 👍' : 'Nada por aqui.'),
@@ -1881,7 +1900,7 @@
   function chaveConvenio(s) {
     const t = String(s || '').replace(/(\d)\.(\d)/g, '$1$2');
     // primeiro "número/ano" do texto ("0961/2024 - 1º TA", "961-2024 lote 03")
-    const na = /(\d+)\s*[\/-]\s*(\d{4}|\d{2})(?!\d)/.exec(t);
+    const na = /(\d+)\s*[\/-]\s*((?:19|20)\d{2}|\d{2})(?!\d)/.exec(t);
     if (na) return String(parseInt(na[1], 10)) + '/' + (na[2].length === 2 ? '20' + na[2] : na[2]);
     const m = t.match(/\d+/g);
     if (!m) return '';
@@ -2054,7 +2073,7 @@
     const aoVoltar = () => { if (document.visibilityState === 'visible' && (!dados || Date.now() - new Date(dados.lidoEm).getTime() > 30000)) atualizar(false); };
     document.addEventListener('visibilitychange', aoVoltar);
     App._sairTela = () => { ativo = false; clearInterval(timer); document.removeEventListener('visibilitychange', aoVoltar); };
-    if (!manterRolagem) atualizar(false); // redesenho por dados de outro aparelho: não precisa reler a planilha
+    if (!manterRolagem || !dados) atualizar(false); // redesenho por dados de outro aparelho: não precisa reler a planilha
   }
 
   /* Cartão "Fila de atendimento" dentro de um convênio */
@@ -2620,7 +2639,7 @@
       for (const f of fotosSemDrive) if (!(await DB.blobGet(f.id))) semArquivo++;
       const log = Sync.lerLog().slice().reverse();
       const resumo = {
-        app: '3.6', servidor: Sync.versaoServidor || '?', usuario: (u || {}).email, perfil: perfil(), estado: Sync.estado, erro: Sync.erro || '',
+        app: '3.7', servidor: Sync.versaoServidor || '?', usuario: (u || {}).email, perfil: perfil(), estado: Sync.estado, erro: Sync.erro || '',
         online: navigator.onLine, ultimaSync: await DB.kvGet('ultimaSync', null), cursor: await DB.kvGet('servidorDesde', 0),
         pendentes: pendPor, fotosAguardandoEnvio: fotosSemDrive.length - semArquivo, fotosDeOutroAparelhoSemEnvio: semArquivo,
         aparelho: navigator.userAgent, log,
@@ -2842,7 +2861,7 @@
         pode.admin() ? h('button', { class: 'btn', onclick: importarBackup }, '⬆️ Importar') : null,
         pode.admin() ? h('button', { class: 'btn', onclick: carregarExemplos }, 'Carregar exemplos dos modelos') : null)));
 
-    cards.push(h('p', { class: 'dica', style: { textAlign: 'center' } }, 'Fiscalização de Obras · v3.6 · dados salvos no aparelho' + (Sync.habilitado() ? ' e no Google Drive do administrador' : '') + ' · ', h('a', { href: 'privacidade.html' }, 'Política de privacidade')));
+    cards.push(h('p', { class: 'dica', style: { textAlign: 'center' } }, 'Fiscalização de Obras · v3.7 · dados salvos no aparelho' + (Sync.habilitado() ? ' e no Google Drive do administrador' : '') + ' · ', h('a', { href: 'privacidade.html' }, 'Política de privacidade')));
     rcT(tk, ...cards);
   }
 

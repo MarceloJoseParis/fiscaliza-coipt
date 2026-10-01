@@ -1,5 +1,5 @@
 /* Service worker: guarda o app no aparelho para funcionar sem internet */
-const VERSAO = 'notif-v3.6.0';
+const VERSAO = 'notif-v3.7.0';
 const ARQUIVOS = [
   './', 'index.html', 'privacidade.html', 'config.js', 'manifest.webmanifest', 'css/app.css',
   'lib/jszip.min.js', 'js/extenso.js', 'js/docgen.js', 'js/db.js', 'js/foto.js', 'js/camera.js', 'js/sync.js', 'js/app.js',
@@ -22,12 +22,10 @@ self.addEventListener('fetch', (e) => {
   if (e.request.method !== 'GET' || url.origin !== self.location.origin) return; // login Google e servidor: sempre pela rede
   // rede primeiro (para receber atualizações); com sinal fraco, depois de 4 s usa a cópia do aparelho
   // (a resposta da rede, se chegar, atualiza a cópia para a próxima vez)
+  // a cópia do aparelho é atualizada mesmo quando a resposta da rede chega depois dos 4 s
+  const rede = fetch(e.request.url, { cache: 'no-cache', credentials: 'same-origin' });
+  e.waitUntil(rede.then((resp) => { if (resp && resp.ok) { const copia = resp.clone(); return caches.open(VERSAO).then((c) => c.put(e.request, copia)); } }).catch(() => {}));
   e.respondWith((async () => {
-    const rede = fetch(e.request.url, { cache: 'no-cache', credentials: 'same-origin' }).then((resp) => {
-      if (resp && resp.ok) { const copia = resp.clone(); e.waitUntil(caches.open(VERSAO).then((c) => c.put(e.request, copia))); }
-      return resp;
-    });
-    rede.catch(() => {}); // se a rede falhar depois de já termos usado a cópia
     const doCache = () => caches.match(e.request, { ignoreSearch: true }).then((r) => r || caches.match('index.html'));
     let timer;
     const lento = new Promise((res) => { timer = setTimeout(() => res('lento'), 4000); });

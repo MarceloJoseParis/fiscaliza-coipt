@@ -403,8 +403,9 @@
   }
 
   function igualAoEnviado(a, o) {
-    const c = Object.assign({}, a); for (const k of DB.CAMPOS_LOCAIS) delete c[k];
-    return JSON.stringify(c) === JSON.stringify(o);
+    const c = Object.assign({}, a); for (const k of DB.CAMPOS_LOCAIS) delete c[k]; delete c._vb;
+    const e = Object.assign({}, o); delete e._vb;
+    return JSON.stringify(c) === JSON.stringify(e);
   }
   const LOTE_MAX_ITENS = 60;
   const LOTE_MAX_BYTES = 700000;
@@ -420,6 +421,8 @@
           continue;
         }
         const c = Object.assign({}, o); for (const k of DB.CAMPOS_LOCAIS) delete c[k];
+        delete c._vb; // nunca reenvia um valor antigo que tenha ficado gravado (servidor anterior à versão 8)
+        if (o._campos && o._versaoBase) c._vb = o._versaoBase; // o servidor confere se ninguém mudou o registro desde então
         itens.push({ e, o: c, tam: JSON.stringify(c).length });
       }
     }
@@ -449,7 +452,13 @@
           // só limpa se ninguém alterou o registro enquanto ele era enviado
           // só limpa se o registro continua IGUAL ao que foi enviado (ex.: o endereço da foto no Drive pode ter
           // chegado durante o envio sem mudar a data de alteração — antes ele se perdia)
-          await DB.atualizar(e, o.id, (a) => { if (!(a && a._pendente && a.atualizadoEm === o.atualizadoEm && igualAoEnviado(a, o))) return undefined; for (const k of DB.CAMPOS_LOCAIS) delete a[k]; return a; });
+          await DB.atualizar(e, o.id, (a) => {
+            if (!a || !a._pendente) return undefined;
+            if (a.atualizadoEm === o.atualizadoEm && igualAoEnviado(a, o)) { for (const k of DB.CAMPOS_LOCAIS) delete a[k]; return a; }
+            // alterado durante o envio: a base passa a ser o que acabou de ser gravado no servidor
+            if (a._campos) { a._versaoBase = o.atualizadoEm; a._base = Object.assign({}, a._base); for (const k of Object.keys(a._campos)) a._base[k] = jsn(o[k]); return a; }
+            return undefined;
+          });
         }
       }
       // o servidor tinha versão mais nova (ou o registro foi excluído por outro aparelho): o aparelho fica igual ao servidor
@@ -468,6 +477,11 @@
         }
       }
       if (servidorAntigo && lote.visitas) throw new Error('Atualize o Code.gs no Apps Script (nova versão) para sincronizar as visitas.');
+      // a única gravação nova no servidor foi esta: não precisa receber de novo nem "avisar" a si mesmo
+      if (j.ultima && j.ultimaAntes) {
+        const visto = await DB.kvGet('vistoServidor', 0);
+        if (visto && visto === j.ultimaAntes) { await DB.kvSet('vistoServidor', j.ultima); Sync._ultimaVista = Math.max(Sync._ultimaVista || 0, j.ultima); }
+      }
       enviados += n;
     }
   }
@@ -497,14 +511,17 @@
       }
     }
     if (Object.keys(campos).length) {
-      out._campos = campos; out._base = base; out._pendente = true;
+      out._campos = campos; out._base = base; out._pendente = true; out._versaoBase = srv.atualizadoEm;
       const ref = String(local.atualizadoEm || '') > String(srv.atualizadoEm || '') ? local.atualizadoEm : srv.atualizadoEm;
       out.atualizadoEm = DB.carimbo(ref); out.atualizadoPor = local.atualizadoPor || srv.atualizadoPor;
       pedidoDurante = true;
     } else if (pend) { out._pendente = true; pedidoDurante = true; }
+    // perfil "consulta" não envia nada: não deixa registros marcados como pendentes para sempre
+    if (perfilAtual() === 'consulta') for (const k of DB.CAMPOS_LOCAIS) delete out[k];
     return out;
   }
   async function aplicarRecebido(e, o) {
+    if (o && '_vb' in o) { o = Object.assign({}, o); delete o._vb; }
     let mudou = false;
     await DB.atualizar(e, o.id, (local) => {
       if (local) {

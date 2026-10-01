@@ -540,3 +540,22 @@ input[type=search] { padding-left: 44px; background: #fff url("data:image/svg+xm
   .lin-obj { flex: 1; min-width: 0; font-size: 12px; margin-top: 0; }
   .lin-org + .lin-obj::before { content: '·'; font-style: normal; margin: 0 8px; color: var(--txt2); }
 }
+
+/* ===== 3.7: ajustes da verificação geral ===== */
+/* modo escuro: contraste do contador, do número das fotos e do aviso de erro */
+:root[data-theme="dark"] .nav-badge { color: #1a1b2e; }
+:root[data-theme="dark"] .foto .num { color: #14152a; }
+:root[data-theme="dark"] .toast.erro { background: var(--erro); color: #1a0a0f; }
+/* o botão "+" não cobre a última linha da lista */
+body:has(.fab) main { padding-bottom: 96px; }
+/* telas em duas colunas: o aviso do GPS continua alinhado */
+@media (min-width: 1024px) { body[data-tela="visita"] main > .gps { display: flex; } }
+/* computador com tela estreita (1024–1279 px): sem a coluna de status à esquerda e sem a página da obra lado a lado */
+@media (min-width: 1024px) and (max-width: 1279px) {
+  .lista-linhas .lin.item, .lin { grid-template-columns: minmax(0, 1fr) auto; }
+  .lin-de { display: none; }
+  .lin-s .so-cel { display: inline; }
+  .lin-t .so-cel { display: inline; }
+  body[data-tela="registro"] main > .card { float: none; width: auto; }
+  body[data-tela="registro"] main > .abas, body[data-tela="registro"] main > .abas ~ * { margin-left: 0; }
+}
