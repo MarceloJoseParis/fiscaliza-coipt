@@ -284,3 +284,15 @@ details.card[open] > summary::before { content: '▾ '; }
 .fila-hist h3 { margin: 12px 0 4px; }
 .fila-item.atendida, .fila-linha.atendida { opacity: .78; }
 .fila-linha.atendida:first-of-type { border-top: 1px solid var(--linha); padding-top: 8px; }
+/* Ajustes › Status das obras */
+.status-ed { border-bottom: 1px solid var(--linha); padding: 8px 0; }
+.status-ed .linha { gap: 8px; align-items: center; }
+.status-ed input[type=text] { flex: 1; min-width: 0; }
+.status-ed-op { margin-top: 6px; flex-wrap: wrap; font-size: 13.5px; }
+.status-ed-op select { width: auto; }
+.status-ed-op label { gap: 4px; }
+.status-grupo { border: 1px solid var(--linha); border-radius: 10px; padding: 0 10px; margin: 8px 0; }
+.status-grupo > summary { cursor: pointer; padding: 10px 0; font-weight: 600; }
+.status-grupo[open] > summary { border-bottom: 1px solid var(--linha); }
+.status-grupo > div { padding-bottom: 10px; }
+.status-ed .btn.peq { padding: 4px 10px; }

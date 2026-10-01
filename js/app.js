@@ -123,8 +123,23 @@
     'Em execução': 'ok', 'Obra concluída': 'ok', 'Obra não iniciada': 'neutro', 'Em licitação': 'info', 'Em recebimento provisório': 'info', 'Em prestação de contas': 'info',
     'Paralisada': 'alerta', 'Contrato rescindido': 'perigo', 'Contrato rescindido – em processo de relicitação': 'perigo', 'Sem vigência': 'perigo',
   };
+  // obra encerrada: prazo vencido não acende alerta
+  const ENCERRA_PADRAO = ['Obra concluída', 'Contrato rescindido', 'Contrato rescindido – em processo de relicitação', 'Sem vigência'];
+  const CORES_STATUS = [['ok', 'Verde'], ['alerta', 'Amarelo'], ['perigo', 'Vermelho'], ['info', 'Azul'], ['neutro', 'Cinza']];
+  const statusPadrao = (tipo) => STATUS_OBRA[tipo].map((nome) => ({ nome, cor: COR_STATUS[nome] || 'neutro', encerra: ENCERRA_PADRAO.includes(nome) }));
+  /* Lista de status (editável pelo administrador em Ajustes › Status das obras; vale para toda a equipe) */
+  function listaStatus(tipo) {
+    const l = CONFIG && CONFIG.status_obra && CONFIG.status_obra[tipo];
+    return Array.isArray(l) && l.length ? l.filter((x) => x && x.nome) : statusPadrao(tipo);
+  }
+  function infoStatus(nome, tipo) {
+    if (!nome) return null;
+    const outro = tipo === 'convenio' ? 'contrato' : 'convenio';
+    return listaStatus(tipo).find((x) => x.nome === nome) || listaStatus(outro).find((x) => x.nome === nome)
+      || (STATUS_OBRA.contrato.includes(nome) || STATUS_OBRA.convenio.includes(nome) ? { nome, cor: COR_STATUS[nome] || 'neutro', encerra: ENCERRA_PADRAO.includes(nome) } : null);
+  }
   const etq = (txt, cls, title) => h('span', { class: 'etq ' + (cls || ''), title: title || null }, txt);
-  const etqStatus = (r) => (r.status_obra ? etq(r.status_obra, COR_STATUS[r.status_obra] || '') : null);
+  const etqStatus = (r) => (r.status_obra ? etq(r.status_obra, ((infoStatus(r.status_obra, r.tipo) || {}).cor || '').replace('neutro', '')) : null);
 
   /* ---------- Prazos em dias corridos (execução / vigência) ---------- */
   function diasAte(iso) {
@@ -144,7 +159,7 @@
     if (r.tipo === 'contrato' && r.prazo_execucao) out.push({ rot: 'Execução', data: r.prazo_execucao, info: infoPrazo(r.prazo_execucao) });
     if (r.vigencia) out.push({ rot: r.tipo === 'convenio' ? 'Vigência do Convênio' : 'Vigência Contratual', data: r.vigencia, info: infoPrazo(r.vigencia) });
     // obra encerrada (concluída, rescindida, sem vigência): prazo vencido não é alerta
-    const encerrada = ['Obra concluída', 'Contrato rescindido', 'Contrato rescindido – em processo de relicitação', 'Sem vigência'].includes(r.status_obra);
+    const encerrada = !!(infoStatus(r.status_obra, r.tipo) || {}).encerra;
     return out.filter((p) => p.info).map((p) => (encerrada && p.info.n < 0 ? Object.assign({}, p, { info: Object.assign({}, p.info, { cls: '' }) }) : p));
   }
 
@@ -229,6 +244,7 @@
     modelos: {},
     pasta_fotos: '{tipo}-{numero}/{data}',
     feriados: '',
+    status_obra: { contrato: statusPadrao('contrato'), convenio: statusPadrao('convenio') },
     fila_atendidos: 'ENCAMINHADO - CCP', // STATUS da planilha da fila que significam "já atendido pela Fiscalização" (um por linha)
   };
 
@@ -478,7 +494,8 @@
     const chaveFiltro = 'filtro_status_' + tipo;
     const filtroSt = h('select', { onchange: () => { sessionStorage.setItem(chaveFiltro, filtroSt.value); desenhar(); } },
       h('option', { value: '' }, 'Todos os status (' + regs.length + ')'),
-      STATUS_OBRA[tipo].map((st) => { const n = regs.filter((r) => r.status_obra === st).length; return n ? h('option', { value: st }, st + ' (' + n + ')') : null; }),
+      listaStatus(tipo).map((x) => x.nome).concat([...new Set(regs.map((r) => r.status_obra).filter((st) => st && !listaStatus(tipo).some((x) => x.nome === st)))])
+        .map((st) => { const n = regs.filter((r) => r.status_obra === st).length; return n ? h('option', { value: st }, st + ' (' + n + ')') : null; }),
       regs.some((r) => !r.status_obra) ? h('option', { value: '__sem' }, 'Sem status informado (' + regs.filter((r) => !r.status_obra).length + ')') : null);
     filtroSt.value = sessionStorage.getItem(chaveFiltro) || '';
     if (filtroSt.selectedIndex < 0) filtroSt.value = '';
@@ -905,8 +922,8 @@
 
     const selStatus = h('select', { onchange: (e) => { r.status_obra = e.target.value; } },
       h('option', { value: '' }, '— não informado —'),
-      STATUS_OBRA[tipo].map((st) => h('option', { value: st, selected: r.status_obra === st ? 'selected' : null }, st)),
-      r.status_obra && !STATUS_OBRA[tipo].includes(r.status_obra) ? h('option', { value: r.status_obra, selected: 'selected' }, r.status_obra) : null);
+      listaStatus(tipo).map((x) => h('option', { value: x.nome, selected: r.status_obra === x.nome ? 'selected' : null }, x.nome)),
+      r.status_obra && !listaStatus(tipo).some((x) => x.nome === r.status_obra) ? h('option', { value: r.status_obra, selected: 'selected' }, r.status_obra + ' (fora da lista atual)') : null);
     const secDados = h('div', { class: 'card' }, h('h2', {}, 'Dados do ' + ROTULO[tipo].toLowerCase()),
       campo('Status da obra', selStatus),
       campo('Nome curto (identificação no app e no nome do arquivo) *', inputTxt(r, 'apelido', { placeholder: tipo === 'convenio' ? 'Ex.: CONVÊNIO 0961-2024 - CLÁUDIA' : 'Ex.: CEI DAURY RIVA' })),
@@ -2421,6 +2438,88 @@
   /* ================================================================== */
   /* Ajustes                                                             */
   /* ================================================================== */
+  /* Ajustes › Status das obras: o administrador acrescenta, renomeia, reordena ou tira status e escolhe a cor */
+  function cartaoStatusObras() {
+    const ed = {};
+    const carregar = (lista) => lista.map((x) => ({ nome: x.nome, cor: x.cor || 'neutro', encerra: !!x.encerra, orig: x.nome }));
+    for (const t of ['convenio', 'contrato']) ed[t] = carregar(listaStatus(t));
+    const box = { convenio: h('div'), contrato: h('div') };
+    const resumo = { convenio: h('span'), contrato: h('span') };
+    const desenhar = (t, focar) => {
+      const l = ed[t];
+      rc(box[t], ...l.map((x, i) => {
+        const nome = h('input', { type: 'text', value: x.nome, placeholder: 'Nome do status', oninput: (e) => { x.nome = e.target.value; } });
+        const cor = h('select', { onchange: (e) => { x.cor = e.target.value; amostra.className = 'etq ' + x.cor.replace('neutro', ''); } },
+          CORES_STATUS.map(([v, rot]) => h('option', { value: v, selected: x.cor === v ? 'selected' : null }, rot)));
+        const amostra = h('span', { class: 'etq ' + x.cor.replace('neutro', '') }, '●');
+        const mover = (d) => { const j = i + d; if (j < 0 || j >= l.length) return; [l[i], l[j]] = [l[j], l[i]]; desenhar(t); };
+        if (focar && i === l.length - 1) setTimeout(() => nome.focus(), 30);
+        return h('div', { class: 'status-ed' },
+          h('div', { class: 'linha' }, amostra, nome,
+            h('button', { class: 'btn peq perigo', title: 'Tirar da lista', onclick: () => { l.splice(i, 1); desenhar(t); } }, '✕')),
+          h('div', { class: 'linha status-ed-op' }, cor,
+            h('label', { class: 'linha', title: 'Obra encerrada: prazo vencido não aparece como alerta' }, h('input', { type: 'checkbox', checked: x.encerra ? 'checked' : null, onchange: (e) => { x.encerra = e.target.checked; } }), 'encerra'),
+            h('span', { class: 'cresce' }),
+            h('button', { class: 'btn peq', title: 'Subir', disabled: i === 0 ? 'disabled' : null, onclick: () => mover(-1) }, '↑'),
+            h('button', { class: 'btn peq', title: 'Descer', disabled: i === l.length - 1 ? 'disabled' : null, onclick: () => mover(1) }, '↓')));
+      }), h('button', { class: 'btn peq', onclick: () => { l.push({ nome: '', cor: 'neutro', encerra: false, orig: null }); desenhar(t, true); } }, '+ Acrescentar status'));
+      if (resumo[t]) resumo[t].textContent = PLURAL[t] + ' (' + l.length + ' status)';
+    };
+    const salvar = async (ev) => {
+      const limpo = {}, trocas = [];
+      for (const t of ['convenio', 'contrato']) {
+        const vistos = new Set();
+        limpo[t] = [];
+        for (const x of ed[t]) {
+          const nome = String(x.nome || '').replace(/\s+/g, ' ').trim();
+          if (!nome) continue;
+          const k = nome.toLowerCase();
+          if (vistos.has(k)) { toast('Status repetido em ' + PLURAL[t] + ': ' + nome, true); return; }
+          vistos.add(k);
+          limpo[t].push({ nome, cor: x.cor || 'neutro', encerra: !!x.encerra });
+          if (x.orig && x.orig !== nome) trocas.push({ t, de: x.orig, para: nome }); // renomeado
+        }
+        if (!limpo[t].length) { toast('A lista de ' + PLURAL[t].toLowerCase() + ' não pode ficar vazia.', true); return; }
+      }
+      // obras que usam status que saíram da lista: o administrador escolhe o que fazer
+      const regs = await DB.listar('registros');
+      const fora = [];
+      for (const t of ['convenio', 'contrato']) {
+        const cont = new Map();
+        for (const r of regs) if (r.tipo === t && r.status_obra && !limpo[t].some((x) => x.nome === r.status_obra)) cont.set(r.status_obra, (cont.get(r.status_obra) || 0) + 1);
+        for (const [de, n] of cont) fora.push({ t, de, n, para: (trocas.find((x) => x.t === t && x.de === de) || {}).para || '' });
+      }
+      if (fora.length) {
+        const conteudo = h('div', {}, h('p', {}, 'Estas obras usam status que não estão mais na lista. Escolha o novo status de cada uma (ou deixe como está):'),
+          ...fora.map((f) => campo(f.n + ' ' + ROTULO[f.t].toLowerCase() + '(s) com “' + f.de + '”', h('select', { onchange: (e) => { f.para = e.target.value; } },
+            h('option', { value: '' }, 'Deixar como está'),
+            limpo[f.t].map((x) => h('option', { value: x.nome, selected: x.nome === f.para ? 'selected' : null }, 'Trocar por: ' + x.nome))))));
+        const ok = await modal('Obras com status fora da lista', conteudo, [{ txt: 'Cancelar', valor: false }, { txt: 'Salvar', valor: true, cls: 'pri' }]);
+        if (!ok) return;
+      }
+      if (ev && ev.target) ev.target.disabled = true;
+      try {
+        await salvarConfig((o) => { o.status_obra = clonar(limpo); });
+        let n = 0;
+        for (const f of fora) {
+          if (!f.para) continue;
+          for (const r of regs) if (r.tipo === f.t && r.status_obra === f.de) { await atualizarCampos('registros', r.id, (o) => { if (o.status_obra === f.de) o.status_obra = f.para; }); n++; }
+        }
+        toast('Status salvos' + (n ? ' · ' + n + ' obra(s) atualizada(s)' : ''));
+        telaConfig();
+      } catch (e) { toast(e.message, true); if (ev && ev.target) ev.target.disabled = false; }
+    };
+    const card = h('div', { class: 'card' }, h('h2', {}, 'Status das obras'),
+      h('p', { class: 'sub' }, 'Lista que aparece em “Status da obra” no cadastro e no filtro das listas. Vale para toda a equipe. “Encerra”: prazos vencidos da obra com esse status deixam de aparecer como alerta (ex.: concluída, rescindida).'),
+      h('details', { class: 'status-grupo' }, h('summary', {}, resumo.convenio), box.convenio),
+      h('details', { class: 'status-grupo' }, h('summary', {}, resumo.contrato), box.contrato),
+      h('div', { class: 'acoes' },
+        h('button', { class: 'btn pri', onclick: salvar }, 'Salvar status'),
+        h('button', { class: 'btn', onclick: () => { for (const t of ['convenio', 'contrato']) { ed[t] = statusPadrao(t).map((x) => Object.assign(x, { orig: x.nome })); desenhar(t); } toast('Lista original carregada — toque em “Salvar status” para confirmar'); } }, 'Restaurar lista original')));
+    desenhar('convenio'); desenhar('contrato');
+    return card;
+  }
+
   async function telaConfig(sub) {
     const tk = rotaSeq; // a tela desiste se o usuário já foi para outra
     titulo('Ajustes', !!sub);
@@ -2487,7 +2586,7 @@
       for (const f of fotosSemDrive) if (!(await DB.blobGet(f.id))) semArquivo++;
       const log = Sync.lerLog().slice().reverse();
       const resumo = {
-        app: '3.4', servidor: Sync.versaoServidor || '?', usuario: (u || {}).email, perfil: perfil(), estado: Sync.estado, erro: Sync.erro || '',
+        app: '3.4.1', servidor: Sync.versaoServidor || '?', usuario: (u || {}).email, perfil: perfil(), estado: Sync.estado, erro: Sync.erro || '',
         online: navigator.onLine, ultimaSync: await DB.kvGet('ultimaSync', null), cursor: await DB.kvGet('servidorDesde', 0),
         pendentes: pendPor, fotosAguardandoEnvio: fotosSemDrive.length - semArquivo, fotosDeOutroAparelhoSemEnvio: semArquivo,
         aparelho: navigator.userAgent, log,
@@ -2581,6 +2680,9 @@
           toast('Padrões salvos');
         } }, 'Salvar padrões'))));
     }
+
+    /* status das obras (lista editável) */
+    if (pode.admin()) cards.push(cartaoStatusObras());
 
     /* fila de atendimento (planilha externa somente leitura) */
     if (Sync.habilitado() && pode.admin()) {
@@ -2706,7 +2808,7 @@
         pode.admin() ? h('button', { class: 'btn', onclick: importarBackup }, '⬆️ Importar') : null,
         pode.admin() ? h('button', { class: 'btn', onclick: carregarExemplos }, 'Carregar exemplos dos modelos') : null)));
 
-    cards.push(h('p', { class: 'dica', style: { textAlign: 'center' } }, 'Fiscalização de Obras · v3.4 · dados salvos no aparelho' + (Sync.habilitado() ? ' e no Google Drive do administrador' : '') + ' · ', h('a', { href: 'privacidade.html' }, 'Política de privacidade')));
+    cards.push(h('p', { class: 'dica', style: { textAlign: 'center' } }, 'Fiscalização de Obras · v3.4.1 · dados salvos no aparelho' + (Sync.habilitado() ? ' e no Google Drive do administrador' : '') + ' · ', h('a', { href: 'privacidade.html' }, 'Política de privacidade')));
     rcT(tk, ...cards);
   }
 
