@@ -559,3 +559,13 @@ body:has(.fab) main { padding-bottom: 96px; }
   body[data-tela="registro"] main > .card { float: none; width: auto; }
   body[data-tela="registro"] main > .abas, body[data-tela="registro"] main > .abas ~ * { margin-left: 0; }
 }
+
+/* 3.7.1: aviso de número de notificação repetido */
+.aviso.perigo { background: var(--erro-bg); color: var(--erro); font-weight: 500; }
+
+/* 3.8: arrastar fotos para mudar a ordem do relatório */
+.fotos.ordenavel .foto { -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
+.fotos.ordenavel .foto img { -webkit-user-drag: none; pointer-events: none; }
+.foto.arrastando { opacity: .25; outline: 2px dashed var(--pri); outline-offset: -2px; }
+.foto-fantasma { position: fixed; z-index: 95; pointer-events: none; margin: 0; transform: scale(1.06); box-shadow: 0 14px 34px rgba(0,0,0,.35); opacity: .95; transition: transform .12s; }
+body.arrastando-foto, body.arrastando-foto * { cursor: grabbing !important; -webkit-user-select: none; user-select: none; }

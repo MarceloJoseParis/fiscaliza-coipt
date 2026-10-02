@@ -638,7 +638,7 @@
       ap(conteudo, ...(notifs.length ? notifs.map((n) => h('a', { class: 'item', href: '#/notificacao/' + n.id },
         h('span', { class: 'badge ' + (n.status === 'emitida' ? 'emit' : 'rasc') }, n.status === 'emitida' ? 'Emitida' : 'Rascunho'),
         h('div', { class: 't' }, (n.ordinal || '?') + 'ª Notificação', n._pendente ? h('span', { class: 'pend' }) : null),
-        h('div', { class: 'd' }, 'Nº ' + (n.numero || '—') + ' · ' + X.dataBR(n.data)),
+        h('div', { class: 'd' }, 'Nº ' + (n.numero || (n.status === 'emitida' ? '—' : 'a definir na emissão')) + ' · ' + X.dataBR(n.data)),
         n.status === 'emitida' ? h('div', { class: 'etqs' }, etq(situacaoNotif(n).txt, situacaoNotif(n).cls), n.enviadaEm && !n.respondidaEm ? etq('prazo até ' + X.dataBR(prazoDe(n)), '') : null) : null,
         h('div', { class: 'd' }, (n.itens && n.itens.length ? n.itens.length + ' item(ns) · ' : '') + ((n.fotos || []).length) + ' foto(s) · por ' + (n.criadoPor || '—'))))
         : [h('div', { class: 'vazio' }, 'Nenhuma notificação registrada no app para este ' + ROTULO[r.tipo].toLowerCase() + '.',
@@ -672,7 +672,7 @@
       const img = h('img', { alt: f.descricao || '', loading: 'lazy' });
       urlFoto(f).then((u) => { img.src = u; });
       const idx = opts.selecionadas ? opts.selecionadas.indexOf(f.id) : -1;
-      ap(g, h('div', { class: 'foto' + (idx >= 0 ? ' sel' : '') + (f.irregular ? ' irr' : '') + (f.fora_relatorio && opts.marcarRelatorio ? ' fora' : ''), onclick: () => opts.onclick && opts.onclick(f) },
+      ap(g, h('div', { 'data-id': f.id, class: 'foto' + (idx >= 0 ? ' sel' : '') + (f.irregular ? ' irr' : '') + (f.fora_relatorio && opts.marcarRelatorio ? ' fora' : ''), onclick: () => opts.onclick && opts.onclick(f) },
         img,
         idx >= 0 ? h('span', { class: 'num' }, idx + 1) : null,
         f.irregular ? h('span', { class: 'alerta', title: 'Irregularidade' }, '⚠️') : null,
@@ -680,6 +680,122 @@
         h('div', { class: 'dt' }, dataHoraBR(f.dataHora))));
     }
     return g;
+  }
+
+  /* ---------------- ordem das fotos no relatório (arrastar) ---------------- */
+  // posição da foto: a ordem escolhida arrastando ou, sem ela, a hora da foto
+  const chaveOrdem = (f) => (f.ordem != null && isFinite(+f.ordem) ? +f.ordem : (Date.parse(f.dataHora) || 0));
+  const ordenarFotos = (l) => l.slice().sort((a, b) => chaveOrdem(a) - chaveOrdem(b) || String(a.dataHora).localeCompare(String(b.dataHora)) || String(a.id).localeCompare(String(b.id)));
+  /* Grava a nova posição. Normalmente só a foto movida muda (fica entre as vizinhas): pouca coisa para
+     sincronizar e, se outro aparelho mexer em outra foto ao mesmo tempo, as duas mudanças se juntam. */
+  async function moverFoto(fotos, ids, id) {
+    const mapa = new Map(fotos.map((f) => [f.id, f]));
+    const i = ids.indexOf(id);
+    if (i < 0) return;
+    const ant = i > 0 ? mapa.get(ids[i - 1]) : null, prox = i < ids.length - 1 ? mapa.get(ids[i + 1]) : null;
+    const ka = ant ? chaveOrdem(ant) : null, kp = prox ? chaveOrdem(prox) : null;
+    if (ka == null && kp == null) return;
+    const nova = ka == null ? kp - 1000 : kp == null ? ka + 1 : (ka + kp) / 2;
+    if ((ka == null || nova > ka) && (kp == null || nova < kp)) { await atualizarCampos('fotos', id, (o) => { o.ordem = nova; }); return; }
+    // sem espaço entre as vizinhas (fotos com a mesma hora): renumera a visita inteira
+    const ks = ids.map((x) => chaveOrdem(mapa.get(x)));
+    const min = Math.min(...ks), passo = Math.max(1, (Math.max(...ks) - min) / Math.max(1, ids.length - 1));
+    for (let k = 0; k < ids.length; k++) {
+      const v = min + k * passo;
+      if (chaveOrdem(mapa.get(ids[k])) !== v || mapa.get(ids[k]).ordem == null) await atualizarCampos('fotos', ids[k], (o) => { o.ordem = v; });
+    }
+  }
+  let arrastandoFoto = false;
+  /* Arrastar para reordenar: no celular, segure a foto um instante e arraste (sem segurar, a tela rola
+     normalmente); no computador, clique e arraste. Um toque/clique simples continua abrindo a foto. */
+  function tornarOrdenavel(grade, aoSoltar) {
+    grade.classList.add('ordenavel');
+    let arr = null, inicio = null, espera = null, quadro = null, semClique = false;
+    const itens = () => [...grade.children].filter((e) => e.classList.contains('foto'));
+    function comecar(el, x, y) {
+      const r = el.getBoundingClientRect();
+      const fantasma = el.cloneNode(true);
+      fantasma.classList.add('foto-fantasma');
+      Object.assign(fantasma.style, { left: r.left + 'px', top: r.top + 'px', width: r.width + 'px', height: r.height + 'px' });
+      document.body.appendChild(fantasma);
+      el.classList.add('arrastando');
+      document.body.classList.add('arrastando-foto');
+      arr = { el, fantasma, dx: x - r.left, dy: y - r.top, x, y, ordemInicial: itens().map((e) => e.dataset.id).join() };
+      arrastandoFoto = true;
+      try { if (navigator.vibrate) navigator.vibrate(15); } catch (e) { /* */ }
+      const rolar = () => {
+        if (!arr) return;
+        const borda = 70, baixo = innerHeight - (innerWidth < 1024 ? 110 : 40);
+        const v = arr.y < borda ? -Math.ceil((borda - arr.y) / 5) : arr.y > baixo ? Math.ceil((arr.y - baixo) / 5) : 0;
+        if (v) { scrollBy(0, Math.max(-24, Math.min(24, v))); trocar(); }
+        quadro = requestAnimationFrame(rolar);
+      };
+      quadro = requestAnimationFrame(rolar);
+    }
+    function trocar() {
+      // com o dedo sobre a barra de baixo (ou o topo) enquanto a tela rola, usa o ponto logo acima/abaixo dela
+      const py = Math.min(Math.max(arr.y, 72), innerHeight - (innerWidth < 1024 ? 118 : 12));
+      const alvo = document.elementFromPoint(arr.x, py);
+      const f = alvo && alvo.closest ? alvo.closest('.foto') : null;
+      if (!f || f === arr.el || f.parentNode !== grade) return;
+      const l = itens();
+      if (l.indexOf(arr.el) < l.indexOf(f)) grade.insertBefore(arr.el, f.nextSibling); else grade.insertBefore(arr.el, f);
+    }
+    function mover(x, y) {
+      arr.x = x; arr.y = y;
+      arr.fantasma.style.left = (x - arr.dx) + 'px'; arr.fantasma.style.top = (y - arr.dy) + 'px';
+      trocar();
+    }
+    function terminar(cancelado) {
+      cancelAnimationFrame(quadro);
+      const { el, fantasma, ordemInicial } = arr;
+      arr = null; arrastandoFoto = false;
+      fantasma.remove(); el.classList.remove('arrastando'); document.body.classList.remove('arrastando-foto');
+      semClique = true; setTimeout(() => { semClique = false; }, 450);
+      const ids = itens().map((e) => e.dataset.id);
+      // sem mudança (ou cancelado): só redesenha (volta ao lugar e mostra o que chegou durante o arraste)
+      aoSoltar(!cancelado && ids.join() !== ordemInicial ? el.dataset.id : null, ids);
+    }
+    // depois de arrastar, o clique não abre a foto
+    grade.addEventListener('click', (e) => { if (semClique) { e.stopPropagation(); e.preventDefault(); } }, true);
+    grade.addEventListener('contextmenu', (e) => { if (arr || inicio) e.preventDefault(); });
+    grade.addEventListener('dragstart', (e) => e.preventDefault());
+    // toque
+    grade.addEventListener('touchstart', (e) => {
+      if (e.touches.length !== 1 || arr) return;
+      const el = e.target.closest('.foto');
+      if (!el || el.parentNode !== grade) return;
+      const t = e.touches[0];
+      inicio = { x: t.clientX, y: t.clientY, el };
+      clearTimeout(espera);
+      espera = setTimeout(() => { if (inicio) comecar(inicio.el, inicio.x, inicio.y); }, 350);
+    }, { passive: true });
+    grade.addEventListener('touchmove', (e) => {
+      const t = e.touches[0];
+      if (arr) { if (e.cancelable) e.preventDefault(); mover(t.clientX, t.clientY); return; }
+      if (inicio && (Math.abs(t.clientX - inicio.x) > 8 || Math.abs(t.clientY - inicio.y) > 8)) { clearTimeout(espera); inicio = null; }
+    }, { passive: false });
+    const fimToque = (e) => {
+      clearTimeout(espera); inicio = null;
+      if (arr) { if (e.cancelable) e.preventDefault(); terminar(e.type === 'touchcancel'); }
+    };
+    grade.addEventListener('touchend', fimToque);
+    grade.addEventListener('touchcancel', fimToque);
+    // mouse
+    grade.addEventListener('mousedown', (e) => {
+      if (e.button !== 0 || arr) return;
+      const el = e.target.closest('.foto');
+      if (!el || el.parentNode !== grade) return;
+      e.preventDefault();
+      const ini = { x: e.clientX, y: e.clientY };
+      const mm = (ev) => {
+        if (arr) { mover(ev.clientX, ev.clientY); return; }
+        if (Math.abs(ev.clientX - ini.x) > 5 || Math.abs(ev.clientY - ini.y) > 5) { comecar(el, ini.x, ini.y); mover(ev.clientX, ev.clientY); }
+      };
+      const mu = () => { document.removeEventListener('mousemove', mm); document.removeEventListener('mouseup', mu); if (arr) terminar(false); };
+      document.addEventListener('mousemove', mm);
+      document.addEventListener('mouseup', mu);
+    });
   }
 
   /* ---------------- gravação sem apagar alterações de outros aparelhos ---------------- */
@@ -1254,11 +1370,18 @@
     /* --- fotos --- */
     const boxFotos = h('div');
     const boxIrr = h('div');
+    let redesenharFotosDepois = false;
     async function desenharFotos() {
-      const fotos = (await DB.byIndex('fotos', 'visitaId', id)).filter((f) => !f.excluido).sort((a, b) => String(a.dataHora).localeCompare(b.dataHora));
+      if (arrastandoFoto) { redesenharFotosDepois = true; return; } // não desmancha a grade no meio de um arraste
+      redesenharFotosDepois = false;
+      const fotos = ordenarFotos((await DB.byIndex('fotos', 'visitaId', id)).filter((f) => !f.excluido));
       const irr = fotos.filter((f) => f.irregular);
+      const grade = fotos.length ? gradeFotos(fotos, { marcarRelatorio: true, onclick: (f) => abrirFoto(f, desenharFotos) }) : null;
+      const ordenar = podeEd && fotos.length > 1;
+      if (ordenar) tornarOrdenavel(grade, async (fid, ids) => { if (fid) await moverFoto(fotos, ids, fid); desenharFotos(); });
       rc(boxFotos, h('h2', {}, 'Fotos da visita (' + fotos.length + ')'),
-        fotos.length ? gradeFotos(fotos, { marcarRelatorio: true, onclick: (f) => abrirFoto(f, desenharFotos) }) : h('div', { class: 'vazio' }, 'Nenhuma foto ainda.'),
+        grade || h('div', { class: 'vazio' }, 'Nenhuma foto ainda.'),
+        ordenar ? h('div', { class: 'dica' }, 'A ordem das fotos aqui é a ordem do relatório. Para mudar, segure a foto e arraste (no computador, clique e arraste).') : null,
         fotos.some((f) => f.fora_relatorio) ? h('div', { class: 'dica' }, 'Fotos esmaecidas não entram no relatório.') : null);
       const reverif = await reverificadasNaVisita(r, id);
       const nIrr = irr.length + reverif.length;
@@ -1374,7 +1497,7 @@
   }
 
   async function dialogoRelatorio(v, r) {
-    const fotos = (await DB.byIndex('fotos', 'visitaId', v.id)).filter((f) => !f.excluido).sort((a, b) => String(a.dataHora).localeCompare(b.dataHora));
+    const fotos = ordenarFotos((await DB.byIndex('fotos', 'visitaId', v.id)).filter((f) => !f.excluido)); // na ordem escolhida na tela da visita
     const incl = fotos.filter((f) => !f.fora_relatorio);
     const escolha = { layout: String(await DB.kvGet('layoutRelatorio', '4')) };
     const opcao = (val, txt, desc) => h('label', { class: 'item', style: { display: 'flex', gap: '10px', alignItems: 'center', cursor: 'pointer' } },
@@ -1747,6 +1870,119 @@
       .replace(/\{ano\}/g, v.ano);
   }
 
+  const usaSequencial = (fmt) => /\{seq\d?\}/.test(fmt || '');
+  // lê um número digitado no formato configurado (ex.: "016/2026/CIPISNP/DRE-SINOP" → seq 16, ano 2026)
+  function lerNumero(fmt, txt) {
+    if (!fmt || !txt) return null;
+    const nomes = [];
+    const re = String(fmt).replace(/\{(seq|ordinal)\d?\}|\{ano\}|[.*+?^$()|[\]\\{}\/]/g, (m, k) => {
+      if (m === '{ano}') { nomes.push('ano'); return '(\\d{4})'; }
+      if (k) { nomes.push(k); return '(\\d{1,5})'; }
+      return '\\' + m;
+    });
+    const m = new RegExp('^\\s*' + re + '\\s*$', 'i').exec(String(txt));
+    if (!m) return null;
+    const out = {}; nomes.forEach((k, i) => { out[k] = +m[i + 1]; });
+    return out;
+  }
+  // texto do número enquanto rascunho (vai no Word gerado antes de emitir)
+  function numeroRascunho(n, r) {
+    const fmt = (CONFIG.formato_numero || {})[(r || {}).tipo || n.tipo] || '';
+    return n.numero || (usaSequencial(fmt) ? fmt.replace(/\{seq(\d?)\}/g, (m, p) => '_'.repeat(+p || 3)).replace(/\{ordinal(\d?)\}/g, (m, p) => String(n.ordinal || '').padStart(+p || 0, '0')).replace(/\{ano\}/g, String(n.ano || X.hojeISO().slice(0, 4))) : '');
+  }
+  // chave para achar números repetidos entre notificações emitidas
+  const chaveNumero = (n) => n.numero ? [n.tipo, n.tipo === 'contrato' ? n.registroId : '', String(n.numero).trim().toUpperCase()].join('|') : null;
+  async function numerosRepetidos() {
+    const cont = new Map(), rep = new Set();
+    const emit = await DB.listar('notificacoes', (o) => o.status === 'emitida' && o.numero);
+    for (const o of emit) { const k = chaveNumero(o); cont.set(k, (cont.get(k) || []).concat(o)); }
+    for (const l of cont.values()) if (l.length > 1) for (const o of l) rep.add(o.id);
+    return { rep, cont };
+  }
+
+  /* Define o número na hora de emitir. Com o servidor ligado, quem distribui é o servidor (sob trava):
+     dois aparelhos nunca recebem o mesmo número. Devolve { numero, seq, ano, ordinal, avisos } ou null. */
+  async function numerarNaEmissao(n, r) {
+    const fmt = (CONFIG.formato_numero || {})[r.tipo] || '';
+    const usaSeq = usaSequencial(fmt);
+    const anoHoje = +X.hojeISO().slice(0, 4);
+    const auto = !n.numero || n.numero === formatarNumero(fmt, { seq: n.seq, ano: n.ano, ordinal: n.ordinal });
+    const lido = auto ? null : lerNumero(fmt, n.numero);
+    const proprio = !auto && !lido; // número livre, fora do formato: fica como foi digitado
+    // já numerada antes (reaberta para correção, ou rascunho de versão anterior): mantém o ano e pede o mesmo número
+    const ano = lido && lido.ano ? lido.ano : (auto && n.seq && n.ano ? +n.ano : anoHoje);
+    const pedSeq = usaSeq ? (lido && lido.seq ? lido.seq : (auto && n.seq ? +n.seq : 0)) : 0;
+    const pedOrd = lido && lido.ordinal ? lido.ordinal : +n.ordinal || 0;
+    const emit = await DB.listar('notificacoes', (o) => o.id !== n.id && o.status === 'emitida');
+    const base = (CONFIG.seq_base || {})[ano];
+    let minSeq = Math.max(+base || 0, ...emit.filter((o) => +o.ano === ano && o.seq).map((o) => +o.seq || 0));
+    const minOrd = Math.max(+r.ultima_notif_anterior || 0, ...emit.filter((o) => o.registroId === r.id).map((o) => +o.ordinal || 0));
+    const semBase = usaSeq && !pedSeq && !minSeq && (base === undefined || base === null);
+    const perguntarBase = async () => {
+      const b = await perguntarNumero('Numeração do setor ' + ano,
+        'Esta é a primeira notificação numerada pelo app em ' + ano + '. Qual foi o último número de notificação emitido pelo setor em ' + ano + '? (Ex.: informe 12 se a última foi 012/' + ano + '. Informe 0 se nenhuma.)', 0);
+      if (b === null) return null;
+      if (pode.admin()) await salvarConfig((o) => { o.seq_base = Object.assign({}, o.seq_base, { [ano]: b }); });
+      return b;
+    };
+    const fim = (seq, ordinal, avisos) => ({ seq: usaSeq && !proprio ? seq : (n.seq || null), ano, ordinal, avisos: avisos || [],
+      numero: proprio ? n.numero : formatarNumero(fmt, { seq, ano, ordinal }) });
+
+    // sem servidor (uso em um aparelho só): numera no próprio aparelho, como antes
+    const local = async (motivo) => {
+      if (motivo) Sync.log('aviso', motivo);
+      let seq = pedSeq;
+      if (usaSeq && !proprio && !seq) {
+        const todas = await DB.listar('notificacoes', (o) => o.id !== n.id && +o.ano === ano && o.seq);
+        if (!todas.length && semBase) { const b = await perguntarBase(); if (b === null) return null; minSeq = b; }
+        seq = Math.max(minSeq, ...todas.map((o) => +o.seq || 0)) + 1;
+      }
+      return fim(seq, pedOrd || minOrd + 1);
+    };
+    if (!Sync.habilitado()) return local();
+    if (!navigator.onLine) { await avisoSemRedeNumero(); return null; }
+
+    const itens = () => [{ chave: 'ord:' + r.id, notificacao: n.id, desejado: pedOrd, minimo: minOrd }]
+      .concat(usaSeq && !proprio ? [{ chave: 'seq:' + ano, notificacao: n.id, desejado: pedSeq, minimo: minSeq, semBase: semBase && !minSeq }] : []);
+    const espera = h('div', { class: 'modal-fundo' }, h('div', { class: 'modal' }, h('span', { class: 'carregando' }), ' Reservando o número da notificação no servidor…'));
+    let j;
+    try {
+      document.body.appendChild(espera);
+      j = await Sync.chamar('numerar', { itens: itens() });
+      if ((j.itens || []).some((x) => x.precisaBase)) {
+        espera.remove();
+        const b = await perguntarBase(); if (b === null) return null;
+        minSeq = b;
+        document.body.appendChild(espera);
+        j = await Sync.chamar('numerar', { itens: itens().map((x) => Object.assign(x, { semBase: false })) });
+      }
+    } catch (e) {
+      // servidor ainda na versão anterior: numera no aparelho (e o aviso de número repetido continua valendo)
+      if (/A[çc][ãa]o desconhecida/i.test(e.message || '')) return local('Servidor sem numeração central (atualize o Code.gs): número calculado no aparelho.');
+      if (e.rede || !navigator.onLine) { espera.remove(); await avisoSemRedeNumero(); return null; }
+      toast(e.message || String(e), true); return null;
+    } finally { espera.remove(); }
+    const res = {}; for (const x of j.itens || []) res[x.chave.slice(0, 3)] = x;
+    if (!res.ord || (usaSeq && !proprio && !res.seq)) { toast('Resposta inesperada do servidor ao numerar. Tente de novo.', true); return null; }
+    const ordinal = res.ord.valor, seq = res.seq ? res.seq.valor : null;
+    const avisos = [];
+    if (res.ord.ocupado) avisos.push('a ' + res.ord.pedido + 'ª notificação desta obra já tinha sido emitida por outro aparelho — esta passou a ser a ' + ordinal + 'ª');
+    if (res.seq && res.seq.ocupado) {
+      const antes = formatarNumero(fmt, { seq: res.seq.pedido, ano, ordinal }), depois = formatarNumero(fmt, { seq, ano, ordinal });
+      if (lido) { // número digitado à mão já usado: pergunta
+        if (!(await confirmar('O número ' + antes + ' já foi usado em outra notificação. Usar o próximo número livre, ' + depois + '?', 'Usar ' + depois))) return null;
+      } else avisos.push('o número ' + antes + ' do rascunho já tinha sido usado — esta ficou com ' + depois);
+    }
+    return fim(seq, ordinal, avisos);
+  }
+  function avisoSemRedeNumero() {
+    return modal('Sem conexão', h('div', {},
+      h('p', {}, 'Para emitir, o número da notificação é reservado no servidor — assim duas notificações nunca saem com o mesmo número.'),
+      h('p', {}, 'O rascunho continua salvo no aparelho. Emita quando estiver com internet.'),
+      h('p', { class: 'dica' }, 'Dica: se for entregar a notificação em campo, emita antes de sair (o documento emitido fica no aparelho e abre sem internet).')),
+      [{ txt: 'Entendi', valor: true, cls: 'pri' }]);
+  }
+
   function snapshotAssinantes(lista, pessoas, comFuncao) {
     return (lista || []).map((it) => {
       const pid = typeof it === 'string' ? it : it.pessoaId;
@@ -1775,30 +2011,18 @@
       ordinal = n + 1;
       if (pode.cadastro()) await atualizarCampos('registros', r.id, (o) => { o.ultima_notif_anterior = n; });
     }
-    // numero sequencial do setor
+    // número: com sequencial do setor, só é definido ao emitir (o servidor distribui, sem repetir);
+    // só com a ordem (contratos), já aparece no rascunho e é confirmado ao emitir
     const hoje = X.hojeISO();
     const ano = +hoje.slice(0, 4);
     const fmt = (CONFIG.formato_numero || {})[r.tipo] || '';
-    let seq = null;
-    if (/\{seq\d?\}/.test(fmt)) {
-      const todas = await DB.listar('notificacoes', (n) => n.ano === ano && n.seq);
-      let maxSeq = Math.max(0, ...todas.map((n) => +n.seq || 0));
-      let baseSeq = (CONFIG.seq_base || {})[ano];
-      if (!todas.length && (baseSeq === undefined || baseSeq === null)) {
-        const n = await perguntarNumero('Numeração do setor ' + ano,
-          'Qual foi o último número de notificação emitido pelo setor em ' + ano + '? (Ex.: informe 12 se a última foi 012/' + ano + '. Informe 0 se nenhuma.)', 0);
-        if (n === null) { history.back(); return; }
-        baseSeq = n;
-        if (pode.admin()) await salvarConfig((o) => { o.seq_base = Object.assign({}, o.seq_base, { [ano]: n }); });
-      }
-      seq = Math.max(maxSeq, +baseSeq || 0) + 1;
-    }
+    const seq = null;
     const pessoas = await pessoasMap();
     const ultima = notifs[0];
     const provPadrao = ((CONFIG.providencias_padrao || {})[r.tipo] || '').replace(/\{nome_texto\}/g, r.n_nome_texto || r.n_nome || '');
     const n = {
       id: DB.uuid(), registroId, tipo: r.tipo, ordinal, seq, ano,
-      numero: formatarNumero(fmt, { seq, ano, ordinal }),
+      numero: usaSequencial(fmt) ? '' : formatarNumero(fmt, { seq, ano, ordinal }),
       data: hoje, data_vistoria: (base && base.data_vistoria) || hoje,
       visitaId: (base && base.visitaId) || null,
       constatacao: base && base.constatacao !== undefined ? base.constatacao : ((ultima && ultima.constatacao) || (CONFIG.constatacao_padrao || {})[r.tipo] || ''),
@@ -1854,6 +2078,7 @@
     const regs = new Map((await DB.all('registros')).map((r) => [r.id, r]));
     const todas = (await DB.listar('notificacoes')).filter((n) => { const r = regs.get(n.registroId); return r && !r.excluido; })
       .map((n) => ({ n, sit: situacaoNotif(n), r: regs.get(n.registroId) }));
+    const repetidos = (await numerosRepetidos()).rep;
     const grupos = [
       ['pendentes', 'Aguardando resposta', (x) => x.sit.k === 'aguardando' || x.sit.k === 'vencida'],
       ['vencidas', 'Prazo encerrado', (x) => x.sit.k === 'vencida'],
@@ -1879,12 +2104,12 @@
         href: '#/notificacao/' + n.id, cls: 'item', pend: n._pendente,
         de: r.apelido || ROTULO[r.tipo],
         titulo: h('span', {}, (n.ordinal || '?') + 'ª Notificação', h('span', { class: 'so-cel' }, ' · ' + (r.apelido || ROTULO[r.tipo]))),
-        resumo: ROTULO[r.tipo] + ' nº ' + (r.numero || '—') + ' · Nº ' + (n.numero || '—') + ' · emitida em ' + dataLocalBR(n.emitidaEm || n.data),
+        resumo: ROTULO[r.tipo] + ' nº ' + (r.numero || '—') + ' · Nº ' + (n.numero || (n.status === 'emitida' ? '—' : 'a definir na emissão')) + (n.status === 'emitida' ? ' · emitida em ' + dataLocalBR(n.emitidaEm || n.data) : ' · rascunho'),
         prazos: [n.enviadaEm && !n.respondidaEm
           ? { rot: 'Prazo de resposta', data: dataCurta(prazoDe(n)), cls: sit.k === 'vencida' ? 'perigo' : sit.restante <= 1 ? 'alerta' : 'info',
             txt: sit.k === 'vencida' ? 'encerrado há ' + -sit.restante + (sit.restante === -1 ? ' dia' : ' dias') : sit.restante === 0 ? 'termina hoje' : sit.restante === 1 ? 'falta 1 dia útil' : 'faltam ' + sit.restante + ' dias úteis' }
           : { rot: n.status === 'emitida' ? 'Emitida em' : 'Criada em', data: dataCurtaLocal(n.emitidaEm || n.data), cls: '' }],
-        chips: [sit.k === 'vencida' || sit.k === 'aguardando' ? null : etq(sit.txt, sit.cls), n.enviadaEm ? etq('enviada ' + X.dataBR(n.enviadaEm), '') : null],
+        chips: [repetidos.has(n.id) ? etq('nº repetido', 'perigo') : null, sit.k === 'vencida' || sit.k === 'aguardando' ? null : etq(sit.txt, sit.cls), n.enviadaEm ? etq('enviada ' + X.dataBR(n.enviadaEm), '') : null],
       })))
         : h('div', { class: 'vazio' }, g[0] === 'pendentes' ? 'Nenhuma notificação aguardando resposta. 👍' : 'Nada por aqui.'),
       h('p', { class: 'dica' }, 'O prazo conta em dias úteis a partir do dia seguinte ao envio (sábados, domingos e os feriados cadastrados em Ajustes › Padrões não contam). Para registrar envio ou resposta, abra a notificação.'));
@@ -2270,13 +2495,30 @@
     const marcar = () => { sujo = true; };
 
     /* --- cabecalho --- */
-    const ordInp = h('input', { type: 'number', min: '1', value: n.ordinal, readonly: ro, oninput: (e) => { n.ordinal = parseInt(e.target.value, 10) || n.ordinal; marcar(); } });
-    const numInp = inputTxt(n, 'numero', { readonly: ro, oninput: (e) => { n.numero = e.target.value; marcar(); } });
+    const fmtNum = (CONFIG.formato_numero || {})[r.tipo] || '';
+    const seqAuto = usaSequencial(fmtNum);
+    const ordInp = h('input', { type: 'number', min: '1', value: n.ordinal, readonly: ro, oninput: (e) => {
+      const antes = formatarNumero(fmtNum, { seq: n.seq, ano: n.ano, ordinal: n.ordinal });
+      n.ordinal = parseInt(e.target.value, 10) || n.ordinal;
+      // número automático (só com a ordem): acompanha a ordem
+      if (n.numero && n.numero === antes) { n.numero = formatarNumero(fmtNum, { seq: n.seq, ano: n.ano, ordinal: n.ordinal }); numInp.value = n.numero; }
+      marcar();
+    } });
+    const numInp = inputTxt(n, 'numero', { readonly: ro, placeholder: !ro && seqAuto ? 'Definido ao emitir' : '', oninput: (e) => { n.numero = e.target.value.trim() ? e.target.value : ''; marcar(); } });
+    const repetido = emitida ? (await numerosRepetidos()).cont.get(chaveNumero(n)) : null;
+    const avisoRepetido = repetido && repetido.length > 1
+      ? h('div', { class: 'aviso perigo' }, '⚠️ Número repetido: ' + (repetido.length - 1) + ' outra(s) notificação(ões) emitida(s) também têm o nº ' + n.numero + ' (' +
+        repetido.filter((o) => o.id !== n.id).map((o) => (o.ordinal || '?') + 'ª, emitida em ' + dataLocalBR(o.emitidaEm || o.data) + ' por ' + (o.emitidaPor || '—')).join('; ') +
+        '). Um administrador pode reabrir uma delas e corrigir o número.')
+      : null;
     const secCab = h('div', { class: 'card' },
+      avisoRepetido,
       emitida ? h('div', { class: 'aviso' }, '🔒 Notificação emitida em ' + dataHoraBR(n.emitidaEm) + ' por ' + (n.emitidaPor || '—') + '. O conteúdo está bloqueado para preservar o histórico.') : null,
       h('div', { class: 'grade2' },
         campo('Ordem (ª notificação)', ordInp),
-        campo('Número da notificação', numInp, ro ? null : 'Gerado automaticamente — pode ser alterado.'),
+        campo('Número da notificação', numInp, ro ? null : seqAuto
+          ? 'Definido pelo servidor ao emitir — nunca se repete. Se precisar de um número específico, digite aqui.'
+          : 'Gerado automaticamente e confirmado ao emitir — pode ser alterado.'),
         campo('Data da notificação', h('input', { type: 'date', value: n.data, readonly: ro, oninput: (e) => { n.data = e.target.value; marcar(); } })),
         campo('Data da vistoria (in loco)', h('input', { type: 'date', value: n.data_vistoria, readonly: ro, oninput: (e) => { n.data_vistoria = e.target.value; marcar(); } }))));
 
@@ -2394,14 +2636,15 @@
       const erros = [];
       if (!n.data) erros.push('data da notificação');
       if (!n.data_vistoria) erros.push('data da vistoria');
-      if (!n.numero) erros.push('número');
+      if (!n.numero && !seqAuto) erros.push('número');
       if (!edFiscais.length && !(n.fiscais || []).length) erros.push('ao menos um fiscal');
       if (erros.length) { toast('Preencha: ' + erros.join(', '), true); return false; }
       return true;
     }
     async function numeroDuplicado() {
       if (!n.numero) return false;
-      const outras = await DB.listar('notificacoes', (o) => o.id !== n.id && o.numero === n.numero && o.tipo === n.tipo && (o.ano === n.ano || !n.ano) && (n.tipo !== 'contrato' || o.registroId === n.registroId));
+      const k = chaveNumero(n);
+      const outras = await DB.listar('notificacoes', (o) => o.id !== n.id && o.status === 'emitida' && chaveNumero(o) === k);
       return outras.length > 0;
     }
     async function gerar(compartilhar) {
@@ -2414,7 +2657,9 @@
       const fundo = h('div', { class: 'modal-fundo' }, h('div', { class: 'modal' }, st));
       document.body.appendChild(fundo);
       try {
-        const { blob, nome } = await gerarDocx(original, r);
+        const alvo = original.status === 'emitida' ? original : Object.assign({}, original, { numero: numeroRascunho(original, r) });
+        const { blob, nome } = await gerarDocx(alvo, r);
+        if (original.status !== 'emitida' && !original.numero && seqAuto) setTimeout(() => toast('Rascunho: o número fica “___” até a notificação ser emitida.'), 2700);
         fundo.remove();
         if (compartilhar) await compartilharBlob(blob, nome, nome);
         else baixarBlob(blob, nome);
@@ -2435,13 +2680,20 @@
       if (!validar()) return;
       const atualDB = await DB.get('notificacoes', id);
       if (atualDB && atualDB.status === 'emitida') { toast('Esta notificação já foi emitida (em outro aparelho).', true); telaNotificacao(id); return; }
-      if (await numeroDuplicado() && !(await confirmar('Já existe outra notificação com o número ' + n.numero + '. Emitir mesmo assim?', 'Emitir'))) return;
       if (!(n.fotos || []).length && !(await confirmar('Esta notificação não tem fotos anexas. Emitir mesmo assim?', 'Emitir'))) return;
       let envio = null;
       if (comEnvio) {
         envio = await pedirDataEnvio(n);
         if (!envio) return;
       } else if (!(await confirmar('Ao emitir, o conteúdo fica bloqueado e registrado no histórico. Continuar?', 'Emitir'))) return;
+      // número: reservado no servidor agora (nunca se repete entre aparelhos)
+      const num = await numerarNaEmissao(n, r);
+      if (!num) return;
+      const atual2 = await DB.get('notificacoes', id);
+      if (atual2 && atual2.status === 'emitida') { toast('Esta notificação já foi emitida (em outro aparelho).', true); telaNotificacao(id); return; }
+      n.numero = num.numero; n.seq = num.seq; n.ano = num.ano; n.ordinal = num.ordinal;
+      numInp.value = n.numero; ordInp.value = n.ordinal;
+      if (await numeroDuplicado() && !(await confirmar('Já existe outra notificação com o número ' + n.numero + '. Emitir mesmo assim?', 'Emitir'))) return;
       await salvar(true);
       const snap = Object.assign({}, r);
       for (const k of ['_pendente', '_campos', '_base', 'atualizadoEm', 'atualizadoPor', 'criadoEm', 'criadoPor']) delete snap[k];
@@ -2455,6 +2707,7 @@
       App._sairNotif = null;
       await gerarDireto();
       await telaNotificacao(id);
+      if (num.avisos.length) toast('Número ajustado: ' + num.avisos.join('; ') + '.', true);
     }
 
     const acoes = h('div', { class: 'card' }, h('div', { class: 'acoes', style: { marginTop: 0 } },
@@ -2639,7 +2892,7 @@
       for (const f of fotosSemDrive) if (!(await DB.blobGet(f.id))) semArquivo++;
       const log = Sync.lerLog().slice().reverse();
       const resumo = {
-        app: '3.7', servidor: Sync.versaoServidor || '?', usuario: (u || {}).email, perfil: perfil(), estado: Sync.estado, erro: Sync.erro || '',
+        app: '3.8', servidor: Sync.versaoServidor || '?', usuario: (u || {}).email, perfil: perfil(), estado: Sync.estado, erro: Sync.erro || '',
         online: navigator.onLine, ultimaSync: await DB.kvGet('ultimaSync', null), cursor: await DB.kvGet('servidorDesde', 0),
         pendentes: pendPor, fotosAguardandoEnvio: fotosSemDrive.length - semArquivo, fotosDeOutroAparelhoSemEnvio: semArquivo,
         aparelho: navigator.userAgent, log,
@@ -2861,7 +3114,7 @@
         pode.admin() ? h('button', { class: 'btn', onclick: importarBackup }, '⬆️ Importar') : null,
         pode.admin() ? h('button', { class: 'btn', onclick: carregarExemplos }, 'Carregar exemplos dos modelos') : null)));
 
-    cards.push(h('p', { class: 'dica', style: { textAlign: 'center' } }, 'Fiscalização de Obras · v3.7 · dados salvos no aparelho' + (Sync.habilitado() ? ' e no Google Drive do administrador' : '') + ' · ', h('a', { href: 'privacidade.html' }, 'Política de privacidade')));
+    cards.push(h('p', { class: 'dica', style: { textAlign: 'center' } }, 'Fiscalização de Obras · v3.8 · dados salvos no aparelho' + (Sync.habilitado() ? ' e no Google Drive do administrador' : '') + ' · ', h('a', { href: 'privacidade.html' }, 'Política de privacidade')));
     rcT(tk, ...cards);
   }
 
