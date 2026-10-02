@@ -2892,14 +2892,14 @@
       for (const f of fotosSemDrive) if (!(await DB.blobGet(f.id))) semArquivo++;
       const log = Sync.lerLog().slice().reverse();
       const resumo = {
-        app: '3.9', servidor: Sync.versaoServidor || '?', usuario: (u || {}).email, perfil: perfil(), estado: Sync.estado, erro: Sync.erro || '',
+        app: '3.10', servidor: Sync.versaoServidor || '?', usuario: (u || {}).email, perfil: perfil(), estado: Sync.estado, erro: Sync.erro || '',
         online: navigator.onLine, ultimaSync: await DB.kvGet('ultimaSync', null), cursor: await DB.kvGet('servidorDesde', 0),
         pendentes: pendPor, fotosAguardandoEnvio: fotosSemDrive.length - semArquivo, fotosDeOutroAparelhoSemEnvio: semArquivo,
         aparelho: navigator.userAgent, log,
       };
       const txtDiag = JSON.stringify(resumo, null, 1);
-      cards.push(h('details', { class: 'card' },
-        h('summary', { style: { fontWeight: '600', cursor: 'pointer' } }, 'Diagnóstico da sincronização'),
+      cards.push(h('details', { class: 'card secao' },
+        h('summary', {}, h('h2', {}, 'Diagnóstico da sincronização')),
         h('div', { class: 'sub', style: { marginTop: '8px' } }, 'Pendentes neste aparelho: ' + (Object.entries(pendPor).filter((x) => x[1]).map(([k, v]) => v + ' ' + k).join(', ') || 'nenhum')),
         h('div', { class: 'sub' }, 'Fotos aguardando envio: ' + resumo.fotosAguardandoEnvio + (semArquivo ? ' · ' + semArquivo + ' foto(s) registradas em outro aparelho ainda não enviadas por ele' : '')),
         h('div', { class: 'sub' }, 'Servidor: versão ' + resumo.servidor + ' · estado: ' + (Sync.estado || '—')),
@@ -3090,7 +3090,7 @@
           if (j.acessos) {
             const timer = setInterval(async () => {
               if (!document.body.contains(box)) { clearInterval(timer); return; }
-              if (document.visibilityState !== 'visible' || !navigator.onLine) return;
+              if (document.visibilityState !== 'visible' || !navigator.onLine || !box.offsetParent) return; // seção fechada: não consulta
               try { const k = await Sync.chamar('usuarios'); for (const us of k.usuarios || []) { const el = linhasAcesso.get(us.email); if (el) rc(el, textoAcesso(us)); } } catch (e) { /* tenta na próxima */ }
             }, 45000);
           }
@@ -3124,7 +3124,10 @@
         pode.admin() ? h('button', { class: 'btn', onclick: importarBackup }, '⬆️ Importar') : null,
         pode.admin() ? h('button', { class: 'btn', onclick: carregarExemplos }, 'Carregar exemplos dos modelos') : null)));
 
-    cards.push(h('p', { class: 'dica', style: { textAlign: 'center' } }, 'Fiscalização de Obras · v3.9 · dados salvos no aparelho' + (Sync.habilitado() ? ' e no Google Drive do administrador' : '') + ' · ', h('a', { href: 'privacidade.html' }, 'Política de privacidade')));
+    // a partir de "Aparência e câmera", cada seção vira uma lista suspensa (fechada; lembra as abertas)
+    const iniSecoes = cards.findIndex((c) => c.querySelector && (c.querySelector(':scope > h2') || {}).textContent === 'Aparência e câmera');
+    if (iniSecoes >= 0) for (let i = iniSecoes; i < cards.length; i++) cards[i] = secaoRecolhivel(cards[i]);
+    cards.push(h('p', { class: 'dica', style: { textAlign: 'center' } }, 'Fiscalização de Obras · v3.10 · dados salvos no aparelho' + (Sync.habilitado() ? ' e no Google Drive do administrador' : '') + ' · ', h('a', { href: 'privacidade.html' }, 'Política de privacidade')));
     rcT(tk, ...cards);
   }
 
@@ -3140,6 +3143,19 @@
     const hora = String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
     const dia = mesmo(d, hoje) ? 'hoje' : mesmo(d, ontem) ? 'ontem' : 'em ' + String(d.getDate()).padStart(2, '0') + '/' + String(d.getMonth() + 1).padStart(2, '0') + '/' + d.getFullYear();
     return h('div', { class: 'acesso' }, 'Último acesso ' + dia + ' às ' + hora + onde);
+  }
+
+  // Ajustes: transforma um cartão (div.card com h2) em seção que abre e fecha; lembra as abertas durante a sessão
+  function secaoRecolhivel(card) {
+    const h2 = card.tagName === 'DIV' && card.classList.contains('card') ? card.querySelector(':scope > h2') : null;
+    if (!h2) return card;
+    const chave = 'ajuste_aberto_' + h2.textContent;
+    const d = h('details', { class: card.className + ' secao' });
+    try { if (sessionStorage.getItem(chave) === '1') d.open = true; } catch (e) { /* */ }
+    d.addEventListener('toggle', () => { try { sessionStorage.setItem(chave, d.open ? '1' : '0'); } catch (e) { /* */ } });
+    d.appendChild(h('summary', {}, h2));
+    while (card.firstChild) d.appendChild(card.firstChild);
+    return d;
   }
 
   /* Lista as câmeras que o navegador libera, com o zoom de cada uma, e permite escolher a do botão 0,5 */

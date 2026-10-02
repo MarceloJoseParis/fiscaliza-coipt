@@ -585,3 +585,15 @@ body.arrastando-foto, body.arrastando-foto * { cursor: grabbing !important; -web
 .acesso::before { content: ''; width: 7px; height: 7px; border-radius: 50%; background: var(--txt2); opacity: .45; flex: none; }
 .acesso.on { color: var(--ok); font-weight: 600; }
 .acesso.on::before { opacity: 1; background: var(--ok); box-shadow: 0 0 0 3px var(--ok-bg); }
+
+/* 3.10: Ajustes com seções suspensas */
+details.card.secao { padding-top: 0; padding-bottom: 0; }
+details.card.secao > summary { display: flex; align-items: center; gap: 10px; padding: 16px 0; }
+details.card.secao > summary::before { content: ''; width: 8px; height: 8px; border-right: 2px solid var(--txt2); border-bottom: 2px solid var(--txt2); transform: rotate(-45deg); transition: transform .15s; flex: none; margin-left: 2px; }
+details.card.secao[open] > summary::before { transform: rotate(45deg); }
+details.card.secao > summary > h2 { margin: 0; flex: 1; }
+details.card.secao[open] { padding-bottom: 16px; }
+details.card.secao[open] > summary { border-bottom: 1px solid var(--linha); margin-bottom: 12px; }
+@media (min-width: 1024px) {
+  body[data-tela="config"] main { columns: 1; }
+}
