@@ -138,6 +138,8 @@
   };
 
   /* ---------------- Chamada ao backend ---------------- */
+  // tipo de aparelho (aparece para o administrador em "último acesso"); tablet conta como celular
+  Sync.dispositivo = (() => { try { const ua = navigator.userAgent || ''; return /Android|iPhone|iPad|iPod|Mobile/i.test(ua) || (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1) ? 'celular' : 'computador'; } catch (e) { return ''; } })();
   Sync.TEMPO_LIMITE = { padrao: 120000, enviarFoto: 180000, baixarArquivo: 180000, enviarArquivo: 180000 };
   // falhas passageiras do Google (planilha/Drive ocupados, tempo esgotado etc.): vale tentar de novo
   const TEMPORARIO = /timed out|tempo limite|Service|Servi[çc]o|temporar|try again|tente novamente|Internal|interno|busy|ocupad|Exceeded|excedid|Limit|Too many|Lock|bloqueio|Rate|unavailable|indispon/i;
@@ -169,7 +171,7 @@
         method: 'POST',
         redirect: 'follow',
         headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-        body: JSON.stringify(Object.assign({ acao, token }, dados || {})),
+        body: JSON.stringify(Object.assign({ acao, token, disp: Sync.dispositivo }, dados || {})),
         signal: ctl ? ctl.signal : undefined,
       });
       txt = await resp.text();

@@ -2892,7 +2892,7 @@
       for (const f of fotosSemDrive) if (!(await DB.blobGet(f.id))) semArquivo++;
       const log = Sync.lerLog().slice().reverse();
       const resumo = {
-        app: '3.8', servidor: Sync.versaoServidor || '?', usuario: (u || {}).email, perfil: perfil(), estado: Sync.estado, erro: Sync.erro || '',
+        app: '3.9', servidor: Sync.versaoServidor || '?', usuario: (u || {}).email, perfil: perfil(), estado: Sync.estado, erro: Sync.erro || '',
         online: navigator.onLine, ultimaSync: await DB.kvGet('ultimaSync', null), cursor: await DB.kvGet('servidorDesde', 0),
         pendentes: pendPor, fotosAguardandoEnvio: fotosSemDrive.length - semArquivo, fotosDeOutroAparelhoSemEnvio: semArquivo,
         aparelho: navigator.userAgent, log,
@@ -3079,18 +3079,28 @@
 
     /* usuarios */
     if (Sync.habilitado() && pode.admin()) {
-      const box = h('div', {}, h('span', { class: 'carregando' }));
+      const box = h('div', { class: 'usr-lista' }, h('span', { class: 'carregando' }));
       cards.push(h('div', { class: 'card' }, h('h2', {}, 'Usuários do grupo'), box));
       (async () => {
         try {
           const j = await Sync.chamar('usuarios');
+          // status de acesso: atualiza sozinho (a cada 45 s) enquanto esta tela estiver aberta
+          const linhasAcesso = new Map();
+          const acessoDe = (us) => { const el = h('div', {}, j.acessos ? textoAcesso(us) : null); linhasAcesso.set(us.email, el); return el; };
+          if (j.acessos) {
+            const timer = setInterval(async () => {
+              if (!document.body.contains(box)) { clearInterval(timer); return; }
+              if (document.visibilityState !== 'visible' || !navigator.onLine) return;
+              try { const k = await Sync.chamar('usuarios'); for (const us of k.usuarios || []) { const el = linhasAcesso.get(us.email); if (el) rc(el, textoAcesso(us)); } } catch (e) { /* tenta na próxima */ }
+            }, 45000);
+          }
           const novo = { email: '', nome: '', perfil: 'fiscal' };
           const sel = (obj) => h('select', { onchange: (e) => { obj.perfil = e.target.value; } },
             ['admin', 'fiscal', 'consulta'].map((p) => h('option', { value: p, selected: obj.perfil === p ? 'selected' : null }, { admin: 'Administrador', fiscal: 'Fiscal', consulta: 'Consulta' }[p])));
           rc(box, 
-            ...j.usuarios.map((us) => h('div', { class: 'linha', style: { borderBottom: '1px solid var(--linha)', padding: '6px 0' } },
-              h('div', { class: 'cresce' }, h('div', {}, us.nome || us.email), h('div', { class: 'sub' }, us.email + (us.ativo ? '' : ' · desativado'))),
-              (() => { const s = sel(us); s.style.width = 'auto'; return s; })(),
+            ...j.usuarios.map((us) => h('div', { class: 'usr-linha' },
+              h('div', { class: 'usr-info' }, h('div', { class: 'usr-nome' }, us.nome || us.email), h('div', { class: 'sub usr-email' }, us.email + (us.ativo ? '' : ' · desativado')), acessoDe(us)),
+              sel(us),
               h('button', { class: 'btn peq', onclick: async () => { await Sync.chamar('salvarUsuario', { usuario: us }); toast('Salvo'); } }, 'Salvar'),
               h('button', { class: 'btn peq ' + (us.ativo ? 'perigo' : ''), onclick: async () => { us.ativo = !us.ativo; await Sync.chamar('salvarUsuario', { usuario: us }); telaConfig(); } }, us.ativo ? 'Desativar' : 'Ativar'))),
             h('h3', {}, 'Adicionar'),
@@ -3114,8 +3124,22 @@
         pode.admin() ? h('button', { class: 'btn', onclick: importarBackup }, '⬆️ Importar') : null,
         pode.admin() ? h('button', { class: 'btn', onclick: carregarExemplos }, 'Carregar exemplos dos modelos') : null)));
 
-    cards.push(h('p', { class: 'dica', style: { textAlign: 'center' } }, 'Fiscalização de Obras · v3.8 · dados salvos no aparelho' + (Sync.habilitado() ? ' e no Google Drive do administrador' : '') + ' · ', h('a', { href: 'privacidade.html' }, 'Política de privacidade')));
+    cards.push(h('p', { class: 'dica', style: { textAlign: 'center' } }, 'Fiscalização de Obras · v3.9 · dados salvos no aparelho' + (Sync.habilitado() ? ' e no Google Drive do administrador' : '') + ' · ', h('a', { href: 'privacidade.html' }, 'Política de privacidade')));
     rcT(tk, ...cards);
+  }
+
+  // "Online agora · celular" (usou o app nos últimos 2 min) ou "Último acesso hoje às 14:32 · computador"
+  function textoAcesso(us) {
+    if (!us.ativo) return null;
+    const onde = us.disp ? ' · ' + us.disp : '';
+    if (us.online) return h('div', { class: 'acesso on' }, 'Online agora' + onde);
+    if (!us.ultimoAcesso) return h('div', { class: 'acesso' }, 'Ainda não acessou');
+    const d = new Date(us.ultimoAcesso), hoje = new Date(), ontem = new Date();
+    ontem.setDate(hoje.getDate() - 1);
+    const mesmo = (a, b) => a.toDateString() === b.toDateString();
+    const hora = String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
+    const dia = mesmo(d, hoje) ? 'hoje' : mesmo(d, ontem) ? 'ontem' : 'em ' + String(d.getDate()).padStart(2, '0') + '/' + String(d.getMonth() + 1).padStart(2, '0') + '/' + d.getFullYear();
+    return h('div', { class: 'acesso' }, 'Último acesso ' + dia + ' às ' + hora + onde);
   }
 
   /* Lista as câmeras que o navegador libera, com o zoom de cada uma, e permite escolher a do botão 0,5 */
