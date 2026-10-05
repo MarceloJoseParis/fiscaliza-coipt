@@ -778,7 +778,52 @@
     }, paresFiscais(fiscais));
   }
 
-  const api = { gerar, montarDadosRelatorio, montarDadosSanadas, montarDadosIrregularidades, montarDados, listarMarcadores, extrairTextoBloco, textoEquipe, imageSize };
+  /**
+   * Dados do Relatório de Elaboração de Medição (contratos).
+   * med: { numero, periodo_inicio, periodo_fim, data_vistoria, data, observacoes, itens: [{descricao, situacao, comentario, memorial}] }
+   */
+  const SITUACAO_MED = { medido: 'MEDIDO', parcial: 'MEDIDO PARCIALMENTE', nao: 'NÃO MEDIDO' };
+  function montarDadosMedicao(reg, med, fiscais) {
+    const X = E();
+    const itens = (med.itens || []).filter((it) => (it.descricao || '').trim() || (it.comentario || '').trim() || (it.memorial || '').trim());
+    const cont = { medido: 0, parcial: 0, nao: 0 };
+    itens.forEach((it) => { if (cont[it.situacao] !== undefined) cont[it.situacao]++; });
+    const pl = (k, s, p) => k + ' ' + (k === 1 ? s : p);
+    const resumo = [cont.medido ? pl(cont.medido, 'medido', 'medidos') : '', cont.parcial ? pl(cont.parcial, 'medido parcialmente', 'medidos parcialmente') : '', cont.nao ? pl(cont.nao, 'não medido', 'não medidos') : ''].filter(Boolean).join(', ');
+    const hoje = med.data || new Date().toISOString().slice(0, 10);
+    return Object.assign({
+      medicao_numero: String(med.numero || ''),
+      periodo_inicio: X.dataBR(med.periodo_inicio) || '—',
+      periodo_fim: X.dataBR(med.periodo_fim) || '—',
+      data_vistoria: X.dataBR(med.data_vistoria) || '—',
+      data_relatorio: X.dataBR(hoje),
+      data_extenso: X.dataExtenso(hoje),
+      obra: reg.apelido || '',
+      objeto: reg.objeto || '',
+      tem_objeto: !!reg.objeto,
+      rotulo_instrumento: 'CONTRATO',
+      rotulo_notificada: 'CONTRATADA',
+      numero_instrumento: reg.numero || '',
+      processo: reg.processo || '—',
+      n_nome: reg.n_nome || '',
+      local_obra: reg.local_obra || '',
+      tem_local: !!reg.local_obra,
+      equipe: textoEquipe(fiscais || []) || '—',
+      total_itens: itens.length === 1 ? '1 item' : itens.length + ' itens',
+      resumo_situacao: resumo ? ' (' + resumo + ')' : '',
+      itens: itens.map((it, i) => ({
+        n: String(i + 1),
+        descricao: (it.descricao || '').trim() || '—',
+        situacao: SITUACAO_MED[it.situacao] || '',
+        comentario: (it.comentario || '').trim() || (SITUACAO_MED[it.situacao] ? '' : '—'),
+        memorial: (it.memorial || '').trim() || '—',
+      })),
+      observacoes: (med.observacoes || '').trim(),
+      tem_observacoes: !!(med.observacoes || '').trim(),
+    }, paresFiscais(fiscais));
+  }
+
+  const api = { gerar, montarDadosMedicao, montarDadosRelatorio, montarDadosSanadas, montarDadosIrregularidades, montarDados, listarMarcadores, extrairTextoBloco, textoEquipe, imageSize };
   if (typeof module === 'object' && module.exports) module.exports = api;
   else root.DocGen = api;
 })(typeof self !== 'undefined' ? self : this);

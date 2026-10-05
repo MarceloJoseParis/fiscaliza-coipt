@@ -1,6 +1,9 @@
 /* Login Google + sincronizacao com o backend (Google Apps Script) */
 (function (root) {
-  const ENTIDADES = ['pessoas', 'registros', 'visitas', 'notificacoes', 'fotos', 'config'];
+  const ENTIDADES = ['pessoas', 'registros', 'visitas', 'notificacoes', 'fotos', 'config', 'medicoes'];
+  // medições só sincronizam com o servidor versão 11 ou mais nova (o antigo ignoraria e elas se perderiam da equipe)
+  const MIN_SERVIDOR = { medicoes: 11 };
+  try { const v = +localStorage.getItem('versaoServidor'); if (v) Sync.versaoServidor = v; } catch (e) { /* */ }
   const Sync = { estado: 'offline', usuario: null, erro: null };
   const ouvintes = new Set();
   let gisCarregado = null;
@@ -214,14 +217,14 @@
       err.codigo = j.codigo;
       throw err;
     }
-    if (j.versao) Sync.versaoServidor = j.versao;
+    if (j.versao) { Sync.versaoServidor = j.versao; try { localStorage.setItem('versaoServidor', String(j.versao)); } catch (e) { /* */ } }
     return j;
   }
 
   Sync.quemSou = async function () {
     const j = await Sync.chamar('quemSou');
     if (!j.usuario) throw new Error('Resposta inesperada do servidor (quemSou).');
-    Sync.versaoServidor = j.versao || 1;
+    Sync.versaoServidor = j.versao || 1; try { localStorage.setItem('versaoServidor', String(Sync.versaoServidor)); } catch (e) { /* */ }
     if (j.sessao) { try { localStorage.setItem('sessao', j.sessao); localStorage.setItem('sessao_exp', String(Date.now() + 29 * 86400000)); } catch (e) { /* */ } }
     const u = Object.assign({}, Sync.usuarioLocal() || {}, j.usuario);
     localStorage.setItem('usuario', JSON.stringify(u));
@@ -422,6 +425,7 @@
           await DB.atualizar(e, o.id, (a) => (a && a._pendente ? (delete a._pendente, a) : undefined));
           continue;
         }
+        if (MIN_SERVIDOR[e] && !((Sync.versaoServidor || 0) >= MIN_SERVIDOR[e])) continue; // fica pendente até o servidor ser atualizado
         const c = Object.assign({}, o); for (const k of DB.CAMPOS_LOCAIS) delete c[k];
         delete c._vb; // nunca reenvia um valor antigo que tenha ficado gravado (servidor anterior à versão 8)
         if (o._campos && o._versaoBase) c._vb = o._versaoBase; // o servidor confere se ninguém mudou o registro desde então

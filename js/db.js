@@ -1,8 +1,8 @@
 /* Banco local (IndexedDB) - funciona 100% offline */
 (function (root) {
   const NOME = 'notificacoes-app';
-  const VERSAO = 2;
-  const STORES = ['registros', 'pessoas', 'notificacoes', 'fotos', 'visitas', 'config', 'blobs', 'arquivos', 'kv'];
+  const VERSAO = 3;
+  const STORES = ['registros', 'pessoas', 'notificacoes', 'fotos', 'visitas', 'medicoes', 'config', 'blobs', 'arquivos', 'kv'];
   let dbp = null;
 
   function abrir() {
@@ -14,7 +14,7 @@
         for (const s of STORES) {
           if (!db.objectStoreNames.contains(s)) {
             const os = db.createObjectStore(s, { keyPath: s === 'blobs' || s === 'arquivos' || s === 'kv' ? 'k' : 'id' });
-            if (s === 'notificacoes' || s === 'fotos' || s === 'visitas') os.createIndex('registroId', 'registroId');
+            if (s === 'notificacoes' || s === 'fotos' || s === 'visitas' || s === 'medicoes') os.createIndex('registroId', 'registroId');
           }
         }
         const fotos = rq.transaction.objectStore('fotos');

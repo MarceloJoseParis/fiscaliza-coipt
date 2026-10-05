@@ -121,11 +121,14 @@
   }
 
   /**
-   * Processa a foto: redimensiona (max 2000 px), aplica carimbo (opcional) e gera JPEG.
+   * Processa a foto: redimensiona (máx. 2000 px; 3000 px em "alta qualidade"), aplica carimbo (opcional) e gera JPEG.
    * @returns {Promise<{blob, largura, altura, miniatura}>}
    */
+  // qualidade das fotos (preferência de cada aparelho, em Ajustes › Aparência e câmera)
+  Foto.QUALIDADES = { normal: { maxLado: 2000, qualidade: 0.82 }, alta: { maxLado: 3000, qualidade: 0.9 } };
+  Foto.qualidadeAtual = function () { try { return localStorage.getItem('foto_qualidade') === 'alta' ? 'alta' : 'normal'; } catch (e) { return 'normal'; } };
   Foto.processar = async function (arquivo, opcoes) {
-    opcoes = opcoes || {};
+    opcoes = Object.assign({}, Foto.QUALIDADES[Foto.qualidadeAtual()], opcoes || {});
     const img = await carregarImagem(arquivo);
     const iw = img.width || img.naturalWidth, ih = img.height || img.naturalHeight;
     // giro para acompanhar a posicao do celular no momento da foto (angulo da tela: 0, 90, 180, 270)
@@ -139,6 +142,9 @@
     const cv = document.createElement('canvas');
     cv.width = w; cv.height = h;
     const g = cv.getContext('2d');
+    // redução com o melhor filtro do navegador (menos serrilhado e mais nitidez nos detalhes finos)
+    g.imageSmoothingEnabled = true;
+    try { g.imageSmoothingQuality = 'high'; } catch (e) { /* navegador antigo */ }
     if (giro) {
       g.save();
       g.translate(w / 2, h / 2);

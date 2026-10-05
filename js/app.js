@@ -323,7 +323,7 @@
   async function contarPendentes() {
     contagemEm = Date.now();
     let pend = 0;
-    try { if (Sync.habilitado()) for (const e of ['registros', 'pessoas', 'visitas', 'notificacoes', 'fotos', 'config']) pend += (await DB.all(e)).filter((o) => o._pendente).length; } catch (e) { /* */ }
+    try { if (Sync.habilitado()) for (const e of ['registros', 'pessoas', 'visitas', 'notificacoes', 'fotos', 'config', 'medicoes']) pend += (await DB.all(e)).filter((o) => o._pendente).length; } catch (e) { /* */ }
     pendCache = pend;
     desenharChip();
   }
@@ -430,6 +430,8 @@
       if (r === 'novo') { return await telaFormRegistro(null, a); }
       if (r === 'notificacao') { return await telaNotificacao(a); }
       if (r === 'nova-notificacao') { return await criarNotificacao(a); }
+      if (r === 'nova-medicao') { return await criarMedicao(a); }
+      if (r === 'medicao') { return await telaMedicao(a); }
       if (r === 'coleta') { marcarNav(''); return await telaColeta(a); }
       if (r === 'notificacoes') { marcarNav('notificacoes'); return await telaNotificacoes(); }
       if (r === 'fila') { marcarNav('fila'); return await telaFila(); }
@@ -591,7 +593,9 @@
     const notifs = await notificacoesDe(id);
     const fotos = await fotosDe(id);
     const visitas = await visitasDe(id);
-    const aba = sessionStorage.getItem('aba_reg2') || 'visitas';
+    const medicoes = r.tipo === 'contrato' ? await medicoesDe(id) : [];
+    let aba = sessionStorage.getItem('aba_reg2') || 'visitas';
+    if (aba === 'medicoes' && r.tipo !== 'contrato') aba = 'visitas';
 
     const info = h('table', { class: 'tabela-info' },
       [['Notificada', r.n_nome], [ROTULO[r.tipo] + ' nº', r.numero], ['Processo', r.processo],
@@ -619,6 +623,7 @@
       aba2('visitas', 'Visitas (' + visitas.length + ')'),
       aba2('notif', 'Notificações (' + notifs.length + ')'),
       aba2('irr', 'Irregularidades (' + fotos.filter((f) => f.irregular && situacao(f) === 'pendente').length + ')'),
+      r.tipo === 'contrato' ? aba2('medicoes', 'Medições (' + medicoes.length + ')') : null,
       aba2('fotos', 'Fotos (' + fotos.length + ')'));
 
     if (aba === 'visitas') {
@@ -632,6 +637,16 @@
           h('div', { class: 'd' }, 'Por ' + (v.criadoPor || '—')));
       }) : [h('div', { class: 'vazio' }, 'Nenhuma visita registrada.',
         pode.coletar() ? h('div', { style: { marginTop: '12px' } }, h('a', { class: 'btn pri', href: '#/coleta/' + id }, '▶ Iniciar visita')) : null)]));
+    } else if (aba === 'medicoes') {
+      ap(conteudo, pode.notificar() ? h('div', { class: 'acoes', style: { marginTop: 0, marginBottom: '10px' } }, h('a', { class: 'btn pri', href: '#/nova-medicao/' + id }, '+ Nova medição')) : null,
+        ...(medicoes.length ? medicoes.map((m) => {
+          const c = contarSituacao(m);
+          return h('a', { class: 'item', href: '#/medicao/' + m.id },
+            h('span', { class: 'badge ' + (m.status === 'concluida' ? 'emit' : 'rasc') }, m.status === 'concluida' ? 'Concluída' : 'Rascunho'),
+            h('div', { class: 't' }, m.numero + 'ª Medição', m._pendente ? h('span', { class: 'pend' }) : null),
+            h('div', { class: 'd' }, 'Período ' + X.dataBR(m.periodo_inicio) + ' a ' + X.dataBR(m.periodo_fim)),
+            h('div', { class: 'd' }, c.total + ' item(ns)' + (c.nao ? ' · ' + c.nao + ' não medido(s)' : '') + (c.parcial ? ' · ' + c.parcial + ' parcial(is)' : '') + ' · por ' + (m.criadoPor || '—')));
+        }) : [h('div', { class: 'vazio' }, 'Nenhuma medição registrada para este contrato.')]));
     } else if (aba === 'irr') {
       ap(conteudo, await painelIrregularidades(r));
     } else if (aba === 'notif') {
@@ -2742,6 +2757,183 @@
   }
 
   /* ================================================================== */
+  /* Medições (só contratos): Relatório de Elaboração de Medição         */
+  /* ================================================================== */
+  async function medicoesDe(registroId) {
+    return (await DB.byIndex('medicoes', 'registroId', registroId)).filter((m) => !m.excluido).sort((a, b) => (+b.numero || 0) - (+a.numero || 0));
+  }
+  function contarSituacao(m) {
+    const c = { total: 0, medido: 0, parcial: 0, nao: 0 };
+    for (const it of m.itens || []) { if (!(it.descricao || '').trim()) continue; c.total++; if (c[it.situacao] !== undefined) c[it.situacao]++; }
+    return c;
+  }
+  const novoItemMed = (descricao) => ({ id: DB.uuid(), descricao: descricao || '', situacao: '', comentario: '', memorial: '' });
+  const somaDia = (iso, n) => { const d = new Date(iso + 'T12:00:00'); d.setDate(d.getDate() + n); return d.toISOString().slice(0, 10); };
+
+  async function criarMedicao(registroId) {
+    if (!pode.notificar()) { toast('Seu perfil não permite criar medições.', true); history.back(); return; }
+    const r = await DB.get('registros', registroId);
+    if (!r || r.tipo !== 'contrato') { history.back(); return; }
+    const ant = (await medicoesDe(registroId))[0];
+    let numero;
+    if (ant) numero = (+ant.numero || 0) + 1;
+    else {
+      const n = await perguntarNumero('Primeira medição no app', 'Qual é o número desta medição de “' + r.apelido + '”? (Ex.: 1 para a 1ª medição.)', 1);
+      if (n === null) { history.back(); return; }
+      numero = Math.max(1, n);
+    }
+    const hoje = X.hojeISO();
+    const inicio = ant && ant.periodo_fim ? somaDia(ant.periodo_fim, 1) : hoje.slice(0, 8) + '01';
+    const m = {
+      registroId, numero, periodo_inicio: inicio, periodo_fim: hoje, data_vistoria: hoje, data: hoje, status: 'rascunho',
+      // os itens costumam se repetir de uma medição para a outra: copia as descrições (e os memoriais) da anterior
+      itens: ant && (ant.itens || []).length ? ant.itens.filter((it) => (it.descricao || '').trim()).map((it) => Object.assign(novoItemMed(it.descricao), { memorial: it.memorial || '' })) : [novoItemMed()],
+      observacoes: '',
+      fiscais: ant && (ant.fiscais || []).length ? ant.fiscais.map((f) => Object.assign({}, f)) : snapshotAssinantes(r.fiscais && r.fiscais.length ? r.fiscais : fiscaisPadrao('contrato'), await pessoasMap(), true),
+    };
+    const salvo = await DB.salvar('medicoes', m, email());
+    location.replace('#/medicao/' + salvo.id);
+  }
+
+  async function telaMedicao(id) {
+    const tk = rotaSeq;
+    const original = await DB.get('medicoes', id);
+    if (!original || original.excluido) { rcT(tk, h('div', { class: 'vazio' }, 'Medição não encontrada.')); return; }
+    const r = await DB.get('registros', original.registroId);
+    if (!r) { rcT(tk, h('div', { class: 'vazio' }, 'Contrato desta medição não encontrado.')); return; }
+    marcarNav('contratos');
+    titulo(original.numero + 'ª Medição · ' + r.apelido, true);
+    const m = clonar(original);
+    let base = clonar(original);
+    m.itens = m.itens || [];
+    const concluida = m.status === 'concluida';
+    const ro = concluida || !pode.notificar();
+    const pessoas = await pessoasMap();
+    const edFiscais = (m.fiscais || []).map((f) => ({ pessoaId: f.pessoaId, funcao: f.funcao }));
+    let sujo = false;
+    const marcar = () => { sujo = true; };
+    const data = (k) => h('input', { type: 'date', value: m[k] || '', readonly: ro, oninput: (e) => { m[k] = e.target.value; marcar(); } });
+
+    const cab = h('div', { class: 'card' }, h('h2', {}, 'Dados da medição'),
+      concluida ? h('div', { class: 'aviso' }, '🔒 Medição concluída em ' + dataHoraBR(m.concluidaEm) + ' por ' + (m.concluidaPor || '—') + '. Para alterar, reabra.') : null,
+      h('div', { class: 'grade2' },
+        campo('Medição nº', h('input', { type: 'number', min: '1', value: m.numero, readonly: ro, oninput: (e) => { m.numero = parseInt(e.target.value, 10) || m.numero; marcar(); } })),
+        campo('Data da vistoria', data('data_vistoria')),
+        campo('Período: de', data('periodo_inicio')),
+        campo('Período: até', data('periodo_fim'))));
+
+    /* --- itens --- */
+    const SIT = [['medido', 'Medido'], ['parcial', 'Parcial'], ['nao', 'Não medido']];
+    const boxItens = h('div', { class: 'med-itens' });
+    const tituloItens = h('h2', {});
+    const crescer = (t) => { t.style.height = 'auto'; t.style.height = Math.max(t.scrollHeight + 2, 64) + 'px'; };
+    const area = (it, k, ph, attrs) => { const t = h('textarea', Object.assign({ rows: 2, readonly: ro, placeholder: ro ? '' : ph, oninput: (e) => { it[k] = e.target.value; crescer(e.target); marcar(); } }, attrs || {})); t.value = it[k] || ''; return t; };
+    const desenharItens = () => {
+      const c = contarSituacao(m);
+      rc(tituloItens, 'Itens da medição (' + m.itens.length + ')');
+      rc(boxItens, ...m.itens.map((it, i) => {
+        const memAberto = !!(it.memorial || '').trim() || it._memAberto;
+        const sit = h('div', { class: 'seg med-sit' }, SIT.map(([k, t]) => h('button', { type: 'button', disabled: ro, class: (it.situacao === k ? 'ativo ' : '') + 'sit-' + k,
+          onclick: () => { it.situacao = it.situacao === k ? '' : k; marcar(); desenharItens(); } }, t)));
+        return h('div', { class: 'med-item' + (it.situacao ? ' sit-' + it.situacao : '') },
+          h('div', { class: 'med-topo' }, h('b', {}, 'Item ' + (i + 1)), sit,
+            ro ? null : h('div', { class: 'ctl' },
+              h('button', { class: 'btn peq', disabled: i === 0, title: 'Subir', onclick: () => { m.itens.splice(i - 1, 0, m.itens.splice(i, 1)[0]); marcar(); desenharItens(); } }, '▲'),
+              h('button', { class: 'btn peq', disabled: i === m.itens.length - 1, title: 'Descer', onclick: () => { m.itens.splice(i + 1, 0, m.itens.splice(i, 1)[0]); marcar(); desenharItens(); } }, '▼'),
+              h('button', { class: 'btn peq perigo', title: 'Excluir item', onclick: async () => { if ((it.descricao || it.comentario || it.memorial) && !(await confirmar('Excluir o item ' + (i + 1) + '?', 'Excluir', true))) return; m.itens.splice(i, 1); marcar(); desenharItens(); } }, '✕'))),
+          h('div', { class: 'med-cols' },
+            h('label', { class: 'campo' }, h('span', {}, 'Descrição do item'), area(it, 'descricao', 'Ex.: 3.1 Alvenaria de vedação em bloco cerâmico')),
+            h('label', { class: 'campo' }, h('span', {}, 'Comentário'), area(it, 'comentario', 'Ex.: não medido — serviço iniciado, aguardando conclusão do pano')),
+            memAberto
+              ? h('label', { class: 'campo' }, h('span', {}, 'Memorial de cálculo (opcional)'), area(it, 'memorial', 'Ex.: Parede eixo A: 12,40 × 2,80 = 34,72 m²\nDescontar porta: 0,80 × 2,10 = 1,68 m²\nTotal = 33,04 m²', { class: 'mono' }))
+              : (ro ? h('label', { class: 'campo med-semmem' }, h('span', {}, 'Memorial de cálculo'), h('div', { class: 'sub' }, '—'))
+                : h('label', { class: 'campo med-semmem' }, h('span', {}, 'Memorial de cálculo (opcional)'), h('button', { class: 'btn peq', onclick: () => { it._memAberto = true; desenharItens(); const t = boxItens.querySelectorAll('.med-item')[i].querySelector('textarea.mono'); if (t) t.focus(); } }, '+ Adicionar memorial')))));
+      }),
+      m.itens.length ? null : h('div', { class: 'vazio' }, 'Nenhum item.'),
+      h('div', { class: 'sub', style: { marginTop: '6px' } }, c.total ? [c.medido + ' medido(s)', c.parcial + ' parcial(is)', c.nao + ' não medido(s)'].join(' · ') : ''));
+    };
+    desenharItens();
+    // ajusta a altura das caixas de texto ao conteúdo depois de desenhar (e quando a largura muda)
+    const ajustarAlturas = () => boxItens.querySelectorAll('textarea').forEach(crescer);
+    new MutationObserver(() => requestAnimationFrame(ajustarAlturas)).observe(boxItens, { childList: true });
+    setTimeout(ajustarAlturas, 0);
+    const aoRedimensionar = () => { if (!document.body.contains(boxItens)) { removeEventListener('resize', aoRedimensionar); return; } ajustarAlturas(); };
+    addEventListener('resize', aoRedimensionar);
+    const secItens = h('div', { class: 'card' }, tituloItens, boxItens,
+      ro ? null : h('div', { class: 'acoes' },
+        h('button', { class: 'btn', onclick: () => { m.itens.push(novoItemMed()); marcar(); desenharItens(); const t = boxItens.querySelectorAll('.med-item'); if (t.length) t[t.length - 1].querySelector('textarea').focus(); } }, '+ Item'),
+        h('button', { class: 'btn', onclick: async () => {
+          const ta = h('textarea', { placeholder: 'Um item por linha (pode colar da planilha de medição)', style: { minHeight: '160px' } });
+          const ok = await modal('Colar vários itens', h('div', {}, h('p', { class: 'sub' }, 'Cada linha vira um item. Linhas em branco são ignoradas.'), ta), [{ txt: 'Cancelar', valor: false }, { txt: 'Adicionar', cls: 'pri', valor: true }]);
+          if (!ok) return;
+          const linhas = ta.value.split(/\r?\n/).map((l) => l.replace(/\t+/g, ' — ').trim()).filter(Boolean);
+          if (!linhas.length) return;
+          // tira o item vazio inicial, se houver
+          m.itens = m.itens.filter((it) => (it.descricao || it.comentario || it.memorial || '').trim()).concat(linhas.map((l) => novoItemMed(l)));
+          marcar(); desenharItens(); toast(linhas.length + ' item(ns) adicionado(s)');
+        } }, '📋 Colar vários itens')));
+
+    const obs = h('div', { class: 'card' }, h('h2', {}, 'Observações gerais (opcional)'),
+      (() => { const t = h('textarea', { readonly: ro, placeholder: ro ? '' : 'Observações que valem para a medição como um todo.', oninput: (e) => { m.observacoes = e.target.value; marcar(); } }); t.value = m.observacoes || ''; return t; })());
+    const equipe = h('div', { class: 'card' }, h('h2', {}, 'Equipe de fiscalização (assinaturas)'),
+      ro ? h('div', { class: 'sub' }, (m.fiscais || []).map((f) => f.nome).join(', ') || '—')
+        : h('div', { onchange: marcar, onclick: (e) => { if (e.target.tagName === 'BUTTON') marcar(); } }, editorAssinantes(edFiscais, pessoas, 'fiscal', true, 'contrato')));
+
+    async function salvar(silencioso) {
+      if (ro) return;
+      m.fiscais = snapshotAssinantes(edFiscais, pessoas, true);
+      m.itens = m.itens.map((it) => { const c = Object.assign({}, it); delete c._memAberto; return c; });
+      const salvo = await salvarMudancas('medicoes', base, m);
+      Object.assign(original, salvo);
+      base = clonar(m);
+      sujo = false;
+      if (!silencioso) toast('Medição salva');
+    }
+    async function gerar(compartilhar) {
+      if (!ro) await salvar(true);
+      const atual = await DB.get('medicoes', id);
+      if (!contarSituacao(atual).total) { toast('Inclua ao menos um item com descrição.', true); return; }
+      const fundo = h('div', { class: 'modal-fundo' }, h('div', { class: 'modal' }, h('span', { class: 'carregando' }), ' Gerando relatório…'));
+      document.body.appendChild(fundo);
+      try {
+        const dados = DocGen.montarDadosMedicao(atual.registroSnapshot || r, atual, atual.fiscais || []);
+        const blob = await DocGen.gerar(await modeloDocx('medicao'), dados, { type: 'blob' });
+        const nome = nomeArquivo('RELATÓRIO DE MEDIÇÃO ' + atual.numero + ' - ' + r.apelido) + '.docx';
+        fundo.remove();
+        if (compartilhar) await compartilharBlob(blob, nome, nome); else baixarBlob(blob, nome);
+        toast('Relatório gerado: ' + nome);
+      } catch (e) { fundo.remove(); console.error(e); toast(e.message, true); }
+    }
+    const acoes = h('div', { class: 'card' }, h('h2', {}, 'Relatório'),
+      h('div', { class: 'acoes', style: { marginTop: 0 } },
+        !ro ? h('button', { class: 'btn', onclick: () => salvar() }, '💾 Salvar') : null,
+        h('button', { class: 'btn pri', onclick: () => gerar(false) }, '⬇️ Baixar Word (.docx)'),
+        h('button', { class: 'btn', onclick: () => gerar(true) }, '📤 Compartilhar'),
+        !ro ? h('button', { class: 'btn ok', onclick: async () => {
+          if (!(await confirmar('Concluir a medição? O conteúdo fica bloqueado (um administrador pode reabrir).', 'Concluir'))) return;
+          await salvar(true);
+          const snap = Object.assign({}, r); for (const k of ['_pendente', '_campos', '_base', '_versaoBase', 'atualizadoEm', 'atualizadoPor', 'criadoEm', 'criadoPor']) delete snap[k];
+          await atualizarCampos('medicoes', id, (o) => { o.status = 'concluida'; o.concluidaEm = new Date().toISOString(); o.concluidaPor = email(); o.registroSnapshot = snap; });
+          App._sairNotif = null; telaMedicao(id);
+        } }, '✅ Concluir') : null,
+        concluida && pode.admin() ? h('button', { class: 'btn peq', onclick: async () => {
+          if (!(await confirmar('Reabrir a medição para edição?', 'Reabrir'))) return;
+          await atualizarCampos('medicoes', id, (o) => { o.status = 'rascunho'; delete o.concluidaEm; delete o.concluidaPor; delete o.registroSnapshot; });
+          telaMedicao(id);
+        } }, '🔓 Reabrir') : null,
+        (!concluida && pode.notificar()) || pode.admin() ? h('button', { class: 'btn peq perigo', onclick: async () => {
+          if (!(await confirmar('Excluir esta medição?', 'Excluir', true))) return;
+          App._sairNotif = null;
+          await DB.excluir('medicoes', id, email()); sessionStorage.setItem('aba_reg2', 'medicoes'); location.replace('#/registro/' + r.id);
+        } }, 'Excluir') : null),
+      h('p', { class: 'dica' }, 'Os itens da próxima medição já vêm com as descrições (e memoriais) desta. Para PDF, abra o .docx no Word e use “Salvar como PDF”.'));
+
+    rcT(tk, cab, secItens, obs, equipe, acoes);
+    // salva o rascunho ao sair da tela
+    App._sairNotif = async () => { if (sujo && !ro) await salvar(true); };
+  }
+
+  /* ================================================================== */
   /* Ajustes                                                             */
   /* ================================================================== */
   /* Ajustes › Status das obras: o administrador acrescenta, renomeia, reordena ou tira status e escolhe a cor */
@@ -2834,6 +3026,7 @@
     const cards = [];
 
     /* conta */
+    const medPend = Sync.habilitado() ? (await DB.all('medicoes')).filter((o) => o._pendente).length : 0;
     const contaCard = h('div', { class: 'card' }, h('h2', {}, 'Conta e sincronização'));
     if (!Sync.habilitado()) {
       const cfgArq = window.APP_CONFIG || null;
@@ -2864,6 +3057,7 @@
         h('div', {}, h('b', {}, u ? u.nome || u.email : '—'), ' ', h('span', { class: 'badge' }, { admin: 'Administrador', fiscal: 'Fiscal', consulta: 'Consulta' }[perfil()] || perfil())),
         h('div', { class: 'sub' }, u ? u.email : ''),
         h('div', { class: 'sub' }, 'Última sincronização: ' + (ult ? dataHoraBR(ult) : 'nunca')),
+        Sync.versaoServidor && Sync.versaoServidor < 11 && medPend ? h('div', { class: 'aviso', style: { marginTop: '8px' } }, '⚠️ ' + medPend + ' medição(ões) aguardando: o servidor (Code.gs) precisa ser atualizado para a versão 3.11 para as medições irem para a equipe. Até lá, elas ficam guardadas neste aparelho.') : null,
         Sync.versaoServidor && Sync.versaoServidor < 5 ? h('div', { class: 'aviso', style: { marginTop: '8px' } }, '⚠️ O servidor (Code.gs) está numa versão antiga, sujeita a perda de sincronismo. O administrador deve colar o Code.gs novo no Apps Script e publicar como nova versão (Guia de publicação, Parte G).') : null,
         Sync.estado === 'erro' ? h('div', { class: 'aviso', style: { marginTop: '8px' } }, Sync.erro) : null,
         Sync.estado === 'sem_acesso' ? h('div', { class: 'aviso', style: { marginTop: '8px' } }, 'Seu e-mail não está autorizado. Peça ao administrador para incluí-lo.') : null,
@@ -2886,13 +3080,13 @@
     /* diagnostico */
     if (Sync.habilitado()) {
       const pendPor = {};
-      for (const e of ['registros', 'pessoas', 'visitas', 'notificacoes', 'fotos', 'config']) pendPor[e] = (await DB.all(e)).filter((o) => o._pendente).length;
+      for (const e of ['registros', 'pessoas', 'visitas', 'notificacoes', 'fotos', 'config', 'medicoes']) pendPor[e] = (await DB.all(e)).filter((o) => o._pendente).length;
       const fotosSemDrive = (await DB.all('fotos')).filter((f) => !f.driveId && !f.excluido);
       let semArquivo = 0;
       for (const f of fotosSemDrive) if (!(await DB.blobGet(f.id))) semArquivo++;
       const log = Sync.lerLog().slice().reverse();
       const resumo = {
-        app: '3.10', servidor: Sync.versaoServidor || '?', usuario: (u || {}).email, perfil: perfil(), estado: Sync.estado, erro: Sync.erro || '',
+        app: '3.11', servidor: Sync.versaoServidor || '?', usuario: (u || {}).email, perfil: perfil(), estado: Sync.estado, erro: Sync.erro || '',
         online: navigator.onLine, ultimaSync: await DB.kvGet('ultimaSync', null), cursor: await DB.kvGet('servidorDesde', 0),
         pendentes: pendPor, fotosAguardandoEnvio: fotosSemDrive.length - semArquivo, fotosDeOutroAparelhoSemEnvio: semArquivo,
         aparelho: navigator.userAgent, log,
@@ -2929,6 +3123,8 @@
       campoBloco('Tema', seg([['auto', 'Automático'], ['claro', 'Claro'], ['escuro', 'Escuro']], temaAtual, aplicarTema)),
       campoBloco('Câmera nas visitas', seg([['app', 'Câmera do app'], ['aparelho', 'Câmera do celular']], prefCamera(), (v) => { try { localStorage.setItem('camera_pref', v); } catch (e) { /* */ } }),
         'Câmera do app: fica aberta para várias fotos seguidas, com troca de lente (grande angular quando o celular permite), zoom, toque para focar e flash. Câmera do celular: todos os recursos do aparelho, uma foto por vez.'),
+      campoBloco('Qualidade das fotos', seg([['normal', 'Normal'], ['alta', 'Alta qualidade']], Foto.qualidadeAtual(), (v) => { try { localStorage.setItem('foto_qualidade', v); } catch (e) { /* */ } }),
+        'Normal: até 2000 px (cerca de 0,4 a 1 MB por foto). Alta qualidade: até 3000 px e menos compressão (cerca de 2 a 3 vezes maior) — mais detalhe nas fotos e nos relatórios, mas o envio ao Drive demora mais e os arquivos do Word ficam maiores. Vale para as próximas fotos deste aparelho.'),
       h('label', { class: 'linha sub' }, h('input', { type: 'checkbox', checked: rapida ? 'checked' : null, onchange: (e) => { try { localStorage.setItem('cam_rapida', e.target.checked ? '1' : '0'); } catch (er) { /* */ } } }),
         'Captura rápida (usa o quadro do vídeo, resolução menor)'),
       h('div', { class: 'acoes' }, h('button', { class: 'btn peq', onclick: testarCameras }, '🔍 Testar câmeras deste celular')),
@@ -3042,8 +3238,8 @@
 
     /* modelos */
     const modCard = h('div', { class: 'card' }, h('h2', {}, 'Modelos do Word'));
-    const ROT_MOD = { contrato: 'Notificação — Contrato', convenio: 'Notificação — Convênio', relatorio: 'Relatório fotográfico', irregularidades: 'Relatório de irregularidades' };
-    for (const tipo of ['contrato', 'convenio', 'relatorio', 'irregularidades']) {
+    const ROT_MOD = { contrato: 'Notificação — Contrato', convenio: 'Notificação — Convênio', relatorio: 'Relatório fotográfico', irregularidades: 'Relatório de irregularidades', medicao: 'Relatório de medição (contratos)' };
+    for (const tipo of ['contrato', 'convenio', 'relatorio', 'irregularidades', 'medicao']) {
       const custom = await DB.arquivoGet('modelo_' + tipo);
       const inp = h('input', { type: 'file', accept: '.docx', class: 'oculto' });
       inp.addEventListener('change', async () => {
@@ -3127,7 +3323,7 @@
     // a partir de "Aparência e câmera", cada seção vira uma lista suspensa (fechada; lembra as abertas)
     const iniSecoes = cards.findIndex((c) => c.querySelector && (c.querySelector(':scope > h2') || {}).textContent === 'Aparência e câmera');
     if (iniSecoes >= 0) for (let i = iniSecoes; i < cards.length; i++) cards[i] = secaoRecolhivel(cards[i]);
-    cards.push(h('p', { class: 'dica', style: { textAlign: 'center' } }, 'Fiscalização de Obras · v3.10 · dados salvos no aparelho' + (Sync.habilitado() ? ' e no Google Drive do administrador' : '') + ' · ', h('a', { href: 'privacidade.html' }, 'Política de privacidade')));
+    cards.push(h('p', { class: 'dica', style: { textAlign: 'center' } }, 'Fiscalização de Obras · v3.11 · dados salvos no aparelho' + (Sync.habilitado() ? ' e no Google Drive do administrador' : '') + ' · ', h('a', { href: 'privacidade.html' }, 'Política de privacidade')));
     rcT(tk, ...cards);
   }
 
@@ -3262,7 +3458,7 @@
   async function exportarBackup() {
     const zip = new JSZip();
     const dados = {};
-    for (const e of ['registros', 'pessoas', 'visitas', 'notificacoes', 'fotos', 'config']) dados[e] = await DB.all(e);
+    for (const e of ['registros', 'pessoas', 'visitas', 'notificacoes', 'fotos', 'config', 'medicoes']) dados[e] = await DB.all(e);
     zip.file('dados.json', JSON.stringify({ versao: 1, exportadoEm: new Date().toISOString(), dados }, null, 1));
     for (const f of dados.fotos) { const b = await DB.blobGet(f.id); if (b) zip.file('fotos/' + f.id + '.jpg', b); }
     for (const t of ['contrato', 'convenio', 'relatorio', 'sanadas', 'irregularidades']) { const m = await DB.arquivoGet('modelo_' + t); if (m && m.blob) zip.file('modelos/modelo_' + t + '.docx', m.blob); }

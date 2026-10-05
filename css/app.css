@@ -597,3 +597,39 @@ details.card.secao[open] > summary { border-bottom: 1px solid var(--linha); marg
 @media (min-width: 1024px) {
   body[data-tela="config"] main { columns: 1; }
 }
+
+/* 3.11: caixinha de marcar ao lado do texto (o texto quebra linha em vez de cair para baixo da caixinha) */
+label.linha { flex-wrap: nowrap; align-items: flex-start; }
+label.linha > input[type="checkbox"] { flex: none; margin-top: 2px; }
+
+/* Medições: itens com descrição, comentário e memorial de cálculo */
+.med-item { border: 1px solid var(--linha); border-left: 4px solid var(--linha); border-radius: 14px; padding: 10px 12px; margin-bottom: 10px; background: var(--sup); }
+.med-item.sit-medido { border-left-color: var(--ok); }
+.med-item.sit-parcial { border-left-color: var(--alerta); }
+.med-item.sit-nao { border-left-color: var(--erro); }
+.med-topo { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 6px; }
+.med-topo > b { font-size: 14px; }
+.med-topo .ctl { display: flex; gap: 4px; margin-left: auto; }
+.med-sit { display: inline-flex; flex: 0 1 auto; }
+.med-sit button { padding: 4px 10px; font-size: 12.5px; white-space: nowrap; }
+.med-sit button.ativo.sit-medido { color: var(--ok); }
+.med-sit button.ativo.sit-parcial { color: var(--alerta); }
+.med-sit button.ativo.sit-nao { color: var(--erro); }
+.med-cols { display: grid; grid-template-columns: 1fr; gap: 0 12px; }
+.med-cols textarea { min-height: 64px; resize: vertical; overflow: hidden; }
+.med-cols textarea.mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 13px; }
+.med-semmem .btn { align-self: flex-start; }
+/* celular: "Item N" e botões na linha de cima, situação na linha de baixo ocupando a largura */
+@media (max-width: 1023px) {
+  .med-topo .med-sit { order: 3; flex: 1 1 100%; display: flex; }
+  .med-topo .med-sit button { flex: 1; }
+}
+@media (min-width: 1024px) {
+  .med-cols { grid-template-columns: 1fr 1fr 1fr; }
+}
+@media (min-width: 1024px) {
+  body[data-tela="medicao"] main { columns: 1; }
+}
+:root[data-theme="dark"] .med-sit button.ativo.sit-medido { color: var(--ok); }
+:root[data-theme="dark"] .med-sit button.ativo.sit-parcial { color: var(--alerta); }
+:root[data-theme="dark"] .med-sit button.ativo.sit-nao { color: var(--erro); }
