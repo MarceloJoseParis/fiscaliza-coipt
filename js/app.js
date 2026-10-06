@@ -659,7 +659,7 @@
         : [h('div', { class: 'vazio' }, 'Nenhuma notificação registrada no app para este ' + ROTULO[r.tipo].toLowerCase() + '.',
           r.ultima_notif_anterior ? h('div', { class: 'sub' }, 'Notificações emitidas antes do app: ' + r.ultima_notif_anterior) : null)]));
     } else {
-      ap(conteudo, gradeFotos(fotos, { onclick: (f) => abrirFoto(f, () => telaRegistro(id)) }));
+      ap(conteudo, gradeFotos(fotos, { onclick: (f) => abrirFoto(f, () => telaRegistro(id), fotos) }));
       if (!fotos.length) ap(conteudo, h('div', { class: 'vazio' }, 'Nenhuma foto coletada.'));
     }
     rcT(tk, cab, r.tipo === 'convenio' ? cartaoFilaConvenio(r) : null, abas, conteudo);
@@ -969,59 +969,214 @@
     return n;
   }
 
-  async function abrirFoto(f, depois) {
-    f = (await DB.get('fotos', f.id)) || f;
-    const img = h('img', { class: 'grande' });
-    urlFoto(f, true).then((u) => { img.src = u; });
-    const edit = { descricao: f.descricao || '', irregular: !!f.irregular, incluir: !f.fora_relatorio };
-    const coord = f.lat != null ? h('a', { href: 'https://www.google.com/maps?q=' + f.lat + ',' + f.lng, target: '_blank', rel: 'noopener' }, Foto.textoCoord(f.lat, f.lng) + (f.precisao ? ' (±' + f.precisao + ' m)' : '')) : 'sem coordenadas';
+  /* Visualizador de fotos: tela cheia, com zoom (roda do mouse / pinça / duplo clique), arrastar a foto
+     ampliada, setas e teclado para passar de uma foto a outra e tira de miniaturas. As alterações da
+     legenda/irregularidade são gravadas ao passar para outra foto ou fechar. */
+  async function abrirFoto(f0, depois, listaOrig) {
+    let lista = (listaOrig && listaOrig.length ? listaOrig : [f0]).filter((x) => x && !x.excluido);
+    let idx = Math.max(0, lista.findIndex((x) => x.id === f0.id));
+    if (!lista.length) { lista = [f0]; idx = 0; }
     const podeEditar = pode.coletar();
-    const irrDe = f.verificacaoDe ? await DB.get('fotos', f.verificacaoDe) : null;
-    const nVer = (f.verificacoes || []).length;
-    const rotDesc = h('span', {}, edit.irregular ? 'Descrição da irregularidade *' : 'Legenda (opcional)');
-    const area = inputArea(edit, 'descricao', { readonly: !podeEditar, placeholder: 'Ex.: Telhas do refeitório amassadas' });
-    const chkIrr = h('input', { type: 'checkbox', disabled: !podeEditar, checked: edit.irregular ? 'checked' : null,
-      onchange: (e) => { edit.irregular = e.target.checked; rotDesc.textContent = edit.irregular ? 'Descrição da irregularidade *' : 'Legenda (opcional)'; } });
-    const chkRel = h('input', { type: 'checkbox', disabled: !podeEditar, checked: edit.incluir ? 'checked' : null, onchange: (e) => { edit.incluir = e.target.checked; } });
-    const corpo = h('div', {}, img,
-      h('div', { class: 'sub' }, '🕒 ', dataHoraBR(f.dataHora), ' · 📍 ', coord),
-      h('div', { class: 'sub', style: { marginBottom: '10px' } }, 'Por ', f.criadoPor || '—', f.origem === 'galeria' ? ' · importada da galeria' : ''),
-      irrDe && !irrDe.excluido ? h('div', { class: 'aviso', style: { marginBottom: '8px' } }, '📋 Foto do histórico da irregularidade “' + (irrDe.descricao || '') + '”. ',
-        h('a', { href: '#/irregularidade/' + irrDe.id, onclick: () => { const m = document.querySelector('.modal-fundo'); if (m) m.remove(); } }, 'Ver histórico'))
-        : h('label', { class: 'linha', style: { marginBottom: '8px' } }, chkIrr, h('b', {}, '⚠️ Registrar como irregularidade')),
-      nVer ? h('div', { class: 'sub', style: { marginBottom: '8px' } }, 'Histórico: ' + nVer + ' verificação(ões) — ', h('a', { href: '#/irregularidade/' + f.id, onclick: () => { const m = document.querySelector('.modal-fundo'); if (m) m.remove(); } }, 'abrir')) : null,
-      h('label', { class: 'campo' }, rotDesc, area),
-      h('label', { class: 'linha sub' }, chkRel, 'Incluir no relatório fotográfico'));
-    const botoes = [{ txt: 'Fechar', valor: 'fechar' }];
-    if (podeEditar) {
-      botoes.unshift({ txt: 'Excluir', cls: 'perigo', valor: 'excluir' });
-      botoes.push({ txt: 'Salvar', cls: 'pri', valor: 'salvar', antes: () => {
-        if (edit.irregular && !edit.descricao.trim()) { toast('Descreva a irregularidade.', true); return false; }
-      } });
-    }
-    const r = await modal(null, corpo, botoes);
-    if (r === 'salvar') {
-      let seguir = true;
+    let atual = null; // { f, edit, base, nVer, irrDe }
+    let fechado = false;
+
+    /* --- palco da foto, com zoom --- */
+    const imgEl = h('img', { class: 'visor-img', alt: '', draggable: 'false' });
+    const zoomTxt = h('span', { class: 'visor-zoom-v' }, '100%');
+    const palco = h('div', { class: 'visor-palco' }, imgEl);
+    const z = { s: 1, x: 0, y: 0, max: 6 };
+    const limitar = () => {
+      const r = palco.getBoundingClientRect(), w = imgEl.offsetWidth * z.s, hh = imgEl.offsetHeight * z.s;
+      const mx = Math.max(0, (w - r.width) / 2), my = Math.max(0, (hh - r.height) / 2);
+      z.x = Math.max(-mx, Math.min(mx, z.x)); z.y = Math.max(-my, Math.min(my, z.y));
+    };
+    const aplicar = (anim) => {
+      if (z.s <= 1.001) { z.s = 1; z.x = 0; z.y = 0; } else limitar();
+      imgEl.style.transition = anim ? 'transform .18s ease' : 'none';
+      imgEl.style.transform = 'translate(' + z.x + 'px,' + z.y + 'px) scale(' + z.s + ')';
+      palco.classList.toggle('ampliada', z.s > 1);
+      rc(zoomTxt, Math.round(z.s * 100) + '%');
+    };
+    // amplia mantendo parado o ponto (cx, cy) da tela
+    const zoomEm = (novo, cx, cy, anim) => {
+      const r = palco.getBoundingClientRect();
+      const px = cx == null ? 0 : cx - (r.left + r.width / 2), py = cy == null ? 0 : cy - (r.top + r.height / 2);
+      novo = Math.max(1, Math.min(z.max, novo));
+      z.x = px - (px - z.x) * (novo / z.s); z.y = py - (py - z.y) * (novo / z.s); z.s = novo;
+      aplicar(anim);
+    };
+    const ajustar = () => { z.s = 1; aplicar(true); };
+    palco.addEventListener('wheel', (e) => { e.preventDefault(); zoomEm(z.s * Math.exp(-e.deltaY * 0.0015), e.clientX, e.clientY); }, { passive: false });
+    palco.addEventListener('dblclick', (e) => { if (z.s > 1) ajustar(); else zoomEm(2.5, e.clientX, e.clientY, true); });
+    // arrastar (mouse e dedo), pinça e deslizar para o lado
+    const ptrs = new Map(); let ini = null, pinca = null, toqueTempo = 0, ultimoToque = 0;
+    palco.addEventListener('pointerdown', (e) => {
+      if (e.target.closest('button')) return;
+      palco.setPointerCapture(e.pointerId); ptrs.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      if (ptrs.size === 1) { ini = { x: e.clientX, y: e.clientY, zx: z.x, zy: z.y }; toqueTempo = Date.now(); }
+      if (ptrs.size === 2) { const [a, b] = [...ptrs.values()]; pinca = { d: Math.hypot(a.x - b.x, a.y - b.y), s: z.s }; ini = null; }
+    });
+    palco.addEventListener('pointermove', (e) => {
+      if (!ptrs.has(e.pointerId)) return;
+      ptrs.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      if (pinca && ptrs.size === 2) { const [a, b] = [...ptrs.values()]; zoomEm(pinca.s * Math.hypot(a.x - b.x, a.y - b.y) / pinca.d, (a.x + b.x) / 2, (a.y + b.y) / 2); return; }
+      if (ini && z.s > 1) { z.x = ini.zx + (e.clientX - ini.x); z.y = ini.zy + (e.clientY - ini.y); aplicar(); }
+      else if (ini && e.pointerType !== 'mouse') imgEl.style.transform = 'translateX(' + (e.clientX - ini.x) * 0.6 + 'px)'; // acompanha o dedo ao deslizar
+    });
+    const soltar = (e) => {
+      if (!ptrs.has(e.pointerId)) return;
+      ptrs.delete(e.pointerId);
+      if (ptrs.size < 2) pinca = null;
+      if (ini && ptrs.size === 0) {
+        const dx = e.clientX - ini.x, dy = e.clientY - ini.y;
+        if (z.s <= 1 && e.pointerType !== 'mouse' && Math.abs(dx) > 60 && Math.abs(dx) > Math.abs(dy) * 1.5) { ir(dx < 0 ? 1 : -1); }
+        else if (z.s <= 1) {
+          aplicar(true);
+          // duplo toque (celular) amplia
+          if (e.pointerType !== 'mouse' && Math.abs(dx) < 10 && Math.abs(dy) < 10 && Date.now() - toqueTempo < 300) {
+            if (Date.now() - ultimoToque < 320) { zoomEm(2.5, e.clientX, e.clientY, true); ultimoToque = 0; } else ultimoToque = Date.now();
+          }
+        }
+        ini = null;
+      }
+    };
+    palco.addEventListener('pointerup', soltar); palco.addEventListener('pointercancel', soltar);
+
+    /* --- estrutura --- */
+    const contador = h('span', { class: 'visor-cont' });
+    const infoTopo = h('span', { class: 'visor-info' });
+    const btAnt = h('button', { class: 'visor-seta ant', title: 'Foto anterior (←)', onclick: () => ir(-1) }, '‹');
+    const btProx = h('button', { class: 'visor-seta prox', title: 'Próxima foto (→)', onclick: () => ir(1) }, '›');
+    ap(palco, btAnt, btProx);
+    const barraZoom = (h('div', { class: 'visor-zoom' },
+      h('button', { title: 'Diminuir (−)', onclick: () => zoomEm(z.s / 1.5, null, null, true) }, '−'), zoomTxt,
+      h('button', { title: 'Ampliar (+)', onclick: () => zoomEm(z.s * 1.5, null, null, true) }, '+'),
+      h('button', { title: 'Ajustar à tela (0)', onclick: ajustar }, '⤢')));
+    const lado = h('div', { class: 'visor-lado' });
+    const tira = h('div', { class: 'visor-tira' }, lista.map((f, k) => {
+      const m = h('img', { alt: '', loading: 'lazy', draggable: 'false' }); urlFoto(f).then((u) => { m.src = u; });
+      const bt = h('button', { class: 'visor-mini' + (f.irregular ? ' irr' : '') + (f.fora_relatorio ? ' fora' : ''), title: 'Foto ' + (k + 1), onclick: () => ir([...tira.children].indexOf(bt) - idx) }, m);
+      return bt;
+    }));
+    const fundo = h('div', { class: 'visor-fundo' }, h('div', { class: 'visor' },
+      h('div', { class: 'visor-topo' }, contador, infoTopo, barraZoom, h('button', { class: 'visor-fechar', title: 'Fechar (Esc)', onclick: () => fechar() }, '✕')),
+      h('div', { class: 'visor-corpo' }, palco, lado),
+      lista.length > 1 ? tira : null));
+    document.body.appendChild(fundo);
+    document.body.classList.add('com-visor');
+
+    const mudou = () => atual && podeEditar && JSON.stringify(atual.edit) !== atual.base;
+    async function salvar() {
+      if (!mudou()) return true;
+      const { f, edit, nVer } = atual;
+      if (edit.irregular && !edit.descricao.trim()) { toast('Descreva a irregularidade.', true); return false; }
       if (f.irregular && !edit.irregular && nVer) {
-        seguir = await confirmar('Esta irregularidade tem ' + nVer + ' registro(s) no histórico de verificações. Ao deixar de ser irregularidade, esse histórico é apagado (as fotos de verificação continuam como fotos comuns da visita). Continuar?', 'Continuar', true);
-        if (seguir) for (const vf of f.verificacoes) if (vf.fotoId) await atualizarCampos('fotos', vf.fotoId, (o) => { delete o.verificacaoDe; });
+        if (!(await confirmar('Esta irregularidade tem ' + nVer + ' registro(s) no histórico de verificações. Ao deixar de ser irregularidade, esse histórico é apagado (as fotos de verificação continuam como fotos comuns da visita). Continuar?', 'Continuar', true))) return false;
+        for (const vf of f.verificacoes) if (vf.fotoId) await atualizarCampos('fotos', vf.fotoId, (o) => { delete o.verificacaoDe; });
       }
-      if (seguir) {
-        await atualizarCampos('fotos', f.id, (o) => {
-          o.descricao = edit.descricao.trim();
-          o.irregular = edit.irregular;
-          o.fora_relatorio = !edit.incluir;
-          if (!o.irregular) { delete o.verificacoes; delete o.situacao; delete o.sanadaEm; }
-        });
-        toast('Foto atualizada');
-      }
-    } else if (r === 'excluir') {
+      const novo = await atualizarCampos('fotos', f.id, (o) => {
+        o.descricao = edit.descricao.trim(); o.irregular = edit.irregular; o.fora_relatorio = !edit.incluir;
+        if (!o.irregular) { delete o.verificacoes; delete o.situacao; delete o.sanadaEm; }
+      });
+      if (novo) { lista[idx] = novo; atual.f = novo; }
+      atual.base = JSON.stringify(edit);
+      const mini = tira.children[idx]; if (mini) { mini.classList.toggle('irr', !!edit.irregular); mini.classList.toggle('fora', !edit.incluir); }
+      toast('Foto atualizada');
+      return true;
+    }
+    async function excluir() {
+      const { f, irrDe } = atual;
       const txt = f.irregular ? 'Excluir esta irregularidade (foto e descrição)? Ela não aparecerá mais para ninguém do grupo.'
         : irrDe ? 'Excluir esta foto? O registro de verificação ligado a ela será retirado do histórico da irregularidade.'
           : 'Excluir esta foto? Ela não aparecerá mais para ninguém do grupo.';
-      if (await excluirFotos([f.id], txt)) toast('Foto excluída');
+      if (!(await excluirFotos([f.id], txt))) return;
+      toast('Foto excluída');
+      lista.splice(idx, 1); if (tira.children[idx]) tira.children[idx].remove();
+      if (!lista.length) { atual = null; fechar(); return; }
+      atual = null; idx = Math.min(idx, lista.length - 1); await mostrar();
     }
-    if (depois) depois();
+    async function ir(delta) {
+      const k = idx + delta;
+      if (k < 0 || k >= lista.length || k === idx) return;
+      if (!(await salvar())) return;
+      idx = k; await mostrar();
+    }
+    // fecha de verdade (tira da tela e os "ouvintes"); chamarDepois = redesenha a tela de baixo
+    function encerrar(chamarDepois) {
+      if (fechado) return;
+      fechado = true;
+      document.removeEventListener('keydown', teclas, true);
+      removeEventListener('popstate', aoVoltar); removeEventListener('hashchange', aoMudarTela);
+      fundo.remove(); document.body.classList.remove('com-visor');
+      if (chamarDepois && depois) depois();
+    }
+    async function fechar() {
+      if (fechado) return;
+      if (atual && !(await salvar())) return;
+      encerrar(true);
+      if (history.state && history.state.visor) history.back(); // tira a entrada do "Voltar" criada ao abrir
+    }
+    // botão Voltar do celular/navegador fecha o visualizador (em vez de sair da tela); as alterações são salvas
+    const aoVoltar = () => { if (fechado) return; salvar().catch(() => {}).finally(() => encerrar(true)); };
+    // a tela mudou por outro motivo (link, outra ação): fecha junto
+    const aoMudarTela = () => { if (fechado) return; salvar().catch(() => {}); encerrar(false); };
+    try { history.pushState({ visor: true }, ''); } catch (e) { /* */ }
+    addEventListener('popstate', aoVoltar); addEventListener('hashchange', aoMudarTela);
+    function teclas(e) {
+      if (fechado || document.querySelector('.modal-fundo')) return; // uma confirmação aberta tem prioridade
+      const digitando = /^(TEXTAREA|INPUT|SELECT)$/.test((document.activeElement || {}).tagName || '');
+      if (e.key === 'Escape') { e.preventDefault(); if (digitando) document.activeElement.blur(); else fechar(); return; }
+      if (digitando) return;
+      if (e.key === 'ArrowRight') { e.preventDefault(); ir(1); }
+      else if (e.key === 'ArrowLeft') { e.preventDefault(); ir(-1); }
+      else if (e.key === '+' || e.key === '=') zoomEm(z.s * 1.5, null, null, true);
+      else if (e.key === '-') zoomEm(z.s / 1.5, null, null, true);
+      else if (e.key === '0') ajustar();
+    }
+    document.addEventListener('keydown', teclas, true);
+
+    async function mostrar() {
+      const k = idx;
+      const f = (await DB.get('fotos', lista[k].id)) || lista[k];
+      if (k !== idx || fechado) return;
+      z.s = 1; z.x = 0; z.y = 0; aplicar();
+      // miniatura na hora; a foto grande entra assim que carregar
+      imgEl.src = f.miniatura || '';
+      urlFoto(f, true).then((u) => { if (k === idx && u) imgEl.src = u; });
+      // já prepara as vizinhas (passar de foto fica instantâneo)
+      for (const v of [lista[k + 1], lista[k - 1]]) if (v) urlFoto(v, true);
+      rc(contador, (k + 1) + ' de ' + lista.length);
+      rc(infoTopo, dataHoraBR(f.dataHora));
+      btAnt.disabled = k === 0; btProx.disabled = k === lista.length - 1;
+      [...tira.children].forEach((c, i) => c.classList.toggle('atual', i === k));
+      const mAtual = tira.children[k]; if (mAtual) mAtual.scrollIntoView({ block: 'nearest', inline: 'center', behavior: 'smooth' });
+
+      const edit = { descricao: f.descricao || '', irregular: !!f.irregular, incluir: !f.fora_relatorio };
+      const irrDe = f.verificacaoDe ? await DB.get('fotos', f.verificacaoDe) : null;
+      const nVer = (f.verificacoes || []).length;
+      atual = { f, edit, base: JSON.stringify(edit), nVer, irrDe };
+      const coord = f.lat != null ? h('a', { href: 'https://www.google.com/maps?q=' + f.lat + ',' + f.lng, target: '_blank', rel: 'noopener' }, Foto.textoCoord(f.lat, f.lng) + (f.precisao ? ' (±' + f.precisao + ' m)' : '')) : 'sem coordenadas';
+      const rotDesc = h('span', {}, edit.irregular ? 'Descrição da irregularidade *' : 'Legenda (opcional)');
+      const area = inputArea(edit, 'descricao', { readonly: !podeEditar, placeholder: 'Ex.: Telhas do refeitório amassadas' });
+      const chkIrr = h('input', { type: 'checkbox', disabled: !podeEditar, checked: edit.irregular ? 'checked' : null,
+        onchange: (e) => { edit.irregular = e.target.checked; rotDesc.textContent = edit.irregular ? 'Descrição da irregularidade *' : 'Legenda (opcional)'; } });
+      const chkRel = h('input', { type: 'checkbox', disabled: !podeEditar, checked: edit.incluir ? 'checked' : null, onchange: (e) => { edit.incluir = e.target.checked; } });
+      const sair = () => { encerrar(false); };
+      rc(lado,
+        h('div', { class: 'sub' }, '🕒 ', dataHoraBR(f.dataHora), ' · 📍 ', coord),
+        h('div', { class: 'sub', style: { marginBottom: '10px' } }, 'Por ', f.criadoPor || '—', f.origem === 'galeria' ? ' · importada da galeria' : ''),
+        irrDe && !irrDe.excluido ? h('div', { class: 'aviso', style: { marginBottom: '8px' } }, '📋 Foto do histórico da irregularidade “' + (irrDe.descricao || '') + '”. ',
+          h('a', { href: '#/irregularidade/' + irrDe.id, onclick: sair }, 'Ver histórico'))
+          : h('label', { class: 'linha', style: { marginBottom: '8px' } }, chkIrr, h('b', {}, '⚠️ Registrar como irregularidade')),
+        nVer ? h('div', { class: 'sub', style: { marginBottom: '8px' } }, 'Histórico: ' + nVer + ' verificação(ões) — ', h('a', { href: '#/irregularidade/' + f.id, onclick: sair }, 'abrir')) : null,
+        h('label', { class: 'campo' }, rotDesc, area),
+        h('label', { class: 'linha sub' }, chkRel, 'Incluir no relatório fotográfico'),
+        podeEditar ? h('div', { class: 'acoes' },
+          h('button', { class: 'btn pri', onclick: async () => { if (!mudou()) { toast('Nada a salvar'); return; } await salvar(); } }, 'Salvar'),
+          h('button', { class: 'btn perigo', onclick: excluir }, 'Excluir')) : null,
+        lista.length > 1 ? h('p', { class: 'dica visor-dica' }, podeEditar ? 'As alterações são salvas ao passar para outra foto. ' : '', 'Setas ← → do teclado passam as fotos; roda do mouse ou + / − ampliam; arraste para mover a foto ampliada.') : null);
+    }
+    await mostrar();
   }
 
   /* ================================================================== */
@@ -1391,7 +1546,7 @@
       redesenharFotosDepois = false;
       const fotos = ordenarFotos((await DB.byIndex('fotos', 'visitaId', id)).filter((f) => !f.excluido));
       const irr = fotos.filter((f) => f.irregular);
-      const grade = fotos.length ? gradeFotos(fotos, { marcarRelatorio: true, onclick: (f) => abrirFoto(f, desenharFotos) }) : null;
+      const grade = fotos.length ? gradeFotos(fotos, { marcarRelatorio: true, onclick: (f) => abrirFoto(f, desenharFotos, fotos) }) : null;
       const ordenar = podeEd && fotos.length > 1;
       if (ordenar) tornarOrdenavel(grade, async (fid, ids) => { if (fid) await moverFoto(fotos, ids, fid); desenharFotos(); });
       rc(boxFotos, h('h2', {}, 'Fotos da visita (' + fotos.length + ')'),
@@ -3145,7 +3300,7 @@
       for (const f of fotosSemDrive) if (!(await DB.blobGet(f.id))) semArquivo++;
       const log = Sync.lerLog().slice().reverse();
       const resumo = {
-        app: '3.11.1', servidor: Sync.versaoServidor || '?', usuario: (u || {}).email, perfil: perfil(), estado: Sync.estado, erro: Sync.erro || '',
+        app: '3.12', servidor: Sync.versaoServidor || '?', usuario: (u || {}).email, perfil: perfil(), estado: Sync.estado, erro: Sync.erro || '',
         online: navigator.onLine, ultimaSync: await DB.kvGet('ultimaSync', null), cursor: await DB.kvGet('servidorDesde', 0),
         pendentes: pendPor, fotosAguardandoEnvio: fotosSemDrive.length - semArquivo, fotosDeOutroAparelhoSemEnvio: semArquivo,
         aparelho: navigator.userAgent, log,
@@ -3382,7 +3537,7 @@
     // a partir de "Aparência e câmera", cada seção vira uma lista suspensa (fechada; lembra as abertas)
     const iniSecoes = cards.findIndex((c) => c.querySelector && (c.querySelector(':scope > h2') || {}).textContent === 'Aparência e câmera');
     if (iniSecoes >= 0) for (let i = iniSecoes; i < cards.length; i++) cards[i] = secaoRecolhivel(cards[i]);
-    cards.push(h('p', { class: 'dica', style: { textAlign: 'center' } }, 'Fiscalização de Obras · v3.11.1 · dados salvos no aparelho' + (Sync.habilitado() ? ' e no Google Drive do administrador' : '') + ' · ', h('a', { href: 'privacidade.html' }, 'Política de privacidade')));
+    cards.push(h('p', { class: 'dica', style: { textAlign: 'center' } }, 'Fiscalização de Obras · v3.12 · dados salvos no aparelho' + (Sync.habilitado() ? ' e no Google Drive do administrador' : '') + ' · ', h('a', { href: 'privacidade.html' }, 'Política de privacidade')));
     rcT(tk, ...cards);
   }
 
