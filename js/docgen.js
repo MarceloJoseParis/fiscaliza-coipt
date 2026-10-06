@@ -404,7 +404,8 @@
           imgCount++;
           const rid = 'rIdFotoN' + imgCount;
           const file = 'media/foto_' + imgCount + '.' + info.ext;
-          zip.file('word/' + file, bytes);
+          // fotos (JPEG/PNG) já são comprimidas: guardadas sem recompactar (era o que mais demorava e pesava na memória)
+          zip.file('word/' + file, bytes, { compression: 'STORE' });
           exts.add(info.ext);
           const rel = rels.createElementNS(PR, 'Relationship');
           rel.setAttribute('Id', rid);
@@ -464,8 +465,9 @@
     return zip.generateAsync({
       type: opts.type || 'blob',
       compression: 'DEFLATE',
+      compressionOptions: { level: 6 },
       mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-    });
+    }, opts.aoProgresso ? (m) => { try { opts.aoProgresso(m.percent); } catch (e) { /* */ } } : undefined);
   }
 
   /** Lista os marcadores encontrados em um modelo (para validar modelos enviados pelo usuario). */

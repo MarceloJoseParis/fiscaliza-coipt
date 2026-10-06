@@ -1476,6 +1476,16 @@
     rcT(tk, cab, v.status !== 'concluida' ? gps : null, captura, boxPend, boxFotos, boxIrr, dados, acoes);
     await desenharFotos();
     if (tk !== rotaSeq) return; // o usuário já foi para outra tela: não liga GPS nem registra limpeza
+    // no computador, as fotos da visita que estão só no Drive já começam a baixar (o relatório fica pronto mais rápido)
+    if (Sync.dispositivo === 'computador' && Sync.habilitado() && navigator.onLine) {
+      setTimeout(async () => {
+        if (tk !== rotaSeq) return;
+        const fs = (await DB.byIndex('fotos', 'visitaId', id)).filter((f) => !f.excluido && f.driveId && !f.fora_relatorio);
+        const tem = await Promise.all(fs.map((f) => DB.blobGet(f.id).then((b) => !!b)));
+        const faltam = fs.filter((f, k) => !tem[k]);
+        if (faltam.length) { Sync.log('fotos', 'baixando ' + faltam.length + ' foto(s) da visita em segundo plano'); obterFotos(faltam, null, 4).catch(() => {}); }
+      }, 1500);
+    }
     App._atualizarTela = () => (document.body.contains(boxFotos) ? desenharFotos() : null); // fotos de outros aparelhos aparecem sem sair da tela
     if (v.status !== 'concluida' && podeEd) {
       Foto.iniciarGPS();
@@ -1511,44 +1521,93 @@
     await criarNotificacao(r.id, { itens, fotos: sel, data_vistoria: v.data, visitaId: v.id });
   }
 
+  /* Pega as fotos de uma lista (do aparelho ou, se faltar, do Drive), várias ao mesmo tempo.
+     Antes eram baixadas uma por vez: no computador, 180 fotos tiradas no celular levavam mais de 10 minutos. */
+  const baixandoFoto = new Map(); // a mesma foto não é baixada duas vezes ao mesmo tempo
+  function obterFotos(lista, aoProgresso, paralelo, transformar) {
+    const blobs = new Map(), faltando = [];
+    let feitas = 0, baixadas = 0, i = 0;
+    const umaFoto = async (f) => {
+      let b = await DB.blobGet(f.id);
+      if (!b && f.driveId && Sync.habilitado() && navigator.onLine) {
+        if (!baixandoFoto.has(f.id)) baixandoFoto.set(f.id, Sync.baixarFoto(f).finally(() => baixandoFoto.delete(f.id)));
+        try { b = await baixandoFoto.get(f.id); baixadas++; } catch (e) { b = null; }
+      }
+      if (b && transformar) b = await transformar(b, f); // ex.: reduz enquanto as próximas ainda estão chegando do Drive
+      if (b) blobs.set(f.id, b); else faltando.push(f);
+      feitas++;
+      if (aoProgresso) aoProgresso(feitas, lista.length, baixadas);
+    };
+    const trabalhador = async () => { while (i < lista.length) await umaFoto(lista[i++]); };
+    return Promise.all(Array.from({ length: Math.min(paralelo || 6, lista.length) }, trabalhador)).then(() => ({ blobs, faltando, baixadas }));
+  }
+  // janela de progresso (texto + barra)
+  function janelaProgresso(texto) {
+    const txt = h('div', {}, texto), barra = h('div', { class: 'prog-barra' }), fundoBarra = h('div', { class: 'prog' }, barra);
+    const fundo = h('div', { class: 'modal-fundo' }, h('div', { class: 'modal' }, h('div', { class: 'linha' }, h('span', { class: 'carregando' }), txt), fundoBarra));
+    document.body.appendChild(fundo);
+    return {
+      set(t, frac) { rc(txt, t); fundoBarra.style.visibility = frac == null ? 'hidden' : 'visible'; if (frac != null) barra.style.width = Math.round(Math.max(0, Math.min(1, frac)) * 100) + '%'; },
+      fechar() { fundo.remove(); },
+    };
+  }
+  // tamanho máximo das fotos no relatório, conforme o layout (impressão nítida, arquivo bem menor)
+  const LADO_RELATORIO = { 2: 1600, 4: 1280, 6: 1024 };
+
   async function dialogoRelatorio(v, r) {
     const fotos = ordenarFotos((await DB.byIndex('fotos', 'visitaId', v.id)).filter((f) => !f.excluido)); // na ordem escolhida na tela da visita
     const incl = fotos.filter((f) => !f.fora_relatorio);
-    const escolha = { layout: String(await DB.kvGet('layoutRelatorio', '4')) };
-    const opcao = (val, txt, desc) => h('label', { class: 'item', style: { display: 'flex', gap: '10px', alignItems: 'center', cursor: 'pointer' } },
-      h('input', { type: 'radio', name: 'layout', value: val, checked: escolha.layout === val ? 'checked' : null, onchange: () => { escolha.layout = val; } }),
+    const escolha = { layout: String(await DB.kvGet('layoutRelatorio', '4')), tamanho: String(await DB.kvGet('tamanhoFotosRelatorio', 'reduzidas')) };
+    const radio = (grupo, val, txt, desc) => h('label', { class: 'item', style: { display: 'flex', gap: '10px', alignItems: 'center', cursor: 'pointer' } },
+      h('input', { type: 'radio', name: grupo, value: val, checked: escolha[grupo] === val ? 'checked' : null, onchange: () => { escolha[grupo] = val; } }),
       h('div', {}, h('div', { class: 't' }, txt), h('div', { class: 'd' }, desc)));
+    // já começa a baixar as fotos que não estão neste aparelho enquanto o usuário escolhe as opções
+    const tem = await Promise.all(incl.map((f) => DB.blobGet(f.id).then((b) => !!b)));
+    const faltamAqui = incl.filter((f, k) => !tem[k]);
+    const avisoBaixa = h('div', { class: 'sub' });
+    let preBaixa = null;
+    if (faltamAqui.length && Sync.habilitado() && navigator.onLine) {
+      rc(avisoBaixa, '⏳ Baixando do Drive as ' + faltamAqui.length + ' foto(s) que não estão neste aparelho…');
+      preBaixa = obterFotos(faltamAqui, (k, n) => { rc(avisoBaixa, k < n ? '⏳ Baixando do Drive: ' + k + ' de ' + n + ' foto(s)…' : '✓ Fotos baixadas do Drive.'); });
+    } else if (faltamAqui.length) rc(avisoBaixa, '⚠️ ' + faltamAqui.length + ' foto(s) não estão neste aparelho e não há internet para baixá-las.');
     const corpo = h('div', {},
       h('p', { class: 'sub' }, incl.length + ' de ' + fotos.length + ' foto(s) entrarão no relatório. Para retirar uma foto, abra-a e desmarque “Incluir no relatório”.'),
-      opcao('2', '2 fotos por página', 'Fotos grandes, uma abaixo da outra'),
-      opcao('4', '4 fotos por página', 'Grade 2 × 2 (recomendado)'),
-      opcao('6', '6 fotos por página', 'Grade 2 × 3, mais compacto'));
+      faltamAqui.length ? avisoBaixa : null,
+      radio('layout', '2', '2 fotos por página', 'Fotos grandes, uma abaixo da outra'),
+      radio('layout', '4', '4 fotos por página', 'Grade 2 × 2 (recomendado)'),
+      radio('layout', '6', '6 fotos por página', 'Grade 2 × 3, mais compacto'),
+      h('h3', { class: 'sub', style: { margin: '12px 0 4px' } }, 'Fotos no arquivo'),
+      radio('tamanho', 'reduzidas', 'Ajustadas ao relatório (recomendado)', 'No tamanho em que aparecem na página: nítidas na impressão, arquivo até 3× menor e geração mais rápida'),
+      radio('tamanho', 'originais', 'Tamanho original', 'Arquivo bem maior; use só se alguém precisar das fotos em resolução total dentro do Word'));
     const acao = await modal('Relatório fotográfico', corpo, [{ txt: 'Cancelar', valor: null }, { txt: '📤 Compartilhar', valor: 'comp' }, { txt: '⬇️ Baixar Word', cls: 'pri', valor: 'baixar' }]);
-    if (!acao) return;
+    if (!acao) return; // o que já foi baixado fica guardado no aparelho (a próxima vez é mais rápida)
     DB.kvSet('layoutRelatorio', escolha.layout);
-    const st = h('div', {}, h('span', { class: 'carregando' }), ' Gerando relatório…');
-    const fundo = h('div', { class: 'modal-fundo' }, h('div', { class: 'modal' }, st));
-    document.body.appendChild(fundo);
+    DB.kvSet('tamanhoFotosRelatorio', escolha.tamanho);
+    const jp = janelaProgresso('Preparando as fotos…');
+    const t0 = Date.now();
     try {
-      const itens = [];
-      const faltando = [];
-      for (const f of incl) {
-        let blob = await DB.blobGet(f.id);
-        if (!blob && Sync.habilitado() && navigator.onLine) { try { blob = await Sync.baixarFoto(f); } catch (e) { /* */ } }
-        if (!blob) { faltando.push(f); continue; }
-        const leg = f.irregular ? 'IRREGULARIDADE: ' + (f.descricao || '') : (f.descricao || '');
-        itens.push({ img: blob, legenda: leg, irregular: !!f.irregular, descricao: f.descricao || '',
-          meta: dataHoraBR(f.dataHora) + (f.lat != null ? ' · ' + Foto.textoCoord(f.lat, f.lng) : '') });
-      }
-      if (faltando.length) throw new Error(faltando.length + ' foto(s) ainda não estão neste aparelho. Conecte-se à internet para baixá-las.');
+      // 1) fotos: do aparelho ou do Drive (as que faltavam já estavam sendo baixadas) e, ao mesmo tempo,
+      //    ajustadas ao tamanho do relatório — a redução de uma acontece enquanto as outras ainda chegam
+      const lado = LADO_RELATORIO[+escolha.layout] || 1280;
+      const reduzir = escolha.tamanho === 'reduzidas' ? (b) => Foto.reduzir(b, lado, 0.85) : null;
+      const { blobs, faltando } = await obterFotos(incl, (k, n, bx) => jp.set((reduzir ? 'Preparando as fotos' : 'Carregando as fotos') + ': ' + k + ' de ' + n + (bx ? ' · ' + bx + ' baixada(s) do Drive' : '') + '…', k / n * 0.8), 8, reduzir);
+      if (preBaixa) await preBaixa;
+      if (faltando.length && !(await confirmar(faltando.length + ' foto(s) não estão neste aparelho e não foi possível baixá-las do Drive (sem internet ou ainda não enviadas pelo celular que as tirou). Gerar o relatório sem elas?', 'Gerar sem elas'))) { jp.fechar(); return; }
+      const usar = incl.filter((f) => blobs.has(f.id));
+      const itens = usar.map((f) => ({ img: blobs.get(f.id), legenda: f.irregular ? 'IRREGULARIDADE: ' + (f.descricao || '') : (f.descricao || ''), irregular: !!f.irregular, descricao: f.descricao || '',
+        meta: dataHoraBR(f.dataHora) + (f.lat != null ? ' · ' + Foto.textoCoord(f.lat, f.lng) : '') }));
+      // 3) monta o Word
+      jp.set('Montando o documento (' + itens.length + ' fotos)…', 0.8);
+      await new Promise((ok) => setTimeout(ok, 30)); // deixa a tela mostrar o texto
       const dados = DocGen.montarDadosRelatorio(r, v, itens, { layout: +escolha.layout });
-      const blob = await DocGen.gerar(await modeloDocx('relatorio'), dados, { type: 'blob' });
+      const blob = await DocGen.gerar(await modeloDocx('relatorio'), dados, { type: 'blob', aoProgresso: (pct) => jp.set('Gravando o arquivo: ' + Math.round(pct) + '%…', 0.85 + pct / 100 * 0.15) });
       const nome = nomeArquivo('RELATÓRIO FOTOGRÁFICO - ' + r.apelido + ' - VISITA ' + v.numero + ' - ' + X.dataBR(v.data).replace(/\//g, '-')) + '.docx';
-      fundo.remove();
+      jp.fechar();
       if (acao === 'comp') await compartilharBlob(blob, nome, nome); else baixarBlob(blob, nome);
-      toast('Relatório gerado: ' + nome);
+      Sync.log('relatorio', itens.length + ' fotos, ' + (blob.size / 1048576).toFixed(1) + ' MB, ' + Math.round((Date.now() - t0) / 1000) + ' s');
+      toast('Relatório gerado: ' + nome + ' (' + (blob.size / 1048576).toFixed(1).replace('.', ',') + ' MB)');
     } catch (e) {
-      fundo.remove();
+      jp.fechar();
       console.error(e);
       toast(e.message, true);
     }
@@ -3086,7 +3145,7 @@
       for (const f of fotosSemDrive) if (!(await DB.blobGet(f.id))) semArquivo++;
       const log = Sync.lerLog().slice().reverse();
       const resumo = {
-        app: '3.11', servidor: Sync.versaoServidor || '?', usuario: (u || {}).email, perfil: perfil(), estado: Sync.estado, erro: Sync.erro || '',
+        app: '3.11.1', servidor: Sync.versaoServidor || '?', usuario: (u || {}).email, perfil: perfil(), estado: Sync.estado, erro: Sync.erro || '',
         online: navigator.onLine, ultimaSync: await DB.kvGet('ultimaSync', null), cursor: await DB.kvGet('servidorDesde', 0),
         pendentes: pendPor, fotosAguardandoEnvio: fotosSemDrive.length - semArquivo, fotosDeOutroAparelhoSemEnvio: semArquivo,
         aparelho: navigator.userAgent, log,
@@ -3323,7 +3382,7 @@
     // a partir de "Aparência e câmera", cada seção vira uma lista suspensa (fechada; lembra as abertas)
     const iniSecoes = cards.findIndex((c) => c.querySelector && (c.querySelector(':scope > h2') || {}).textContent === 'Aparência e câmera');
     if (iniSecoes >= 0) for (let i = iniSecoes; i < cards.length; i++) cards[i] = secaoRecolhivel(cards[i]);
-    cards.push(h('p', { class: 'dica', style: { textAlign: 'center' } }, 'Fiscalização de Obras · v3.11 · dados salvos no aparelho' + (Sync.habilitado() ? ' e no Google Drive do administrador' : '') + ' · ', h('a', { href: 'privacidade.html' }, 'Política de privacidade')));
+    cards.push(h('p', { class: 'dica', style: { textAlign: 'center' } }, 'Fiscalização de Obras · v3.11.1 · dados salvos no aparelho' + (Sync.habilitado() ? ' e no Google Drive do administrador' : '') + ' · ', h('a', { href: 'privacidade.html' }, 'Política de privacidade')));
     rcT(tk, ...cards);
   }
 

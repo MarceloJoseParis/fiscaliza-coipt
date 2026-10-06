@@ -183,6 +183,39 @@
     return { blob, largura: w, altura: h, miniatura };
   };
 
+  /* Reduz uma foto para o tamanho em que ela aparece no relatório (o Word fica bem menor e é gerado mais
+     rápido). Fotos já menores que o limite voltam como estão. */
+  Foto.reduzir = async function (blob, maxLado, qualidade) {
+    try {
+      const cab = new Uint8Array(await blob.slice(0, 262144).arrayBuffer());
+      let w = 0, hh = 0;
+      try { const inf = root.DocGen.imageSize(cab); w = inf.w; hh = inf.h; } catch (e) { /* lê abaixo */ }
+      if (w && hh && Math.max(w, hh) <= maxLado * 1.05) return blob;
+      let img;
+      if (w && hh && root.createImageBitmap) {
+        const esc = maxLado / Math.max(w, hh);
+        try { img = await createImageBitmap(blob, { resizeWidth: Math.round(w * esc), resizeHeight: Math.round(hh * esc), resizeQuality: 'high' }); } catch (e) { img = null; }
+      }
+      if (!img) img = await carregarImagem(blob);
+      const iw = img.width || img.naturalWidth, ih = img.height || img.naturalHeight;
+      const esc = Math.min(1, maxLado / Math.max(iw, ih));
+      const cw = Math.round(iw * esc), ch = Math.round(ih * esc);
+      let out;
+      if (root.OffscreenCanvas) {
+        const oc = new OffscreenCanvas(cw, ch); const g = oc.getContext('2d');
+        g.imageSmoothingQuality = 'high'; g.drawImage(img, 0, 0, cw, ch);
+        out = await oc.convertToBlob({ type: 'image/jpeg', quality: qualidade || 0.85 });
+      } else {
+        const cv = document.createElement('canvas'); cv.width = cw; cv.height = ch; const g = cv.getContext('2d');
+        g.imageSmoothingQuality = 'high'; g.drawImage(img, 0, 0, cw, ch);
+        out = await new Promise((res) => cv.toBlob(res, 'image/jpeg', qualidade || 0.85));
+        cv.width = cv.height = 0;
+      }
+      if (img.close) img.close();
+      return out && out.size && out.size < blob.size ? out : blob;
+    } catch (e) { return blob; } // se der qualquer problema, usa a foto original
+  };
+
   Foto.blobParaBase64 = (blob) => new Promise((res, rej) => {
     const r = new FileReader();
     r.onload = () => res(String(r.result).split(',')[1]);

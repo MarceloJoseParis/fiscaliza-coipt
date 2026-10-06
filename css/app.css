@@ -633,3 +633,7 @@ label.linha > input[type="checkbox"] { flex: none; margin-top: 2px; }
 :root[data-theme="dark"] .med-sit button.ativo.sit-medido { color: var(--ok); }
 :root[data-theme="dark"] .med-sit button.ativo.sit-parcial { color: var(--alerta); }
 :root[data-theme="dark"] .med-sit button.ativo.sit-nao { color: var(--erro); }
+
+/* barra de progresso (geração de relatórios) */
+.prog { height: 6px; border-radius: 99px; background: var(--sup2); overflow: hidden; margin-top: 12px; }
+.prog-barra { height: 100%; width: 0; background: var(--pri); border-radius: 99px; transition: width .25s; }
