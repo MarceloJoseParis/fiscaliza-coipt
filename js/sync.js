@@ -221,10 +221,24 @@
     return j;
   }
 
+  /* Nomes da equipe (cadastrados em Ajustes › Usuários do grupo): usados no lugar do e-mail em relatórios e telas */
+  let equipeNomes = null;
+  Sync.guardarEquipe = function (lista) {
+    const m = {};
+    for (const u of lista || []) if (u && u.email && u.nome && String(u.nome).trim()) m[String(u.email).toLowerCase().trim()] = String(u.nome).trim();
+    equipeNomes = m;
+    try { localStorage.setItem('equipeNomes', JSON.stringify(m)); } catch (e) { /* */ }
+  };
+  Sync.nomeDe = function (email) {
+    if (!email) return '';
+    if (!equipeNomes) { try { equipeNomes = JSON.parse(localStorage.getItem('equipeNomes') || '{}') || {}; } catch (e) { equipeNomes = {}; } }
+    return equipeNomes[String(email).toLowerCase().trim()] || email;
+  };
   Sync.quemSou = async function () {
     const j = await Sync.chamar('quemSou');
     if (!j.usuario) throw new Error('Resposta inesperada do servidor (quemSou).');
     Sync.versaoServidor = j.versao || 1; try { localStorage.setItem('versaoServidor', String(Sync.versaoServidor)); } catch (e) { /* */ }
+    if (Array.isArray(j.equipe)) Sync.guardarEquipe(j.equipe);
     if (j.sessao) { try { localStorage.setItem('sessao', j.sessao); localStorage.setItem('sessao_exp', String(Date.now() + 29 * 86400000)); } catch (e) { /* */ } }
     const u = Object.assign({}, Sync.usuarioLocal() || {}, j.usuario);
     localStorage.setItem('usuario', JSON.stringify(u));

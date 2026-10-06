@@ -634,7 +634,7 @@
           h('span', { class: 'badge ' + (v.status === 'concluida' ? 'emit' : 'rasc') }, v.status === 'concluida' ? 'Concluída' : 'Em andamento'),
           h('div', { class: 't' }, 'Visita nº ' + v.numero + ' · ' + X.dataBR(v.data), v._pendente ? h('span', { class: 'pend' }) : null),
           h('div', { class: 'd' }, [v.hora_inicio, v.hora_fim].filter(Boolean).join(' – ') + (v.hora_inicio ? ' · ' : '') + fv.length + ' foto(s)' + (irr ? ' · ⚠️ ' + irr + ' irregularidade(s)' : '')),
-          h('div', { class: 'd' }, 'Por ' + (v.criadoPor || '—')));
+          h('div', { class: 'd' }, 'Por ' + (nomeDe(v.criadoPor) || '—')));
       }) : [h('div', { class: 'vazio' }, 'Nenhuma visita registrada.',
         pode.coletar() ? h('div', { style: { marginTop: '12px' } }, h('a', { class: 'btn pri', href: '#/coleta/' + id }, '▶ Iniciar visita')) : null)]));
     } else if (aba === 'medicoes') {
@@ -645,7 +645,7 @@
             h('span', { class: 'badge ' + (m.status === 'concluida' ? 'emit' : 'rasc') }, m.status === 'concluida' ? 'Concluída' : 'Rascunho'),
             h('div', { class: 't' }, m.numero + 'ª Medição', m._pendente ? h('span', { class: 'pend' }) : null),
             h('div', { class: 'd' }, 'Período ' + X.dataBR(m.periodo_inicio) + ' a ' + X.dataBR(m.periodo_fim)),
-            h('div', { class: 'd' }, c.total + ' item(ns)' + (c.nao ? ' · ' + c.nao + ' não medido(s)' : '') + (c.parcial ? ' · ' + c.parcial + ' parcial(is)' : '') + ' · por ' + (m.criadoPor || '—')));
+            h('div', { class: 'd' }, c.total + ' item(ns)' + (c.nao ? ' · ' + c.nao + ' não medido(s)' : '') + (c.parcial ? ' · ' + c.parcial + ' parcial(is)' : '') + ' · por ' + (nomeDe(m.criadoPor) || '—')));
         }) : [h('div', { class: 'vazio' }, 'Nenhuma medição registrada para este contrato.')]));
     } else if (aba === 'irr') {
       ap(conteudo, await painelIrregularidades(r));
@@ -655,7 +655,7 @@
         h('div', { class: 't' }, (n.ordinal || '?') + 'ª Notificação', n._pendente ? h('span', { class: 'pend' }) : null),
         h('div', { class: 'd' }, 'Nº ' + (n.numero || (n.status === 'emitida' ? '—' : 'a definir na emissão')) + ' · ' + X.dataBR(n.data)),
         n.status === 'emitida' ? h('div', { class: 'etqs' }, etq(situacaoNotif(n).txt, situacaoNotif(n).cls), n.enviadaEm && !n.respondidaEm ? etq('prazo até ' + X.dataBR(prazoDe(n)), '') : null) : null,
-        h('div', { class: 'd' }, (n.itens && n.itens.length ? n.itens.length + ' item(ns) · ' : '') + ((n.fotos || []).length) + ' foto(s) · por ' + (n.criadoPor || '—'))))
+        h('div', { class: 'd' }, (n.itens && n.itens.length ? n.itens.length + ' item(ns) · ' : '') + ((n.fotos || []).length) + ' foto(s) · por ' + (nomeDe(n.criadoPor) || '—'))))
         : [h('div', { class: 'vazio' }, 'Nenhuma notificação registrada no app para este ' + ROTULO[r.tipo].toLowerCase() + '.',
           r.ultima_notif_anterior ? h('div', { class: 'sub' }, 'Notificações emitidas antes do app: ' + r.ultima_notif_anterior) : null)]));
     } else {
@@ -1178,7 +1178,7 @@
         const sair = () => api.encerrar(false);
         rc(api.lado,
           h('div', { class: 'sub' }, '🕒 ', dataHoraBR(f.dataHora), ' · 📍 ', coord),
-          h('div', { class: 'sub', style: { marginBottom: '10px' } }, 'Por ', f.criadoPor || '—', f.origem === 'galeria' ? ' · importada da galeria' : ''),
+          h('div', { class: 'sub', style: { marginBottom: '10px' } }, 'Por ', nomeDe(f.criadoPor) || '—', f.origem === 'galeria' ? ' · importada da galeria' : ''),
           irrDe && !irrDe.excluido ? h('div', { class: 'aviso', style: { marginBottom: '8px' } }, '📋 Foto do histórico da irregularidade “' + (irrDe.descricao || '') + '”. ',
             h('a', { href: '#/irregularidade/' + irrDe.id, onclick: sair }, 'Ver histórico'))
             : h('label', { class: 'linha', style: { marginBottom: '8px' } }, chkIrr, h('b', {}, '⚠️ Registrar como irregularidade')),
@@ -1253,7 +1253,7 @@
         atual = { f, edit, base: edit.descricao };
         const podeEd = pode.coletar();
         const historico = verifs.slice().reverse().map((vf) => h('div', { class: 'verif ' + vf.status },
-          h('div', {}, h('b', {}, vf.status === 'sanada' ? '✓ Sanada' : '✗ Não sanada'), ' — ', dataHoraBR(vf.data), ' · ', vf.por || '—'),
+          h('div', {}, h('b', {}, vf.status === 'sanada' ? '✓ Sanada' : '✗ Não sanada'), ' — ', dataHoraBR(vf.data), ' · ', nomeDe(vf.por) || '—'),
           vf.descricao ? h('div', { style: { margin: '4px 0 0' } }, vf.descricao) : null));
         const verificar = async (status) => {
           if (!(await salvar())) return;
@@ -1269,7 +1269,7 @@
           h('div', { class: 'irr-cab' }, h('span', { class: 'badge ' + st }, st === 'sanada' ? '✓ Sanada' : 'Pendente'), rotulo ? h('span', { class: 'sub' }, rotulo) : null),
           podeEd ? h('label', { class: 'campo', style: { marginTop: '8px' } }, h('span', {}, 'Irregularidade'), inputArea(edit, 'descricao', { rows: 2 }))
             : h('h3', { style: { margin: '8px 0' } }, f.descricao || '(sem descrição)'),
-          h('div', { class: 'sub', style: { marginBottom: '10px' } }, 'Constatada em ' + dataHoraBR(f.dataHora) + (visOrig ? ' · Visita nº ' + visOrig.numero : '') + ' · por ' + (f.criadoPor || '—')),
+          h('div', { class: 'sub', style: { marginBottom: '10px' } }, 'Constatada em ' + dataHoraBR(f.dataHora) + (visOrig ? ' · Visita nº ' + visOrig.numero : '') + ' · por ' + (nomeDe(f.criadoPor) || '—')),
           fotos.length > 1 ? h('div', {}, h('div', { class: 'sub', style: { marginBottom: '4px' } }, 'Fotos (' + fotos.length + ') — toque para ver:'), chips) : null,
           podeEd && st === 'pendente' ? h('div', { class: 'grade-bt', style: { marginTop: '10px' } },
             h('button', { class: 'btn ok grande', onclick: () => verificar('sanada') }, '✓ Sanada'),
@@ -1960,7 +1960,7 @@
 
     const cab = h('div', { class: 'card' },
       h('span', { class: 'badge ' + st, style: { float: 'right' } }, st === 'sanada' ? '✓ Sanada' : 'Pendente'),
-      h('div', { class: 'sub' }, 'Constatada em ' + dataHoraBR(f.dataHora) + (visOrig ? ' · Visita nº ' + visOrig.numero : '') + ' · por ' + (f.criadoPor || '—')),
+      h('div', { class: 'sub' }, 'Constatada em ' + dataHoraBR(f.dataHora) + (visOrig ? ' · Visita nº ' + visOrig.numero : '') + ' · por ' + (nomeDe(f.criadoPor) || '—')),
       h('h2', { style: { margin: '6px 0 10px' } }, f.descricao || '(sem descrição)'),
       img,
       f.lat != null ? h('div', { class: 'sub' }, '📍 ', h('a', { href: 'https://www.google.com/maps?q=' + f.lat + ',' + f.lng, target: '_blank', rel: 'noopener' }, Foto.textoCoord(f.lat, f.lng))) : null,
@@ -1972,7 +1972,7 @@
     for (const vf of verifs) {
       const fotoV = vf.fotoId ? await DB.get('fotos', vf.fotoId) : null;
       const box = h('div', { class: 'verif ' + vf.status },
-        h('div', {}, h('b', {}, vf.status === 'sanada' ? '✓ Sanada' : '✗ Não sanada'), ' — ', dataHoraBR(vf.data), ' · ', vf.por || '—'),
+        h('div', {}, h('b', {}, vf.status === 'sanada' ? '✓ Sanada' : '✗ Não sanada'), ' — ', dataHoraBR(vf.data), ' · ', nomeDe(vf.por) || '—'),
         vf.descricao ? h('div', { style: { margin: '4px 0' } }, vf.descricao) : null);
       if (fotoV) {
         const i1 = h('img'), i2 = h('img');
@@ -2154,7 +2154,7 @@
             status: vf.status === 'sanada' ? 'SANADA' : 'NÃO SANADA',
             descricao: vf.descricao || '',
             visita: await visitaTxt(vf.visitaId),
-            por: vf.por || '',
+            por: nomeDe(vf.por) || '',
             img: await pegar(fotoV),
           });
         }
@@ -2164,7 +2164,7 @@
           sanada_em: f.sanadaEm ? dataLocalBR(f.sanadaEm) : '',
           constatada_data: dataHoraBR(f.dataHora),
           constatada_visita: await visitaTxt(f.visitaId),
-          constatada_por: f.criadoPor || '',
+          constatada_por: nomeDe(f.criadoPor) || '',
           img: await pegar(f),
           historico,
         });
@@ -2221,7 +2221,7 @@
         itens.push({
           antes_img: await pegar(f), antes_desc: f.descricao || '', antes_data: dataHoraBR(f.dataHora).slice(0, 10), antes_visita: visA ? 'Visita nº ' + visA.numero : '',
           depois_img: fotoV ? await pegar(fotoV) : null, depois_desc: vf.descricao || '', depois_data: vf.data ? dataLocalBR(vf.data) : '—',
-          depois_visita: visD ? 'Visita nº ' + visD.numero : (fotoV ? '' : 'sem foto'), verificado_por: vf.por || '',
+          depois_visita: visD ? 'Visita nº ' + visD.numero : (fotoV ? '' : 'sem foto'), verificado_por: nomeDe(vf.por) || '',
         });
       }
       const pessoas = await pessoasMap();
@@ -2247,6 +2247,8 @@
       .replace(/\{ano\}/g, v.ano);
   }
 
+  // e-mail de quem registrou → nome cadastrado em Usuários do grupo (se não houver, fica o e-mail)
+  const nomeDe = (e) => (Sync.nomeDe ? Sync.nomeDe(e) : e);
   const usaSequencial = (fmt) => /\{seq\d?\}/.test(fmt || '');
   // lê um número digitado no formato configurado (ex.: "016/2026/CIPISNP/DRE-SINOP" → seq 16, ano 2026)
   function lerNumero(fmt, txt) {
@@ -2794,9 +2796,9 @@
     ap(card,
       h('div', { class: 'etqs', style: { marginTop: 0, marginBottom: '8px' } }, etq(sit.txt, sit.cls)),
       h('table', { class: 'tabela-info' },
-        h('tr', {}, h('td', {}, 'Enviada em'), h('td', {}, X.dataBR(n.enviadaEm) + (n.enviadaPor ? ' · por ' + n.enviadaPor : ''))),
+        h('tr', {}, h('td', {}, 'Enviada em'), h('td', {}, X.dataBR(n.enviadaEm) + (n.enviadaPor ? ' · por ' + nomeDe(n.enviadaPor) : ''))),
         h('tr', {}, h('td', {}, 'Prazo para resposta'), h('td', {}, (n.prazoDiasEnvio || n.prazo_dias || 3) + ' dia(s) útil(eis) → até ' + X.dataBR(prazoDe(n)))),
-        n.respondidaEm ? h('tr', {}, h('td', {}, 'Respondida em'), h('td', {}, X.dataBR(n.respondidaEm) + (n.respondidaPor ? ' · registrado por ' + n.respondidaPor : ''))) : null,
+        n.respondidaEm ? h('tr', {}, h('td', {}, 'Respondida em'), h('td', {}, X.dataBR(n.respondidaEm) + (n.respondidaPor ? ' · registrado por ' + nomeDe(n.respondidaPor) : ''))) : null,
         n.respostaObs ? h('tr', {}, h('td', {}, 'Observação'), h('td', {}, n.respostaObs)) : null));
     if (pode.notificar()) {
       ap(card, h('div', { class: 'acoes' },
@@ -2885,12 +2887,12 @@
     const repetido = emitida ? (await numerosRepetidos()).cont.get(chaveNumero(n)) : null;
     const avisoRepetido = repetido && repetido.length > 1
       ? h('div', { class: 'aviso perigo' }, '⚠️ Número repetido: ' + (repetido.length - 1) + ' outra(s) notificação(ões) emitida(s) também têm o nº ' + n.numero + ' (' +
-        repetido.filter((o) => o.id !== n.id).map((o) => (o.ordinal || '?') + 'ª, emitida em ' + dataLocalBR(o.emitidaEm || o.data) + ' por ' + (o.emitidaPor || '—')).join('; ') +
+        repetido.filter((o) => o.id !== n.id).map((o) => (o.ordinal || '?') + 'ª, emitida em ' + dataLocalBR(o.emitidaEm || o.data) + ' por ' + (nomeDe(o.emitidaPor) || '—')).join('; ') +
         '). Um administrador pode reabrir uma delas e corrigir o número.')
       : null;
     const secCab = h('div', { class: 'card' },
       avisoRepetido,
-      emitida ? h('div', { class: 'aviso' }, '🔒 Notificação emitida em ' + dataHoraBR(n.emitidaEm) + ' por ' + (n.emitidaPor || '—') + '. O conteúdo está bloqueado para preservar o histórico.') : null,
+      emitida ? h('div', { class: 'aviso' }, '🔒 Notificação emitida em ' + dataHoraBR(n.emitidaEm) + ' por ' + (nomeDe(n.emitidaPor) || '—') + '. O conteúdo está bloqueado para preservar o histórico.') : null,
       h('div', { class: 'grade2' },
         campo('Ordem (ª notificação)', ordInp),
         campo('Número da notificação', numInp, ro ? null : seqAuto
@@ -3177,7 +3179,7 @@
     const data = (k) => h('input', { type: 'date', value: m[k] || '', readonly: ro, oninput: (e) => { m[k] = e.target.value; marcar(); } });
 
     const cab = h('div', { class: 'card' }, h('h2', {}, 'Dados da medição'),
-      concluida ? h('div', { class: 'aviso' }, '🔒 Medição concluída em ' + dataHoraBR(m.concluidaEm) + ' por ' + (m.concluidaPor || '—') + '. Para alterar, reabra.') : null,
+      concluida ? h('div', { class: 'aviso' }, '🔒 Medição concluída em ' + dataHoraBR(m.concluidaEm) + ' por ' + (nomeDe(m.concluidaPor) || '—') + '. Para alterar, reabra.') : null,
       h('div', { class: 'grade2' },
         campo('Medição nº', h('input', { type: 'number', min: '1', value: m.numero, readonly: ro, oninput: (e) => { m.numero = parseInt(e.target.value, 10) || m.numero; marcar(); } })),
         campo('Data da vistoria', data('data_vistoria')),
@@ -3448,7 +3450,7 @@
       for (const f of fotosSemDrive) if (!(await DB.blobGet(f.id))) semArquivo++;
       const log = Sync.lerLog().slice().reverse();
       const resumo = {
-        app: '3.13', servidor: Sync.versaoServidor || '?', usuario: (u || {}).email, perfil: perfil(), estado: Sync.estado, erro: Sync.erro || '',
+        app: '3.14', servidor: Sync.versaoServidor || '?', usuario: (u || {}).email, perfil: perfil(), estado: Sync.estado, erro: Sync.erro || '',
         online: navigator.onLine, ultimaSync: await DB.kvGet('ultimaSync', null), cursor: await DB.kvGet('servidorDesde', 0),
         pendentes: pendPor, fotosAguardandoEnvio: fotosSemDrive.length - semArquivo, fotosDeOutroAparelhoSemEnvio: semArquivo,
         aparelho: navigator.userAgent, log,
@@ -3642,6 +3644,7 @@
       (async () => {
         try {
           const j = await Sync.chamar('usuarios');
+          if (Array.isArray(j.usuarios)) Sync.guardarEquipe(j.usuarios);
           // status de acesso: atualiza sozinho (a cada 45 s) enquanto esta tela estiver aberta
           const linhasAcesso = new Map();
           const acessoDe = (us) => { const el = h('div', {}, j.acessos ? textoAcesso(us) : null); linhasAcesso.set(us.email, el); return el; };
@@ -3685,7 +3688,7 @@
     // a partir de "Aparência e câmera", cada seção vira uma lista suspensa (fechada; lembra as abertas)
     const iniSecoes = cards.findIndex((c) => c.querySelector && (c.querySelector(':scope > h2') || {}).textContent === 'Aparência e câmera');
     if (iniSecoes >= 0) for (let i = iniSecoes; i < cards.length; i++) cards[i] = secaoRecolhivel(cards[i]);
-    cards.push(h('p', { class: 'dica', style: { textAlign: 'center' } }, 'Fiscalização de Obras · v3.13 · dados salvos no aparelho' + (Sync.habilitado() ? ' e no Google Drive do administrador' : '') + ' · ', h('a', { href: 'privacidade.html' }, 'Política de privacidade')));
+    cards.push(h('p', { class: 'dica', style: { textAlign: 'center' } }, 'Fiscalização de Obras · v3.14 · dados salvos no aparelho' + (Sync.habilitado() ? ' e no Google Drive do administrador' : '') + ' · ', h('a', { href: 'privacidade.html' }, 'Política de privacidade')));
     rcT(tk, ...cards);
   }
 
