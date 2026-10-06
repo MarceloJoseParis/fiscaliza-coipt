@@ -674,3 +674,23 @@ body.com-visor { overflow: hidden; }
   .visor-lado { width: 360px; flex: none; max-height: none; border-radius: 18px 0 0 18px; margin: 0 0 10px; }
   .visor-mini { width: 84px; height: 62px; }
 }
+
+/* passagem entre irregularidades */
+.nav-irr { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; position: sticky; top: calc(58px + env(safe-area-inset-top)); z-index: 5; background: color-mix(in srgb, var(--bg) 88%, transparent); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); padding: 6px 0; }
+.nav-irr .btn { flex: none; }
+.nav-irr-meio { flex: 1; min-width: 0; text-align: center; display: flex; flex-direction: column; line-height: 1.25; }
+.nav-irr-meio .sub { font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+@media (min-width: 1024px) { body[data-tela="irregularidade"] main > .nav-irr { display: flex; top: 0; column-span: all; } }
+
+/* visualizador de irregularidades */
+.visor-legimg { position: absolute; left: 12px; top: 10px; background: rgba(0,0,0,.6); color: #fff; font-size: 13px; padding: 4px 10px; border-radius: 10px; z-index: 2; pointer-events: none; }
+.irr-cab { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.irr-chips { display: flex; gap: 6px; overflow-x: auto; padding-bottom: 4px; }
+.irr-chip { flex: none; display: flex; flex-direction: column; align-items: center; gap: 3px; background: var(--sup2); border: 2px solid transparent; border-radius: 10px; padding: 4px; cursor: pointer; font-size: 11px; color: var(--txt2); width: 96px; }
+.irr-chip img { width: 100%; height: 56px; object-fit: cover; border-radius: 6px; display: block; }
+.irr-chip span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
+.irr-chip.ativo { border-color: var(--pri); color: var(--txt); }
+.visor-lado .verif { font-size: 13px; padding: 8px 10px; margin-bottom: 6px; }
+.visor-mini.irr.sanada { box-shadow: inset 0 -3px 0 #22c55e; }
+/* a câmera (aberta para a foto do "depois") fica por cima do visualizador */
+body:has(.cv) .visor-fundo { display: none; }
