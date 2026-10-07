@@ -985,6 +985,11 @@
           const irr = mapa.get(f.projetoDe);
           if (irr && irr.excluido) { await atualizarCampos('fotos', f.id, (o) => { o.excluido = true; }); n++; continue; }
         }
+        // projeto cuja imagem foi excluída (ex.: apagada pelo visualizador de fotos na 3.15.1): some de todas as telas
+        if (f.projeto && f.projeto.fotoId) {
+          const fp = mapa.get(f.projeto.fotoId);
+          if (fp && fp.excluido) { await atualizarCampos('fotos', f.id, (o) => { delete o.projeto; }); n++; }
+        }
         if (f.irregular && (f.verificacoes || []).length && !f.verificacoes.every(valida)) {
           await atualizarCampos('fotos', f.id, (o) => { o.verificacoes = (o.verificacoes || []).filter(valida); recalcularSituacao(o); });
           n++;
@@ -1714,10 +1719,10 @@
           const img = h('img'); fotoAtualIrr(f).then(urlFoto).then((u) => { img.src = u; });
           return h('div', { class: 'li', style: { cursor: 'pointer' }, onclick: () => abrirIrregularidades(f, reverif, 'Não sanadas nesta visita', id, desenharFotos) }, img,
             h('div', { style: { flex: 1 } }, h('div', {}, f.descricao || '(sem descrição)'),
-              h('div', { class: 'sub' }, '✗ Não sanada nesta visita · constatada em ' + dataHoraBR(f.dataHora).slice(0, 10))), botaoProjetoLista(f, desenharFotos));
+              h('div', { class: 'sub' }, '✗ Não sanada nesta visita · constatada em ' + dataHoraBR(f.dataHora).slice(0, 10))));
         }), irr.map((f) => {
           const img = h('img'); urlFoto(f).then((u) => { img.src = u; });
-          return h('div', { class: 'li', style: { cursor: 'pointer' }, onclick: () => abrirFoto(f, desenharFotos, irr) }, img, h('div', { style: { flex: 1 } }, h('div', {}, f.descricao || '(sem descrição)'), h('div', { class: 'sub' }, dataHoraBR(f.dataHora))), botaoProjetoLista(f, desenharFotos));
+          return h('div', { class: 'li', style: { cursor: 'pointer' }, onclick: () => abrirFoto(f, desenharFotos, irr) }, img, h('div', { style: { flex: 1 } }, h('div', {}, f.descricao || '(sem descrição)'), h('div', { class: 'sub' }, dataHoraBR(f.dataHora))));
         })) : h('div', { class: 'sub' }, 'Nenhuma irregularidade registrada nesta visita.'),
         nIrr && pode.notificar() ? h('div', { class: 'acoes' }, h('button', { class: 'btn', onclick: async () => { await salvarVisita(true); notificarVisita(v0, r); } }, '📝 Gerar notificação com estas irregularidades')) : null,
         reverif.length ? h('div', { class: 'dica' }, 'Irregularidades não sanadas entram na notificação com a foto nova desta visita.') : null);
@@ -2081,17 +2086,6 @@
     else if (acao === 'legenda') mudou = await editarLegendaProjeto(irr);
     else if (acao === 'remover') mudou = await removerProjeto(irr);
     if (mudou && aoMudar) aoMudar();
-  }
-  // botão compacto nas listas de irregularidades (visita): mostra se já tem projeto e permite incluir/ver
-  function botaoProjetoLista(irr, aoMudar) {
-    const p = projetoDe(irr);
-    if (!p && !pode.coletar()) return null;
-    return h('button', { class: 'btn peq btn-proj' + (p ? ' tem' : ''), title: p ? 'Ver a foto do projeto' : 'Incluir a foto do projeto (vai na notificação abaixo da foto da irregularidade)',
-      onclick: async (e) => {
-        e.stopPropagation();
-        if (p) { await verProjeto(irr, aoMudar); return; }
-        if (await editarProjeto(irr)) aoMudar();
-      } }, p ? '📐 Projeto ✓' : '📐 + Projeto');
   }
   // bloco no painel do visualizador de fotos (foto que é irregularidade)
   function blocoProjetoVisor(irr, antes, depois) {
@@ -3787,7 +3781,7 @@
       for (const f of fotosSemDrive) if (!(await DB.blobGet(f.id))) semArquivo++;
       const log = Sync.lerLog().slice().reverse();
       const resumo = {
-        app: '3.15.2', servidor: Sync.versaoServidor || '?', usuario: (u || {}).email, perfil: perfil(), estado: Sync.estado, erro: Sync.erro || '',
+        app: '3.15.3', servidor: Sync.versaoServidor || '?', usuario: (u || {}).email, perfil: perfil(), estado: Sync.estado, erro: Sync.erro || '',
         online: navigator.onLine, ultimaSync: await DB.kvGet('ultimaSync', null), cursor: await DB.kvGet('servidorDesde', 0),
         pendentes: pendPor, fotosAguardandoEnvio: fotosSemDrive.length - semArquivo, fotosDeOutroAparelhoSemEnvio: semArquivo,
         aparelho: navigator.userAgent, log,
@@ -4042,7 +4036,7 @@
     // a partir de "Aparência e câmera", cada seção vira uma lista suspensa (fechada; lembra as abertas)
     const iniSecoes = cards.findIndex((c) => c.querySelector && (c.querySelector(':scope > h2') || {}).textContent === 'Aparência e câmera');
     if (iniSecoes >= 0) for (let i = iniSecoes; i < cards.length; i++) cards[i] = secaoRecolhivel(cards[i]);
-    cards.push(h('p', { class: 'dica', style: { textAlign: 'center' } }, 'Fiscalização de Obras · v3.15.2 · dados salvos no aparelho' + (Sync.habilitado() ? ' e no Google Drive do administrador' : '') + ' · ', h('a', { href: 'privacidade.html' }, 'Política de privacidade')));
+    cards.push(h('p', { class: 'dica', style: { textAlign: 'center' } }, 'Fiscalização de Obras · v3.15.3 · dados salvos no aparelho' + (Sync.habilitado() ? ' e no Google Drive do administrador' : '') + ' · ', h('a', { href: 'privacidade.html' }, 'Política de privacidade')));
     rcT(tk, ...cards);
   }
 

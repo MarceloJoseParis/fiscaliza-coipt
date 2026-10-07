@@ -733,5 +733,3 @@ body:has(.cv) .visor-fundo { display: none; }
 .rec-alca { position: absolute; width: 22px; height: 22px; background: #fff; border: 2px solid var(--pri); border-radius: 50%; }
 .rec-alca.nw { left: -11px; top: -11px; cursor: nwse-resize; } .rec-alca.ne { right: -11px; top: -11px; cursor: nesw-resize; }
 .rec-alca.sw { left: -11px; bottom: -11px; cursor: nesw-resize; } .rec-alca.se { right: -11px; bottom: -11px; cursor: nwse-resize; }
-.btn-proj { flex: none; white-space: nowrap; align-self: center; }
-.btn-proj.tem { background: var(--pri-bg); color: var(--pri); }
