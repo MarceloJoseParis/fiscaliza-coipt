@@ -68,7 +68,11 @@
     } catch (e) { return null; }
   };
   Sync.usuarioLocal = function () {
-    try { return JSON.parse(localStorage.getItem('usuario') || 'null'); } catch (e) { return null; }
+    try {
+      const u = JSON.parse(localStorage.getItem('usuario') || 'null');
+      if (u && u.foto) { delete u.foto; localStorage.setItem('usuario', JSON.stringify(u)); } // apaga a foto do perfil guardada por versões anteriores
+      return u;
+    } catch (e) { return null; }
   };
   Sync.sair = function () {
     localStorage.removeItem('id_token');
@@ -105,7 +109,8 @@
       callback: async (resp) => {
         localStorage.setItem('id_token', resp.credential);
         const d = decodificar(resp.credential);
-        const u = Object.assign({}, Sync.usuarioLocal() || {}, { email: d.email, nome: d.name, foto: d.picture });
+        const u = Object.assign({}, Sync.usuarioLocal() || {}, { email: d.email, nome: d.name }); // a foto do perfil Google não é guardada (LGPD)
+        delete u.foto;
         localStorage.setItem('usuario', JSON.stringify(u));
         Sync.usuario = u;
         aguardandoToken.forEach((f) => f(resp.credential));
@@ -542,6 +547,11 @@
   }
   async function aplicarRecebido(e, o) {
     if (o && '_vb' in o) { o = Object.assign({}, o); delete o._vb; }
+    // LGPD: CPF do representante não é mais guardado (servidor ainda não atualizado pode mandar)
+    if (o && (e === 'registros' || e === 'notificacoes' || e === 'medicoes')) {
+      if ('n_representante_cpf' in o) { o = Object.assign({}, o); delete o.n_representante_cpf; }
+      if (o.registroSnapshot && typeof o.registroSnapshot === 'object' && 'n_representante_cpf' in o.registroSnapshot) { o = Object.assign({}, o, { registroSnapshot: Object.assign({}, o.registroSnapshot) }); delete o.registroSnapshot.n_representante_cpf; }
+    }
     let mudou = false;
     await DB.atualizar(e, o.id, (local) => {
       if (local) {

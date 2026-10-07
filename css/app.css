@@ -55,6 +55,10 @@
 html, body { margin: 0; padding: 0; background: var(--bg); color: var(--txt); font: 15px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif; }
 body { padding-bottom: calc(62px + env(safe-area-inset-bottom)); }
 button, input, select, textarea { font: inherit; color: inherit; }
+input:not([type=checkbox]):not([type=radio]), select, textarea { min-width: 0; max-width: 100%; }
+/* nada pode alargar a página: no iPhone isso deixa a tela "solta" para o lado e a barra inferior fora do lugar
+   (só no body: assim o bloqueio de rolagem do visualizador de fotos continua valendo para a página toda) */
+body { overflow-x: clip; }
 a { color: var(--pri); }
 
 /* ============ Topo ============ */
@@ -269,7 +273,7 @@ details.card[open] > summary::before { content: '▾ '; }
 .etq.info { background: var(--pri-bg); color: var(--pri); }
 .linha-busca { display: flex; gap: 8px; margin-bottom: 10px; flex-wrap: wrap; }
 .linha-busca input { flex: 2 1 200px; }
-.linha-busca select { flex: 1 1 160px; width: auto; }
+.linha-busca select { flex: 1 1 160px; width: auto; min-width: 0; } /* sem min-width: 0 o filtro cresce até a maior opção e empurra a tela para o lado */
 .nav a { position: relative; }
 .nav-badge { position: absolute; top: 2px; left: calc(50% + 5px); min-width: 17px; height: 17px; padding: 0 4px; border-radius: 999px; background: var(--erro); color: #fff; font-size: 10.5px; font-weight: 700; display: none; align-items: center; justify-content: center; }
 .nav-badge.on { display: flex; }
@@ -581,6 +585,9 @@ body.arrastando-foto, body.arrastando-foto * { cursor: grabbing !important; -web
   .usr-info { grid-column: 1 / -1; }
   .usr-linha select { min-width: 170px; }
 }
+@container (max-width: 400px) {
+  .usr-linha select { grid-column: 1 / -1; min-width: 0; width: 100%; } /* tela estreita: perfil numa linha, botões na de baixo */
+}
 .acesso { font-size: 12px; color: var(--txt2); margin-top: 2px; display: flex; align-items: center; gap: 6px; }
 .acesso::before { content: ''; width: 7px; height: 7px; border-radius: 50%; background: var(--txt2); opacity: .45; flex: none; }
 .acesso.on { color: var(--ok); font-weight: 600; }
@@ -635,8 +642,16 @@ label.linha > input[type="checkbox"] { flex: none; margin-top: 2px; }
 :root[data-theme="dark"] .med-sit button.ativo.sit-nao { color: var(--erro); }
 
 /* barra de progresso (geração de relatórios) */
-.prog { height: 6px; border-radius: 99px; background: var(--sup2); overflow: hidden; margin-top: 12px; }
+.prog { height: 8px; border-radius: 99px; background: var(--sup2); overflow: hidden; margin-top: 14px; position: relative; }
 .prog-barra { height: 100%; width: 0; background: var(--pri); border-radius: 99px; transition: width .25s; }
+.prog.indet .prog-barra { width: 35% !important; position: absolute; left: -35%; animation: prog-indet 1.3s ease-in-out infinite; transition: none; }
+@keyframes prog-indet { to { left: 100%; } }
+.prog-modal .prog-tit { margin: 0 0 10px; }
+.prog-modal .prog-txt { font-size: 14px; }
+.prog-info { display: flex; justify-content: space-between; gap: 12px; margin-top: 6px; font-size: 12.5px; color: var(--txt2); min-height: 17px; font-variant-numeric: tabular-nums; }
+.prog-pct { font-weight: 600; color: var(--txt); }
+.prog.indet + .prog-info .prog-pct, .prog.indet + .prog-info .prog-falta { visibility: hidden; }
+@media (prefers-reduced-motion: reduce) { .prog.indet .prog-barra { animation: none; left: 0; width: 100% !important; opacity: .35; } }
 
 /* Visualizador de fotos (zoom + passar entre fotos) */
 body.com-visor { overflow: hidden; }
@@ -694,3 +709,8 @@ body.com-visor { overflow: hidden; }
 .visor-mini.irr.sanada { box-shadow: inset 0 -3px 0 #22c55e; }
 /* a câmera (aberta para a foto do "depois") fica por cima do visualizador */
 body:has(.cv) .visor-fundo { display: none; }
+
+/* iPhone/iPad: campo com letra menor que 16 px faz o Safari dar zoom ao tocar (a tela fica ampliada e "sai" da tela) */
+@media (pointer: coarse) {
+  input:not([type=checkbox]):not([type=radio]):not([type=range]), select, textarea, .med-cols textarea.mono { font-size: 16px; }
+}

@@ -700,10 +700,13 @@
   /* ---------------- ordem das fotos no relatório (arrastar) ---------------- */
   // posição da foto: a ordem escolhida arrastando ou, sem ela, a hora da foto
   const chaveOrdem = (f) => (f.ordem != null && isFinite(+f.ordem) ? +f.ordem : (Date.parse(f.dataHora) || 0));
-  const ordenarFotos = (l) => l.slice().sort((a, b) => chaveOrdem(a) - chaveOrdem(b) || String(a.dataHora).localeCompare(String(b.dataHora)) || String(a.id).localeCompare(String(b.id)));
+  // 3.15: na tela (e no relatório, que segue a tela) a foto mais NOVA vem primeiro. A chave continua crescendo
+  // do mais antigo para o mais novo; só a apresentação é invertida (aparelhos em versões antigas não se confundem).
+  const ordenarFotos = (l) => l.slice().sort((a, b) => chaveOrdem(b) - chaveOrdem(a) || String(b.dataHora).localeCompare(String(a.dataHora)) || String(b.id).localeCompare(String(a.id)));
   /* Grava a nova posição. Normalmente só a foto movida muda (fica entre as vizinhas): pouca coisa para
      sincronizar e, se outro aparelho mexer em outra foto ao mesmo tempo, as duas mudanças se juntam. */
-  async function moverFoto(fotos, ids, id) {
+  async function moverFoto(fotos, idsTela, id) {
+    const ids = idsTela.slice().reverse(); // a tela mostra do mais novo ao mais antigo; a chave cresce no sentido contrário
     const mapa = new Map(fotos.map((f) => [f.id, f]));
     const i = ids.indexOf(id);
     if (i < 0) return;
@@ -930,6 +933,24 @@
   /* Corrige dados antigos ou que chegaram fora de ordem de outros aparelhos:
      histórico apontando para foto/visita excluída, fotos de verificação órfãs, rascunhos com fotos excluídas. */
   let reparando = false;
+  /* LGPD (3.15): o CPF do representante não é mais usado. Apaga as cópias guardadas neste aparelho
+     (cadastros e retratos do cadastro em notificações/medições). O servidor apaga as da planilha. */
+  async function apagarCpfLocal() {
+    try {
+      if (await DB.kvGet('lgpd_cpf_local', false)) return;
+      for (const e of ['registros', 'notificacoes', 'medicoes']) {
+        for (const o of await DB.all(e)) {
+          let mudou = false;
+          if ('n_representante_cpf' in o) { delete o.n_representante_cpf; mudou = true; }
+          if (o.registroSnapshot && typeof o.registroSnapshot === 'object' && 'n_representante_cpf' in o.registroSnapshot) { delete o.registroSnapshot.n_representante_cpf; mudou = true; }
+          if (o._base && 'n_representante_cpf' in o._base) { delete o._base.n_representante_cpf; mudou = true; }
+          if (o._campos && 'n_representante_cpf' in o._campos) { delete o._campos.n_representante_cpf; mudou = true; }
+          if (mudou) await DB.put(e, o);
+        }
+      }
+      await DB.kvSet('lgpd_cpf_local', true);
+    } catch (err) { console.warn('apagarCpfLocal', err); }
+  }
   async function repararConsistencia() {
     if (reparando || !pode.coletar()) return 0;
     reparando = true;
@@ -1361,9 +1382,8 @@
       campo('Nome usado no texto', nomeTexto, 'Usado nas frases “firmado entre a Secretaria… e a ___” e “NOTIFICAR a ___”.'),
       h('div', { class: 'grade2' },
         campo('CNPJ', inputTxt(r, 'n_cnpj', { inputmode: 'numeric' })),
-        campo('Telefone', inputTxt(r, 'n_telefone', { inputmode: 'tel' })),
-        campo('Representante legal', inputTxt(r, 'n_representante')),
-        campo('CPF do representante (opcional)', inputTxt(r, 'n_representante_cpf', { inputmode: 'numeric' }))),
+        campo('Telefone', inputTxt(r, 'n_telefone', { inputmode: 'tel' }))),
+      campo('Representante legal', inputTxt(r, 'n_representante')),
       campo('Logradouro', inputTxt(r, 'n_logradouro')),
       h('div', { class: 'grade2' },
         campo('Bairro', inputTxt(r, 'n_bairro')),
@@ -1667,7 +1687,7 @@
         grade || h('div', { class: 'vazio' }, 'Nenhuma foto ainda.'),
         ordenar ? h('div', { class: 'dica' }, 'A ordem das fotos aqui é a ordem do relatório. Para mudar, segure a foto e arraste (no computador, clique e arraste).') : null,
         fotos.some((f) => f.fora_relatorio) ? h('div', { class: 'dica' }, 'Fotos esmaecidas não entram no relatório.') : null);
-      const reverif = await reverificadasNaVisita(r, id);
+      const reverif = (await reverificadasNaVisita(r, id)).reverse(); // mais nova em cima, como as fotos
       const nIrr = irr.length + reverif.length;
       rc(boxIrr, h('h2', {}, '⚠️ Irregularidades (' + nIrr + ')'),
         nIrr ? h('div', { class: 'lista-ord' }, reverif.map((f) => {
@@ -1810,16 +1830,46 @@
     const trabalhador = async () => { while (i < lista.length) await umaFoto(lista[i++]); };
     return Promise.all(Array.from({ length: Math.min(paralelo || 6, lista.length) }, trabalhador)).then(() => ({ blobs, faltando, baixadas }));
   }
-  // janela de progresso (texto + barra)
-  function janelaProgresso(texto) {
-    const txt = h('div', {}, texto), barra = h('div', { class: 'prog-barra' }), fundoBarra = h('div', { class: 'prog' }, barra);
-    const fundo = h('div', { class: 'modal-fundo' }, h('div', { class: 'modal' }, h('div', { class: 'linha' }, h('span', { class: 'carregando' }), txt), fundoBarra));
+  /* Janela de progresso de toda emissão de documento: título, etapa atual, barra, % e tempo restante.
+     frac = null → barra "andando" (etapa sem medida, ex.: aguardando o servidor). A barra nunca volta. */
+  function janelaProgresso(texto, titulo) {
+    const idt = 'prog-' + Date.now().toString(36);
+    const tit = h('h2', { class: 'prog-tit', id: idt }, titulo || 'Gerando documento');
+    const txt = h('div', { class: 'prog-txt', 'aria-live': 'polite' }, texto), barra = h('div', { class: 'prog-barra' });
+    const fundoBarra = h('div', { class: 'prog indet', role: 'progressbar', 'aria-labelledby': idt, 'aria-valuemin': '0', 'aria-valuemax': '100' }, barra);
+    const pct = h('span', { class: 'prog-pct' }, ''), falta = h('span', { class: 'prog-falta' }, '');
+    const fundo = h('div', { class: 'modal-fundo prog-fundo' }, h('div', { class: 'modal prog-modal', role: 'dialog', 'aria-modal': 'true', 'aria-labelledby': idt },
+      tit, h('div', { class: 'linha' }, h('span', { class: 'carregando', 'aria-hidden': 'true' }), txt), fundoBarra, h('div', { class: 'prog-info', 'aria-hidden': 'true' }, pct, falta)));
     document.body.appendChild(fundo);
-    return {
-      set(t, frac) { rc(txt, t); fundoBarra.style.visibility = frac == null ? 'hidden' : 'visible'; if (frac != null) barra.style.width = Math.round(Math.max(0, Math.min(1, frac)) * 100) + '%'; },
+    const t0 = Date.now();
+    let max = 0, ultEta = 0, eta = null;
+    const textoFalta = (s) => s < 5 ? 'quase pronto' : s < 60 ? 'falta cerca de ' + Math.max(5, Math.round(s / 5) * 5) + ' s' : 'falta cerca de ' + Math.round(s / 60) + ' min';
+    const jp = {
+      set(t, frac) {
+        if (t != null) rc(txt, t);
+        if (frac == null) { fundoBarra.classList.add('indet'); fundoBarra.removeAttribute('aria-valuenow'); return; }
+        fundoBarra.classList.remove('indet');
+        max = Math.max(max, Math.max(0, Math.min(1, frac)));
+        barra.style.width = (max * 100).toFixed(1) + '%';
+        const p = Math.floor(max * 100);
+        pct.textContent = p + '%';
+        fundoBarra.setAttribute('aria-valuenow', String(p));
+        // tempo restante: só depois de alguns segundos (antes disso a estimativa engana) e no máximo 1× por segundo
+        const dec = (Date.now() - t0) / 1000;
+        if (max >= 0.99) { falta.textContent = 'quase pronto'; return; }
+        if (dec < 3 || max < 0.04 || Date.now() - ultEta < 1000) return;
+        ultEta = Date.now();
+        const bruto = dec * (1 - max) / max;
+        eta = eta == null ? bruto : eta * 0.6 + bruto * 0.4;
+        falta.textContent = textoFalta(eta);
+      },
       fechar() { fundo.remove(); },
     };
+    return jp;
   }
+  // progresso da gravação do .docx (DocGen) dentro de uma faixa da barra
+  const progGravar = (jp, de, ate) => (p) => jp.set('Gravando o arquivo…', de + (ate - de) * p / 100);
+  const pausaTela = () => new Promise((ok) => setTimeout(ok, 30)); // deixa a tela mostrar o texto antes de um passo pesado
   // tamanho máximo das fotos no relatório, conforme o layout (impressão nítida, arquivo bem menor)
   const LADO_RELATORIO = { 2: 1600, 4: 1280, 6: 1024 };
 
@@ -1852,7 +1902,8 @@
     if (!acao) return; // o que já foi baixado fica guardado no aparelho (a próxima vez é mais rápida)
     DB.kvSet('layoutRelatorio', escolha.layout);
     DB.kvSet('tamanhoFotosRelatorio', escolha.tamanho);
-    const jp = janelaProgresso('Preparando as fotos…');
+    const jp = janelaProgresso('Preparando as fotos…', 'Relatório fotográfico');
+    jp.set(null, 0);
     const t0 = Date.now();
     try {
       // 1) fotos: do aparelho ou do Drive (as que faltavam já estavam sendo baixadas) e, ao mesmo tempo,
@@ -1867,9 +1918,10 @@
         meta: dataHoraBR(f.dataHora) + (f.lat != null ? ' · ' + Foto.textoCoord(f.lat, f.lng) : '') }));
       // 3) monta o Word
       jp.set('Montando o documento (' + itens.length + ' fotos)…', 0.8);
-      await new Promise((ok) => setTimeout(ok, 30)); // deixa a tela mostrar o texto
+      await pausaTela();
       const dados = DocGen.montarDadosRelatorio(r, v, itens, { layout: +escolha.layout });
-      const blob = await DocGen.gerar(await modeloDocx('relatorio'), dados, { type: 'blob', aoProgresso: (pct) => jp.set('Gravando o arquivo: ' + Math.round(pct) + '%…', 0.85 + pct / 100 * 0.15) });
+      jp.set(null, 0.85);
+      const blob = await DocGen.gerar(await modeloDocx('relatorio'), dados, { type: 'blob', aoProgresso: progGravar(jp, 0.85, 1) });
       const nome = nomeArquivo('RELATÓRIO FOTOGRÁFICO - ' + r.apelido + ' - VISITA ' + v.numero + ' - ' + X.dataBR(v.data).replace(/\//g, '-')) + '.docx';
       jp.fechar();
       if (acao === 'comp') await compartilharBlob(blob, nome, nome); else baixarBlob(blob, nome);
@@ -2129,33 +2181,36 @@
     const exige = () => { if (!sel.size) { toast('Selecione ao menos uma irregularidade.', true); return false; } };
     const acao = await modal('Relatório de irregularidades', corpo, [{ txt: 'Cancelar', valor: null }, { txt: '📤 Compartilhar', valor: 'comp', antes: exige }, { txt: '⬇️ Baixar Word', cls: 'pri', valor: 'baixar', antes: exige }]);
     if (!acao || !sel.size) return;
-    const st = h('div', {}, h('span', { class: 'carregando' }), ' Gerando relatório…');
-    const fundo = h('div', { class: 'modal-fundo' }, h('div', { class: 'modal' }, st));
-    document.body.appendChild(fundo);
+    const jp = janelaProgresso('Separando as fotos…', 'Relatório de irregularidades');
+    jp.set(null, 0);
     try {
-      const faltando = [];
-      const pegar = async (foto) => {
-        if (!foto || foto.excluido) return null;
-        let b = await DB.blobGet(foto.id);
-        if (!b && Sync.habilitado() && navigator.onLine) { try { b = await Sync.baixarFoto(foto); } catch (e) { /* */ } }
-        if (!b) faltando.push(foto.id);
-        return b || null;
-      };
-      const visitaTxt = async (vid) => { const v = vid ? await DB.get('visitas', vid) : null; return v ? 'Visita nº ' + v.numero : ''; };
+      const escolhidas = todas.filter((x) => sel.has(x.id));
+      // 1) junta todas as fotos (constatação + verificações) e busca de uma vez, várias ao mesmo tempo
+      const fotoDe = new Map();
+      for (const f of escolhidas) {
+        fotoDe.set(f.id, f);
+        for (const vf of f.verificacoes || []) if (vf.fotoId && !fotoDe.has(vf.fotoId)) { const fv = await DB.get('fotos', vf.fotoId); if (fv) fotoDe.set(fv.id, fv); }
+      }
+      const buscar = [...fotoDe.values()].filter((x) => !x.excluido);
+      const { blobs, faltando } = await obterFotos(buscar, (k, n, bx) => jp.set('Carregando as fotos: ' + k + ' de ' + n + (bx ? ' · ' + bx + ' baixada(s) do Drive' : '') + '…', k / n * 0.8));
+      const img = (id) => (id && blobs.get(id)) || null;
+      if (faltando.length && !(await confirmar(faltando.length + ' foto(s) ainda não estão neste aparelho (sem internet para baixá-las). Gerar o relatório sem elas?', 'Gerar sem elas'))) { jp.fechar(); return; }
+      // 2) monta os itens
+      jp.set('Montando o documento (' + escolhidas.length + ' irregularidade(s))…', 0.8);
+      await pausaTela();
+      const visitas = new Map();
+      const visitaTxt = async (vid) => { if (!vid) return ''; if (!visitas.has(vid)) visitas.set(vid, await DB.get('visitas', vid)); const v = visitas.get(vid); return v ? 'Visita nº ' + v.numero : ''; };
       const itens = [];
-      let k = 0;
-      for (const f of todas.filter((x) => sel.has(x.id))) {
-        rc(st, h('span', { class: 'carregando' }), ' Preparando irregularidade ' + (++k) + ' de ' + sel.size + '…');
+      for (const f of escolhidas) {
         const historico = [];
         for (const vf of f.verificacoes || []) {
-          const fotoV = vf.fotoId ? await DB.get('fotos', vf.fotoId) : null;
           historico.push({
             data: vf.data ? dataHoraBR(vf.data) : '',
             status: vf.status === 'sanada' ? 'SANADA' : 'NÃO SANADA',
             descricao: vf.descricao || '',
             visita: await visitaTxt(vf.visitaId),
             por: nomeDe(vf.por) || '',
-            img: await pegar(fotoV),
+            img: img(vf.fotoId),
           });
         }
         itens.push({
@@ -2165,22 +2220,22 @@
           constatada_data: dataHoraBR(f.dataHora),
           constatada_visita: await visitaTxt(f.visitaId),
           constatada_por: nomeDe(f.criadoPor) || '',
-          img: await pegar(f),
+          img: f.excluido ? null : img(f.id),
           historico,
         });
       }
-      if (faltando.length && !(await confirmar(faltando.length + ' foto(s) ainda não estão neste aparelho (sem internet para baixá-las). Gerar o relatório sem elas?', 'Gerar sem elas'))) { fundo.remove(); return; }
-      rc(st, h('span', { class: 'carregando' }), ' Montando o documento…');
       const pessoas = await pessoasMap();
       const fiscais = snapshotAssinantes(r.fiscais && r.fiscais.length ? r.fiscais : fiscaisPadrao(r.tipo), pessoas, true);
       const dados = DocGen.montarDadosIrregularidades(r, itens, fiscais, X.hojeISO());
-      const blob = await DocGen.gerar(await modeloDocx('irregularidades'), dados, { type: 'blob' });
+      // 3) grava o Word
+      jp.set(null, 0.85);
+      const blob = await DocGen.gerar(await modeloDocx('irregularidades'), dados, { type: 'blob', aoProgresso: progGravar(jp, 0.85, 1) });
       const nome = nomeArquivo('RELATÓRIO DE IRREGULARIDADES - ' + r.apelido + ' - ' + X.dataBR(X.hojeISO()).replace(/\//g, '-')) + '.docx';
-      fundo.remove();
+      jp.fechar();
       if (acao === 'comp') await compartilharBlob(blob, nome, nome); else baixarBlob(blob, nome);
       toast('Relatório gerado: ' + nome);
     } catch (e) {
-      fundo.remove();
+      jp.fechar();
       console.error(e);
       toast(e.message, true);
     }
@@ -2202,38 +2257,47 @@
     const acao = await modal('Relatório de irregularidades sanadas', corpo, [{ txt: 'Cancelar', valor: null }, { txt: '📤 Compartilhar', valor: 'comp' }, { txt: '⬇️ Baixar Word', cls: 'pri', valor: 'baixar' }]);
     if (!acao) return;
     if (!sel.size) { toast('Selecione ao menos uma irregularidade.', true); return; }
-    const fundo = h('div', { class: 'modal-fundo' }, h('div', { class: 'modal' }, h('span', { class: 'carregando' }), ' Gerando relatório…'));
-    document.body.appendChild(fundo);
+    const jp = janelaProgresso('Separando as fotos…', 'Relatório de irregularidades sanadas');
+    jp.set(null, 0);
     try {
-      const pegar = async (foto) => {
-        if (!foto) return null;
-        let b = await DB.blobGet(foto.id);
-        if (!b && Sync.habilitado() && navigator.onLine) { try { b = await Sync.baixarFoto(foto); } catch (e) { /* */ } }
-        if (!b) throw new Error('Há fotos que ainda não estão neste aparelho. Conecte-se à internet e tente de novo.');
-        return b;
-      };
+      const escolhidas = sanadas.filter((x) => sel.has(x.id));
+      const ultimaSanada = (f) => (f.verificacoes || []).filter((x) => x.status === 'sanada').pop() || {};
+      // 1) fotos de antes e depois, buscadas de uma vez
+      const buscar = [], fotoV = new Map();
+      for (const f of escolhidas) {
+        buscar.push(f);
+        const vf = ultimaSanada(f);
+        const fv = vf.fotoId ? await DB.get('fotos', vf.fotoId) : null;
+        if (fv) { fotoV.set(f.id, fv); buscar.push(fv); }
+      }
+      const { blobs, faltando } = await obterFotos(buscar, (k, n, bx) => jp.set('Carregando as fotos: ' + k + ' de ' + n + (bx ? ' · ' + bx + ' baixada(s) do Drive' : '') + '…', k / n * 0.8));
+      if (faltando.length) throw new Error('Há fotos que ainda não estão neste aparelho. Conecte-se à internet e tente de novo.');
+      // 2) monta os itens
+      jp.set('Montando o documento (' + escolhidas.length + ' irregularidade(s))…', 0.8);
+      await pausaTela();
       const itens = [];
-      for (const f of sanadas.filter((x) => sel.has(x.id))) {
-        const vf = (f.verificacoes || []).filter((x) => x.status === 'sanada').pop() || {};
-        const fotoV = vf.fotoId ? await DB.get('fotos', vf.fotoId) : null;
+      for (const f of escolhidas) {
+        const vf = ultimaSanada(f), fv = fotoV.get(f.id) || null;
         const visA = f.visitaId ? await DB.get('visitas', f.visitaId) : null;
         const visD = vf.visitaId ? await DB.get('visitas', vf.visitaId) : null;
         itens.push({
-          antes_img: await pegar(f), antes_desc: f.descricao || '', antes_data: dataHoraBR(f.dataHora).slice(0, 10), antes_visita: visA ? 'Visita nº ' + visA.numero : '',
-          depois_img: fotoV ? await pegar(fotoV) : null, depois_desc: vf.descricao || '', depois_data: vf.data ? dataLocalBR(vf.data) : '—',
-          depois_visita: visD ? 'Visita nº ' + visD.numero : (fotoV ? '' : 'sem foto'), verificado_por: nomeDe(vf.por) || '',
+          antes_img: blobs.get(f.id), antes_desc: f.descricao || '', antes_data: dataHoraBR(f.dataHora).slice(0, 10), antes_visita: visA ? 'Visita nº ' + visA.numero : '',
+          depois_img: fv ? blobs.get(fv.id) : null, depois_desc: vf.descricao || '', depois_data: vf.data ? dataLocalBR(vf.data) : '—',
+          depois_visita: visD ? 'Visita nº ' + visD.numero : (fv ? '' : 'sem foto'), verificado_por: nomeDe(vf.por) || '',
         });
       }
       const pessoas = await pessoasMap();
       const fiscais = snapshotAssinantes(r.fiscais && r.fiscais.length ? r.fiscais : fiscaisPadrao(r.tipo), pessoas, true);
       const dados = DocGen.montarDadosSanadas(r, itens, fiscais, X.hojeISO());
-      const blob = await DocGen.gerar(await modeloDocx('sanadas'), dados, { type: 'blob' });
+      // 3) grava o Word
+      jp.set(null, 0.85);
+      const blob = await DocGen.gerar(await modeloDocx('sanadas'), dados, { type: 'blob', aoProgresso: progGravar(jp, 0.85, 1) });
       const nome = nomeArquivo('IRREGULARIDADES SANADAS - ' + r.apelido + ' - ' + X.dataBR(X.hojeISO()).replace(/\//g, '-')) + '.docx';
-      fundo.remove();
+      jp.fechar();
       if (acao === 'comp') await compartilharBlob(blob, nome, nome); else baixarBlob(blob, nome);
       toast('Relatório gerado: ' + nome);
     } catch (e) {
-      fundo.remove();
+      jp.fechar();
       console.error(e);
       toast(e.message, true);
     }
@@ -2323,16 +2387,21 @@
 
     const itens = () => [{ chave: 'ord:' + r.id, notificacao: n.id, desejado: pedOrd, minimo: minOrd }]
       .concat(usaSeq && !proprio ? [{ chave: 'seq:' + ano, notificacao: n.id, desejado: pedSeq, minimo: minSeq, semBase: semBase && !minSeq }] : []);
-    const espera = h('div', { class: 'modal-fundo' }, h('div', { class: 'modal' }, h('span', { class: 'carregando' }), ' Reservando o número da notificação no servidor…'));
+    // etapa sem medida (depende do servidor): barra "andando"; remove()/appendChild mantêm o uso antigo
+    let jpNum = null;
+    const espera = {
+      remove() { if (jpNum) { jpNum.fechar(); jpNum = null; } },
+      abrir() { if (!jpNum) { jpNum = janelaProgresso('Reservando o número da notificação no servidor…', 'Emitindo a notificação'); jpNum.set(null, null); } },
+    };
     let j;
     try {
-      document.body.appendChild(espera);
+      espera.abrir();
       j = await Sync.chamar('numerar', { itens: itens() });
       if ((j.itens || []).some((x) => x.precisaBase)) {
         espera.remove();
         const b = await perguntarBase(); if (b === null) return null;
         minSeq = b;
-        document.body.appendChild(espera);
+        espera.abrir();
         j = await Sync.chamar('numerar', { itens: itens().map((x) => Object.assign(x, { semBase: false })) });
       }
     } catch (e) {
@@ -2426,21 +2495,29 @@
     return resp.arrayBuffer();
   }
 
-  async function gerarDocx(n, r) {
+  async function gerarDocx(n, r, jp) {
+    const prog = jp || { set() {} };
     const reg = n.status === 'emitida' && n.registroSnapshot ? n.registroSnapshot : r;
+    const sels = n.fotos || [];
+    // fotos: do aparelho ou do Drive, várias ao mesmo tempo (0–70% da barra)
+    const regs = await Promise.all(sels.map((sel) => DB.get('fotos', sel.fotoId)));
+    const lista = sels.map((sel, i) => regs[i] || { id: sel.fotoId });
+    prog.set(sels.length ? 'Carregando as fotos…' : 'Montando o documento…', 0);
+    const { blobs } = await obterFotos(lista, (k, t, bx) => prog.set('Carregando as fotos: ' + k + ' de ' + t + (bx ? ' · ' + bx + ' baixada(s) do Drive' : '') + '…', k / t * 0.7));
     const fotosDoc = [];
     const faltando = [];
-    for (const sel of n.fotos || []) {
-      const f = await DB.get('fotos', sel.fotoId);
-      let blob = await DB.blobGet(sel.fotoId);
-      if (!blob && f && Sync.habilitado() && navigator.onLine) { try { blob = await Sync.baixarFoto(f); } catch (e) { /* */ } }
-      if (!blob && (!f || f.excluido)) continue; // foto excluida: fica fora do documento
-      if (!blob) { faltando.push(sel); continue; }
+    sels.forEach((sel, i) => {
+      const f = regs[i], blob = blobs.get(sel.fotoId);
+      if (!blob && (!f || f.excluido)) return; // foto excluida: fica fora do documento
+      if (!blob) { faltando.push(sel); return; }
       fotosDoc.push({ legenda: sel.legenda || '', imagem: blob });
-    }
+    });
     if (faltando.length) throw new Error(faltando.length + ' foto(s) ainda não estão neste aparelho. Conecte-se à internet para baixá-las (ou peça a quem registrou para sincronizar).');
+    prog.set('Montando o documento…', 0.7);
+    await pausaTela();
     const dados = DocGen.montarDados(reg, Object.assign({}, n, { fotosDoc }));
-    const blob = await DocGen.gerar(await modeloDocx(reg.tipo), dados, { type: 'blob' });
+    prog.set(null, 0.75);
+    const blob = await DocGen.gerar(await modeloDocx(reg.tipo), dados, { type: 'blob', aoProgresso: jp ? progGravar(jp, 0.75, 1) : undefined });
     const nome = nomeArquivo(n.ordinal + 'ª NOTIFICAÇÃO - ' + (reg.apelido || ROTULO[reg.tipo])) + '.docx';
     return { blob, nome };
   }
@@ -2525,8 +2602,20 @@
   }
   let filaMem = null; // última leitura (também guardada no aparelho em kv 'fila_cache')
   let filaLendo = null;
+  // LGPD: só ficam as "outras colunas" que o administrador liberou (servidor antigo manda todas → nenhuma fica)
+  function limparExtrasFila(d) {
+    if (!d || !Array.isArray(d.linhas)) return d;
+    const ok = new Set((d.extrasPermitidas || []).map((c) => semAc(c)));
+    for (const l of d.linhas) l.extras = (l.extras || []).filter(([k]) => ok.has(semAc(k)));
+    return d;
+  }
   async function filaDoCache() {
-    if (!filaMem) filaMem = await DB.kvGet('fila_cache', null);
+    if (!filaMem) {
+      const bruto = await DB.kvGet('fila_cache', null);
+      const antes = bruto ? JSON.stringify(bruto.linhas || []) : '';
+      filaMem = limparExtrasFila(bruto);
+      if (filaMem && JSON.stringify(filaMem.linhas || []) !== antes) await DB.kvSet('fila_cache', filaMem); // apaga do aparelho o que não pode ficar
+    }
     return filaMem;
   }
   /** Lê a fila no servidor. Devolve { dados, erro }: se falhar, "dados" é a última leitura salva. */
@@ -2536,7 +2625,9 @@
       if (!navigator.onLine) return { dados: await filaDoCache(), erro: 'Sem internet' };
       try {
         const j = await Sync.chamar('fila');
-        const d = { configurada: !!j.configurada, titulo: j.titulo, aba: j.aba, colunas: j.colunas || [], linhas: j.linhas || [], lidoEm: j.lidoEm || new Date().toISOString(), contaServidor: j.contaServidor };
+        const d = { configurada: !!j.configurada, titulo: j.titulo, aba: j.aba, colunas: j.colunas || [], linhas: j.linhas || [], lidoEm: j.lidoEm || new Date().toISOString(), contaServidor: j.contaServidor,
+          outrasColunas: j.outrasColunas || null, extrasPermitidas: j.extrasPermitidas || [] };
+        limparExtrasFila(d);
         filaMem = d;
         await DB.kvSet('fila_cache', d);
         return { dados: d, erro: null };
@@ -3032,12 +3123,11 @@
       return gerarDireto(compartilhar);
     }
     async function gerarDireto(compartilhar) {
-      const st = h('div', {}, h('span', { class: 'carregando' }), ' Gerando documento…');
-      const fundo = h('div', { class: 'modal-fundo' }, h('div', { class: 'modal' }, st));
-      document.body.appendChild(fundo);
+      const jp = janelaProgresso('Preparando…', (original.status === 'emitida' ? '' : 'Rascunho · ') + (original.ordinal ? original.ordinal + 'ª ' : '') + 'Notificação extrajudicial');
+      const fundo = { remove: () => jp.fechar() };
       try {
         const alvo = original.status === 'emitida' ? original : Object.assign({}, original, { numero: numeroRascunho(original, r) });
-        const { blob, nome } = await gerarDocx(alvo, r);
+        const { blob, nome } = await gerarDocx(alvo, r, jp);
         if (original.status !== 'emitida' && !original.numero && seqAuto) setTimeout(() => toast('Rascunho: o número fica “___” até a notificação ser emitida.'), 2700);
         fundo.remove();
         if (compartilhar) await compartilharBlob(blob, nome, nome);
@@ -3257,11 +3347,14 @@
       if (!ro) await salvar(true);
       const atual = await DB.get('medicoes', id);
       if (!contarSituacao(atual).total) { toast('Inclua ao menos um item com descrição.', true); return; }
-      const fundo = h('div', { class: 'modal-fundo' }, h('div', { class: 'modal' }, h('span', { class: 'carregando' }), ' Gerando relatório…'));
-      document.body.appendChild(fundo);
+      const jp = janelaProgresso('Montando o documento…', 'Relatório de medição nº ' + atual.numero);
+      jp.set(null, 0.05);
+      const fundo = { remove: () => jp.fechar() };
       try {
+        await pausaTela();
         const dados = DocGen.montarDadosMedicao(atual.registroSnapshot || r, atual, atual.fiscais || []);
-        const blob = await DocGen.gerar(await modeloDocx('medicao'), dados, { type: 'blob' });
+        jp.set(null, 0.3);
+        const blob = await DocGen.gerar(await modeloDocx('medicao'), dados, { type: 'blob', aoProgresso: progGravar(jp, 0.3, 1) });
         const nome = nomeArquivo('RELATÓRIO DE MEDIÇÃO ' + atual.numero + ' - ' + r.apelido) + '.docx';
         fundo.remove();
         if (compartilhar) await compartilharBlob(blob, nome, nome); else baixarBlob(blob, nome);
@@ -3450,7 +3543,7 @@
       for (const f of fotosSemDrive) if (!(await DB.blobGet(f.id))) semArquivo++;
       const log = Sync.lerLog().slice().reverse();
       const resumo = {
-        app: '3.14', servidor: Sync.versaoServidor || '?', usuario: (u || {}).email, perfil: perfil(), estado: Sync.estado, erro: Sync.erro || '',
+        app: '3.15', servidor: Sync.versaoServidor || '?', usuario: (u || {}).email, perfil: perfil(), estado: Sync.estado, erro: Sync.erro || '',
         online: navigator.onLine, ultimaSync: await DB.kvGet('ultimaSync', null), cursor: await DB.kvGet('servidorDesde', 0),
         pendentes: pendPor, fotosAguardandoEnvio: fotosSemDrive.length - semArquivo, fotosDeOutroAparelhoSemEnvio: semArquivo,
         aparelho: navigator.userAgent, log,
@@ -3486,9 +3579,9 @@
     cards.push(h('div', { class: 'card' }, h('h2', {}, 'Aparência e câmera'),
       campoBloco('Tema', seg([['auto', 'Automático'], ['claro', 'Claro'], ['escuro', 'Escuro']], temaAtual, aplicarTema)),
       campoBloco('Câmera nas visitas', seg([['app', 'Câmera do app'], ['aparelho', 'Câmera do celular']], prefCamera(), (v) => { try { localStorage.setItem('camera_pref', v); } catch (e) { /* */ } }),
-        'Câmera do app: fica aberta para várias fotos seguidas, com troca de lente (grande angular quando o celular permite), zoom, toque para focar e flash. Câmera do celular: todos os recursos do aparelho, uma foto por vez.'),
-      campoBloco('Qualidade das fotos', seg([['normal', 'Normal'], ['alta', 'Alta qualidade']], Foto.qualidadeAtual(), (v) => { try { localStorage.setItem('foto_qualidade', v); } catch (e) { /* */ } }),
-        'Normal: até 2000 px (cerca de 0,4 a 1 MB por foto). Alta qualidade: até 3000 px e menos compressão (cerca de 2 a 3 vezes maior) — mais detalhe nas fotos e nos relatórios, mas o envio ao Drive demora mais e os arquivos do Word ficam maiores. Vale para as próximas fotos deste aparelho.'),
+        'Câmera do app: fica aberta para várias fotos seguidas, com troca de lente (grande angular quando o celular permite), zoom, toque para focar e flash. Câmera do celular: abre a câmera do aparelho, uma foto por vez — em muitos Android ela funciona num modo simplificado (sem HDR e sem a nitidez extra), então a foto pode sair pior que na câmera do app. Para usar o 0,6x quando o app não consegue, fotografe com a câmera normal do celular e use o botão “🖼️ Galeria” na visita.'),
+      campoBloco('Qualidade das fotos', seg([['normal', 'Normal'], ['alta', 'Alta'], ['maxima', 'Máxima']], Foto.qualidadeAtual(), (v) => { try { localStorage.setItem('foto_qualidade', v); } catch (e) { /* */ } }),
+        'Normal: até 2000 px (cerca de 0,4 a 1 MB por foto). Alta: até 3000 px e menos compressão (2 a 3 vezes maior). Máxima: a foto fica no tamanho original da câmera (até 16 megapixels), com o mínimo de compressão e as cores originais (cerca de 3 a 6 MB por foto) — o envio ao Drive demora mais. O relatório continua leve: as fotos são ajustadas ao tamanho da página. Vale para as próximas fotos deste aparelho.'),
       h('label', { class: 'linha sub' }, h('input', { type: 'checkbox', checked: rapida ? 'checked' : null, onchange: (e) => { try { localStorage.setItem('cam_rapida', e.target.checked ? '1' : '0'); } catch (er) { /* */ } } }),
         'Captura rápida (usa o quadro do vídeo, resolução menor)'),
       h('div', { class: 'acoes' }, h('button', { class: 'btn peq', onclick: testarCameras }, '🔍 Testar câmeras deste celular')),
@@ -3563,6 +3656,22 @@
       const previa = (d) => h('div', {},
         h('div', { class: 'ok-box', style: { margin: '8px 0' } }, '✔ Lendo “' + d.titulo + '” › ' + d.aba + ': ' + d.linhas.length + ' linha(s). Colunas: ' + d.colunas.filter(Boolean).join(', ')),
         d.linhas.slice(0, 3).map((l) => h('div', { class: 'sub' }, '• ' + [l.convenio, l.municipio, l.solicitacao, l.situacao].filter(Boolean).join(' · '))));
+      // LGPD: o administrador escolhe se alguma coluna além das usadas pelo app pode ser lida
+      const colunasFila = (d) => {
+        const caixa = h('div', { style: { margin: '12px 0' } }, h('b', {}, 'Outras colunas da planilha'),
+          h('p', { class: 'sub', style: { margin: '4px 0 8px' } }, 'Por proteção de dados (LGPD), o app só traz da planilha Convênio, Protocolo, Município, Escola, Solicitação, Status e Situação. Marque outra coluna apenas se a equipe precisar dela e se ela não tiver dados pessoais (nome de pessoas, CPF, telefone, e-mail).'));
+        if (!Array.isArray(d.outrasColunas)) { ap(caixa, h('div', { class: 'aviso' }, 'Atualize o servidor (Code.gs, versão 3.15) para escolher colunas. Até lá, nenhuma coluna a mais é mostrada.')); return caixa; }
+        if (!d.outrasColunas.length) { ap(caixa, h('div', { class: 'sub' }, 'A planilha não tem outras colunas.')); return caixa; }
+        const marc = new Set(d.extrasPermitidas || []);
+        ap(caixa, d.outrasColunas.map((c) => h('label', { class: 'linha', style: { gap: '8px', margin: '4px 0' } },
+          h('input', { type: 'checkbox', checked: marc.has(c) ? 'checked' : null, onchange: (e) => { if (e.target.checked) marc.add(c); else marc.delete(c); } }), c)),
+          h('button', { class: 'btn peq', style: { marginTop: '6px' }, onclick: async (e) => {
+            e.target.disabled = true;
+            try { const j = await Sync.chamar('filaColunas', { colunas: [...marc] }); filaMem = null; await DB.kvSet('fila_cache', null); toast(marc.size ? 'Colunas liberadas: ' + [...marc].join(', ') : 'Nenhuma coluna a mais será lida'); desenharFila(Object.assign({}, j, { contaServidor: d.contaServidor }), null); }
+            catch (err) { e.target.disabled = false; toast(/desconhecida/i.test(err.message) ? 'Atualize o servidor (Code.gs) para escolher colunas.' : err.message, true); }
+          } }, 'Salvar colunas'));
+        return caixa;
+      };
       const desenharFila = (d, msgErro) => {
         const conta = d && d.contaServidor;
         rc(box,
@@ -3573,6 +3682,7 @@
             campo('STATUS que significam “já atendido pela Fiscalização” (um por linha)', inputArea(at, 'v', { rows: 2, placeholder: 'ENCAMINHADO - CCP' }),
               'Processos com esses status ficam ocultos e só aparecem em “Ver histórico de atendimento”. Maiúsculas, acentos e traços não importam.'),
             h('button', { class: 'btn peq', onclick: async () => { await salvarConfig((o) => { o.fila_atendidos = String(at.v || '').split(/\n/).map((x) => x.trim()).filter(Boolean).join('\n'); }); toast('Status de atendido salvos'); } }, 'Salvar status de atendido')) : null,
+          d && d.configurada ? colunasFila(d) : null,
           passos(conta),
           campo('Endereço (link) da planilha da fila', inputTxt(f, 'url', { placeholder: 'https://docs.google.com/spreadsheets/d/…' })),
           campo('Nome da aba (opcional)', inputTxt(f, 'aba', { placeholder: 'ex.: CONVÊNIOS — em branco usa a primeira aba' })),
@@ -3688,7 +3798,7 @@
     // a partir de "Aparência e câmera", cada seção vira uma lista suspensa (fechada; lembra as abertas)
     const iniSecoes = cards.findIndex((c) => c.querySelector && (c.querySelector(':scope > h2') || {}).textContent === 'Aparência e câmera');
     if (iniSecoes >= 0) for (let i = iniSecoes; i < cards.length; i++) cards[i] = secaoRecolhivel(cards[i]);
-    cards.push(h('p', { class: 'dica', style: { textAlign: 'center' } }, 'Fiscalização de Obras · v3.14 · dados salvos no aparelho' + (Sync.habilitado() ? ' e no Google Drive do administrador' : '') + ' · ', h('a', { href: 'privacidade.html' }, 'Política de privacidade')));
+    cards.push(h('p', { class: 'dica', style: { textAlign: 'center' } }, 'Fiscalização de Obras · v3.15 · dados salvos no aparelho' + (Sync.habilitado() ? ' e no Google Drive do administrador' : '') + ' · ', h('a', { href: 'privacidade.html' }, 'Política de privacidade')));
     rcT(tk, ...cards);
   }
 
@@ -3821,14 +3931,24 @@
 
   /* ---------------- backup ---------------- */
   async function exportarBackup() {
-    const zip = new JSZip();
-    const dados = {};
-    for (const e of ['registros', 'pessoas', 'visitas', 'notificacoes', 'fotos', 'config', 'medicoes']) dados[e] = await DB.all(e);
-    zip.file('dados.json', JSON.stringify({ versao: 1, exportadoEm: new Date().toISOString(), dados }, null, 1));
-    for (const f of dados.fotos) { const b = await DB.blobGet(f.id); if (b) zip.file('fotos/' + f.id + '.jpg', b); }
-    for (const t of ['contrato', 'convenio', 'relatorio', 'sanadas', 'irregularidades']) { const m = await DB.arquivoGet('modelo_' + t); if (m && m.blob) zip.file('modelos/modelo_' + t + '.docx', m.blob); }
-    const blob = await zip.generateAsync({ type: 'blob' });
-    baixarBlob(blob, 'backup-notificacoes-' + X.hojeISO() + '.zip');
+    const jp = janelaProgresso('Lendo os dados do aparelho…', 'Exportando backup');
+    jp.set(null, 0);
+    try {
+      const zip = new JSZip();
+      const dados = {};
+      for (const e of ['registros', 'pessoas', 'visitas', 'notificacoes', 'fotos', 'config', 'medicoes']) dados[e] = await DB.all(e);
+      zip.file('dados.json', JSON.stringify({ versao: 1, exportadoEm: new Date().toISOString(), dados }, null, 1));
+      let k = 0;
+      for (const f of dados.fotos) {
+        const b = await DB.blobGet(f.id); if (b) zip.file('fotos/' + f.id + '.jpg', b);
+        if (++k % 10 === 0 || k === dados.fotos.length) jp.set('Juntando as fotos: ' + k + ' de ' + dados.fotos.length + '…', k / dados.fotos.length * 0.4);
+      }
+      for (const t of ['contrato', 'convenio', 'relatorio', 'sanadas', 'irregularidades', 'medicao']) { const m = await DB.arquivoGet('modelo_' + t); if (m && m.blob) zip.file('modelos/modelo_' + t + '.docx', m.blob); }
+      jp.set('Gravando o arquivo…', 0.4);
+      const blob = await zip.generateAsync({ type: 'blob' }, (m) => jp.set('Gravando o arquivo…', 0.4 + m.percent / 100 * 0.6));
+      jp.fechar();
+      baixarBlob(blob, 'backup-notificacoes-' + X.hojeISO() + '.zip');
+    } catch (e) { jp.fechar(); console.error(e); toast('Falha ao exportar: ' + e.message, true); }
   }
   async function importarBackup() {
     const inp = h('input', { type: 'file', accept: '.zip' });
@@ -3845,7 +3965,9 @@
           for (const o of j.dados[e]) {
             const local = await DB.get(e, o.id);
             if (local && (local.excluido || String(local.atualizadoEm || '') >= String(o.atualizadoEm || ''))) { ignorados++; continue; }
-            delete o._campos; delete o._base; o._pendente = true; await DB.put(e, o);
+            delete o._campos; delete o._base; o._pendente = true;
+            delete o.n_representante_cpf; if (o.registroSnapshot && typeof o.registroSnapshot === 'object') delete o.registroSnapshot.n_representante_cpf; // LGPD
+            await DB.put(e, o);
           }
         }
         if (ignorados) toast(ignorados + ' registro(s) do backup ignorados: o aparelho já tinha versão mais nova.');
@@ -3871,7 +3993,7 @@
     await DB.salvar('registros', {
       id: 'ex-contrato-daury', tipo: 'contrato', apelido: 'CEI DAURY RIVA',
       n_cnpj: '09.427.335/0001-65', n_nome: 'HFC CONSTRUTORA E ENGENHARIA LTDA', n_nome_texto: 'HFC CONSTRUTORA E ENGENHARIA LTDA',
-      n_representante: 'LUCAS RECH CADAMURO', n_representante_cpf: '023.832.531-89', n_logradouro: 'RUA DAS PAINEIRAS, Nº 305N', n_cep: '78.450-000',
+      n_representante: 'LUCAS RECH CADAMURO', n_logradouro: 'RUA DAS PAINEIRAS, Nº 305N', n_cep: '78.450-000',
       n_bairro: 'DISTRITO INDUSTRIAL', n_municipio: 'NOVA MUTUM/MT', n_telefone: '(65) 3308-3050',
       objeto: 'CONTRATAÇÃO INTEGRADA DE EMPRESA ESPECIALIZADA EM ENGENHARIA E ARQUITETURA PARA ELABORAÇÃO DE SOLUÇÃO COMPLETA INCLUINDO O DESENVOLVIMENTO E EXECUÇÃO COMPLETA DOS PROJETOS BÁSICOS, COMPLEMENTARES E EXECUTIVOS PARA CONSTRUÇÃO DA ESCOLA ESTADUAL NOVA BAIRRO SANTA CECÍLIA E DA ESCOLA ESTADUAL NOVA BAIRRO DAURI RIVA, LOCALIZADAS NO MUNICÍPIO DE SINOP-MT.',
       numero: '013/2026', processo: 'SEDUC-PRO-2025/62764', os_numero: '02/2026',
@@ -3899,6 +4021,7 @@
     Sync.usuario = Sync.usuarioLocal();
     await carregarConfig();
     await repararConsistencia();
+    await apagarCpfLocal();
     atualizarChip();
     verificarPrazos();
     setInterval(verificarPrazos, 10 * 60 * 1000);

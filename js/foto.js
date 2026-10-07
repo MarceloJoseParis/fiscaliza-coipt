@@ -125,8 +125,21 @@
    * @returns {Promise<{blob, largura, altura, miniatura}>}
    */
   // qualidade das fotos (preferência de cada aparelho, em Ajustes › Aparência e câmera)
-  Foto.QUALIDADES = { normal: { maxLado: 2000, qualidade: 0.82 }, alta: { maxLado: 3000, qualidade: 0.9 } };
-  Foto.qualidadeAtual = function () { try { return localStorage.getItem('foto_qualidade') === 'alta' ? 'alta' : 'normal'; } catch (e) { return 'normal'; } };
+  // máxima: resolução original (até 16 megapixels — limite seguro de memória do iPhone para desenhar a foto),
+  // compressão mínima e cores originais (P3, as cores "vivas" dos celulares novos)
+  Foto.QUALIDADES = {
+    normal: { maxLado: 2000, qualidade: 0.82 },
+    alta: { maxLado: 3000, qualidade: 0.9 },
+    maxima: { maxLado: 0, maxPixels: 16000000, qualidade: 0.95, p3: true },
+  };
+  Foto.qualidadeAtual = function () {
+    try { const q = localStorage.getItem('foto_qualidade'); return Foto.QUALIDADES[q] ? q : 'normal'; } catch (e) { return 'normal'; }
+  };
+  // contexto de desenho nas cores P3 quando o navegador permite (senão, o comum)
+  function contexto2d(cv, p3) {
+    if (p3) { try { const g = cv.getContext('2d', { colorSpace: 'display-p3' }); if (g) return g; } catch (e) { /* navegador antigo */ } }
+    return cv.getContext('2d');
+  }
   Foto.processar = async function (arquivo, opcoes) {
     opcoes = Object.assign({}, Foto.QUALIDADES[Foto.qualidadeAtual()], opcoes || {});
     const img = await carregarImagem(arquivo);
@@ -135,13 +148,14 @@
     let giro = 0;
     const ang = opcoes.angulo;
     if ((ang === 90 || ang === 270) && ih > iw) giro = ang === 90 ? -90 : 90;
-    const max = opcoes.maxLado || 2000;
-    const esc = Math.min(1, max / Math.max(iw, ih));
-    const dw = Math.round(iw * esc), dh = Math.round(ih * esc);
+    const esc = opcoes.maxLado ? Math.min(1, opcoes.maxLado / Math.max(iw, ih))
+      : Math.min(1, Math.sqrt((opcoes.maxPixels || 16000000) / Math.max(1, iw * ih)));
+    const arred = opcoes.maxLado ? Math.round : Math.floor; // limite de megapixels: nunca passa do limite por arredondamento
+    const dw = arred(iw * esc), dh = arred(ih * esc);
     const w = giro ? dh : dw, h = giro ? dw : dh;
     const cv = document.createElement('canvas');
     cv.width = w; cv.height = h;
-    const g = cv.getContext('2d');
+    const g = contexto2d(cv, opcoes.p3);
     // redução com o melhor filtro do navegador (menos serrilhado e mais nitidez nos detalhes finos)
     g.imageSmoothingEnabled = true;
     try { g.imageSmoothingQuality = 'high'; } catch (e) { /* navegador antigo */ }

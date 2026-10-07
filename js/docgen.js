@@ -550,7 +550,7 @@
     const prazo = Number(notif.prazo_dias || 3);
     const valor = X.parseMoeda(reg.valor);
     const valorOs = X.parseMoeda(reg.valor_os);
-    const rep = (reg.n_representante || '') + (reg.n_representante_cpf ? ' – CPF: ' + reg.n_representante_cpf : '');
+    const rep = reg.n_representante || ''; // CPF do representante não vai mais ao documento (LGPD — minimização)
     const fotos = (notif.fotosDoc || []).map((f, i) => ({ n: i + 1, legenda: f.legenda || '', imagem: f.imagem }));
     return {
       ordinal: notif.ordinal,

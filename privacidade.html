@@ -3,46 +3,86 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Política de Privacidade — Notificações Extrajudiciais</title>
+<title>Política de Privacidade — Fiscalização de Obras</title>
 <style>
-  body { font: 16px/1.6 system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif; color: #1b2430; background: #f4f6f8; margin: 0; }
+  :root { --txt: #1b2430; --txt2: #5b6472; --bg: #f4f6f8; --sup: #fff; --pri: #1f5fae; --linha: #e3e7ee; --dest: #fff6d6; }
+  @media (prefers-color-scheme: dark) { :root { --txt: #e7e9ee; --txt2: #a3abb8; --bg: #0e1014; --sup: #171a20; --pri: #7fb0ff; --linha: #2a2f38; --dest: #3a3214; } }
+  body { font: 16px/1.6 system-ui, -apple-system, "Segoe UI", Roboto, Arial, sans-serif; color: var(--txt); background: var(--bg); margin: 0; }
   main { max-width: 760px; margin: 0 auto; padding: 24px 16px 48px; }
-  .card { background: #fff; border-radius: 12px; padding: 20px 22px; box-shadow: 0 1px 3px rgba(16,24,40,.08); }
-  h1 { color: #1f5fae; font-size: 24px; margin-top: 0; }
-  h2 { font-size: 17px; margin: 22px 0 6px; }
-  a { color: #1f5fae; }
+  .card { background: var(--sup); border-radius: 12px; padding: 20px 22px; box-shadow: 0 1px 3px rgba(16,24,40,.08); }
+  h1 { color: var(--pri); font-size: 24px; margin-top: 0; line-height: 1.25; }
+  h2 { font-size: 17px; margin: 26px 0 6px; }
+  a { color: var(--pri); }
+  ul { padding-left: 22px; margin: 6px 0; }
+  li { margin: 4px 0; }
+  .sub { color: var(--txt2); font-size: 14px; }
+  table { width: 100%; border-collapse: collapse; font-size: 14.5px; margin: 8px 0; }
+  th, td { text-align: left; vertical-align: top; padding: 8px 8px; border-bottom: 1px solid var(--linha); }
+  th { font-weight: 600; }
+  @media (max-width: 560px) { table, tbody, tr, td, th { display: block; } thead { display: none; } tr { border-bottom: 1px solid var(--linha); padding: 6px 0; } td { border: 0; padding: 2px 0; } td:first-child { font-weight: 600; } }
 </style>
 </head>
 <body>
 <main><div class="card">
-<h1>Política de Privacidade</h1>
-<p><b>Aplicativo:</b> Notificações Extrajudiciais (uso interno da equipe de fiscalização de obras).<br>
-<b>Última atualização:</b> setembro de 2026.</p>
+<h1>Política de Privacidade<br><span style="font-size:17px;font-weight:500">Fiscalização de Obras — Contratos e Convênios</span></h1>
+<p class="sub">Aplicativo de uso interno da equipe de fiscalização de obras da Secretaria de Estado de Educação de Mato Grosso (SEDUC-MT).<br>
+Última atualização: outubro de 2026.</p>
 
-<h2>1. Finalidade</h2>
-<p>O aplicativo serve para registrar vistorias de obras (fotos, data, hora e localização) e elaborar notificações extrajudiciais relativas a contratos e convênios. O uso é restrito a pessoas autorizadas pelo administrador.</p>
+<h2>1. Quem é responsável pelos dados</h2>
+<p>A <b>controladora</b> dos dados pessoais é a <b>SEDUC-MT</b>, por meio da equipe de fiscalização de obras que utiliza o aplicativo. O Google (login, Planilhas, Drive e Apps Script) e o GitHub (hospedagem dos arquivos do site) atuam como fornecedores de infraestrutura.</p>
 
-<h2>2. Dados coletados</h2>
+<h2>2. Para que os dados são usados e com qual base legal</h2>
+<p>O aplicativo serve para fiscalizar a execução de obras de contratos e convênios: registrar vistorias (fotos, data, hora e local), acompanhar irregularidades, elaborar relatórios, medições e notificações extrajudiciais e consultar a fila de atendimento dos processos.</p>
+<p>Esse tratamento é feito pelo poder público para cumprir obrigações legais de fiscalização (Lei nº 14.133/2021, art. 117; Lei nº 8.666/1993, art. 67, para os contratos regidos por ela; e normas estaduais de convênios) e para executar políticas públicas, com base na <b>LGPD (Lei nº 13.709/2018), art. 7º, incisos II e III, e art. 23</b>. Por isso, não depende de consentimento. Os dados não são usados para nenhuma outra finalidade.</p>
+
+<h2>3. Quais dados são tratados</h2>
+<table>
+  <thead><tr><th style="width:32%">De quem</th><th>Quais dados</th></tr></thead>
+  <tbody>
+  <tr><td>Usuários do aplicativo (servidores da equipe)</td><td>Nome e e-mail da conta Google; perfil de acesso (administrador, fiscal ou consulta); autoria dos registros (quem criou, alterou, verificou, emitiu ou enviou); data e hora do último acesso e se foi pelo celular ou pelo computador.</td></tr>
+  <tr><td>Assinantes dos documentos (fiscais e coordenadores)</td><td>Nome, cargo, registro profissional (ex.: CREA) e lotação, como constam nos documentos oficiais.</td></tr>
+  <tr><td>Contratadas e convenentes</td><td>Razão social, CNPJ, endereço, telefone institucional e nome do representante legal. <b>O CPF do representante não é coletado.</b></td></tr>
+  <tr><td>Vistorias</td><td>Fotos das obras com data, hora e coordenadas GPS; descrições, irregularidades e verificações; medições.</td></tr>
+  <tr><td>Fila de atendimento</td><td>Somente as colunas Convênio, Protocolo, Município, Escola, Solicitação, Status e Situação de uma planilha da SEDUC-MT, lida sem nenhuma alteração. Outras colunas só são lidas se o administrador liberar, e apenas se não tiverem dados pessoais.</td></tr>
+  </tbody>
+</table>
+<p><b>O aplicativo não coleta:</b> senha, foto do perfil, contatos, e-mails, agenda ou arquivos pessoais da conta Google; não usa cookies de publicidade nem ferramentas de rastreamento.</p>
+
+<h2>4. Onde os dados ficam</h2>
 <ul>
-  <li><b>Login Google:</b> nome, e-mail e foto do perfil, usados apenas para identificar o usuário e verificar se ele tem permissão de acesso. O aplicativo não recebe a senha nem acessa Gmail, contatos, agenda ou arquivos pessoais.</li>
-  <li><b>Registros de trabalho:</b> fotos das obras, coordenadas GPS e horário das fotos, descrições das irregularidades, dados cadastrais de contratos e convênios e as notificações elaboradas.</li>
-  <li><b>Autoria:</b> o e-mail de quem criou ou alterou cada registro, para fins de histórico.</li>
+  <li><b>No aparelho</b> de cada usuário (armazenamento do navegador), para funcionar sem internet.</li>
+  <li><b>Em uma Planilha Google e em uma pasta do Google Drive</b> da conta administradora do aplicativo, quando há internet.</li>
+  <li>O <b>GitHub</b> guarda apenas os arquivos do programa (o site), sem nenhum dado das obras ou das pessoas.</li>
+</ul>
+<p>Os servidores do Google e do GitHub podem estar fora do Brasil; nesse caso, a proteção segue os termos e as políticas de privacidade desses fornecedores. Ao acessar o site, o GitHub e o Google podem registrar dados técnicos de conexão (como o endereço IP), conforme as políticas próprias deles.</p>
+
+<h2>5. Com quem os dados são compartilhados</h2>
+<p>Os dados são vistos apenas pelos usuários autorizados do grupo, conforme o perfil de cada um. Os documentos gerados (relatórios, medições e notificações) são encaminhados pelos próprios servidores às partes interessadas e aos processos administrativos, conforme suas atribuições. Os dados não são vendidos, cedidos nem usados para publicidade. Informações de interesse público podem ser divulgadas nos termos da Lei de Acesso à Informação (Lei nº 12.527/2011).</p>
+
+<h2>6. Câmera e localização</h2>
+<p>A câmera e a localização são usadas somente quando o usuário registra uma foto de vistoria, para comprovar a data, a hora e o local da constatação. <b>Em escolas, evite fotografar rostos de alunos</b>; se acontecer, a foto deve ser excluída ou não usada nos documentos (LGPD, art. 14).</p>
+
+<h2>7. Por quanto tempo os dados são guardados</h2>
+<p>Os registros são mantidos enquanto forem necessários para o acompanhamento dos contratos e convênios, para a prestação de contas e pelos prazos de guarda de documentos da administração pública (LGPD, art. 16). Do acesso dos usuários, guarda-se apenas o <b>último</b> acesso, que é substituído a cada novo uso. Fotos excluídas no aplicativo vão para a lixeira do Google Drive.</p>
+
+<h2>8. Segurança</h2>
+<ul>
+  <li>Entrada somente com conta Google, e apenas para e-mails cadastrados pelo administrador; cada perfil vê e faz só o que lhe é permitido.</li>
+  <li>Comunicação sempre criptografada (HTTPS); a planilha e a pasta do Drive não são públicas.</li>
+  <li>Recomendações à equipe: mantenha o celular e o computador com bloqueio de tela; use “Sair” em computadores compartilhados; guarde os arquivos de backup (.zip) em local de acesso restrito.</li>
 </ul>
 
-<h2>3. Onde os dados ficam</h2>
-<p>Os dados ficam no próprio aparelho (armazenamento do navegador) e, quando há internet, são copiados para uma Planilha Google e uma pasta do Google Drive pertencentes à conta administradora do aplicativo. Não há servidores de terceiros além dos serviços do Google.</p>
+<h2>9. Seus direitos</h2>
+<p>Qualquer pessoa cujos dados estejam no aplicativo pode pedir, nos termos do art. 18 da LGPD: confirmação de que há tratamento, acesso aos dados, correção de dados incompletos ou desatualizados e informações sobre com quem foram compartilhados. A eliminação pode não ser possível quando os dados forem necessários para cumprir obrigação legal ou para a prestação de contas.</p>
 
-<h2>4. Compartilhamento</h2>
-<p>Os dados são visíveis somente para os usuários autorizados do grupo, conforme o perfil de cada um (administrador, fiscal ou consulta). Não são vendidos, cedidos ou usados para publicidade. Os documentos gerados são encaminhados pelos próprios usuários às partes notificadas, conforme suas atribuições.</p>
+<h2>10. Contato</h2>
+<ul>
+  <li>Administrador do aplicativo: <a href="mailto:snp.coipt@edu.mt.gov.br">snp.coipt@edu.mt.gov.br</a></li>
+  <li>Canal do encarregado pelo tratamento de dados pessoais da DRE-SNP (art. 41 da LGPD): <a href="mailto:marcelo.paris@edu.mt.gov.br">marcelo.paris@edu.mt.gov.br</a></li>
+</ul>
 
-<h2>5. Localização e câmera</h2>
-<p>A câmera e a localização são usadas somente quando o usuário registra uma foto de vistoria, para comprovar data, hora e local da constatação.</p>
-
-<h2>6. Retenção e exclusão</h2>
-<p>Os registros são mantidos enquanto necessários para o acompanhamento dos contratos e convênios e para fins de prestação de contas. O usuário pode sair da conta a qualquer momento em <i>Ajustes › Sair</i>; o administrador pode remover o acesso de qualquer usuário e excluir registros.</p>
-
-<h2>7. Contato</h2>
-<p>Dúvidas ou solicitações sobre dados pessoais devem ser dirigidas ao administrador do aplicativo, pelo e-mail de suporte exibido na tela de login do Google.</p>
+<h2>11. Atualizações desta política</h2>
+<p>Esta política pode ser atualizada quando o aplicativo mudar. A data da última atualização aparece no início da página.</p>
 
 <p style="margin-top:28px"><a href="./">← Voltar ao aplicativo</a></p>
 </div></main>

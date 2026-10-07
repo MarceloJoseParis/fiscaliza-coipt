@@ -43,7 +43,7 @@
     opts = opts || {};
     return new Promise(async (resolve, reject) => {
       let stream = null, track = null, cap = {}, wake = null, fechado = false, total = 0, ocupado = false, torch = false;
-      let facing = 'environment', temFrontal = false, zoom = 1, imgCap = null, gravidade = null;
+      let facing = 'environment', temFrontal = false, zoom = 1, imgCap = null, gravidade = null, ajustesFoto; // ajustesFoto: maior resolução de foto da lente aberta
       /* Lentes traseiras: no iPhone a grande angular vem como zoom 0,5 da câmera principal.
          No Android ela costuma ser OUTRA câmera (outro deviceId) — então o 0,5 troca de câmera. */
       const lentes = { principal: null, extras: [], atual: null, naUltra: false, logico: false };
@@ -106,6 +106,7 @@
         await video.play().catch(() => {});
         cap = track.getCapabilities ? track.getCapabilities() : {};
         imgCap = ('ImageCapture' in root) ? new root.ImageCapture(track) : null;
+        ajustesFoto = undefined; // outra lente: descobre de novo a resolução máxima
         btnFlash.style.visibility = cap.torch ? 'visible' : 'hidden';
         torch = false; btnFlash.innerHTML = SVG.flashOff; btnFlash.classList.remove('ativo');
         try { if (cap.focusMode && cap.focusMode.includes('continuous')) await track.applyConstraints({ advanced: [{ focusMode: 'continuous' }] }); } catch (e) { /* */ }
@@ -398,12 +399,30 @@
         const cv = document.createElement('canvas');
         cv.width = w; cv.height = h;
         cv.getContext('2d').drawImage(video, 0, 0, w, h);
-        return new Promise((res) => cv.toBlob(res, 'image/jpeg', 0.92));
+        return new Promise((res) => cv.toBlob(res, 'image/jpeg', 0.95));
       }
+      // "Alta" e "Máxima": pede a foto na maior resolução que a câmera oferece (sem isso, alguns Android
+      // entregam a foto no tamanho do vídeo). Se o celular recusar, tira do jeito padrão.
+      async function ajustesMaximos() {
+        if (ajustesFoto !== undefined) return ajustesFoto;
+        ajustesFoto = null;
+        try {
+          const q = root.Foto && root.Foto.qualidadeAtual ? root.Foto.qualidadeAtual() : 'normal';
+          if (q === 'normal' || !imgCap.getPhotoCapabilities) return null;
+          const pc = await Promise.race([imgCap.getPhotoCapabilities(), new Promise((_, rj) => setTimeout(() => rj(new Error('tempo')), 1500))]);
+          if (pc && pc.imageWidth && pc.imageWidth.max && pc.imageHeight && pc.imageHeight.max) ajustesFoto = { imageWidth: pc.imageWidth.max, imageHeight: pc.imageHeight.max };
+        } catch (e) { ajustesFoto = null; }
+        return ajustesFoto;
+      }
+      const comPrazo = (pr, ms) => Promise.race([pr, new Promise((_, rj) => setTimeout(() => rj(new Error('tempo')), ms))]);
       async function capturar() {
         if (imgCap && ls.get('cam_rapida') !== '1') {
+          const aj = await ajustesMaximos();
+          if (aj) {
+            try { const b = await comPrazo(imgCap.takePhoto(aj), 5000); if (b && b.size) return b; } catch (e) { ajustesFoto = null; /* este celular não aceita: não tenta de novo */ }
+          }
           try {
-            const b = await Promise.race([imgCap.takePhoto(), new Promise((_, rj) => setTimeout(() => rj(new Error('tempo')), 3500))]);
+            const b = await comPrazo(imgCap.takePhoto(), 3500);
             if (b && b.size) return b;
           } catch (e) { /* usa o quadro do video */ }
         }
