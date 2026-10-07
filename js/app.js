@@ -700,7 +700,7 @@
   /* ---------------- ordem das fotos no relatório (arrastar) ---------------- */
   // posição da foto: a ordem escolhida arrastando ou, sem ela, a hora da foto
   const chaveOrdem = (f) => (f.ordem != null && isFinite(+f.ordem) ? +f.ordem : (Date.parse(f.dataHora) || 0));
-  // 3.15: na tela (e no relatório, que segue a tela) a foto mais NOVA vem primeiro. A chave continua crescendo
+  // 3.15: na tela a foto mais NOVA vem primeiro (o relatório usa a ordem inversa: a mais antiga primeiro). A chave continua crescendo
   // do mais antigo para o mais novo; só a apresentação é invertida (aparelhos em versões antigas não se confundem).
   const ordenarFotos = (l) => l.slice().sort((a, b) => chaveOrdem(b) - chaveOrdem(a) || String(b.dataHora).localeCompare(String(a.dataHora)) || String(b.id).localeCompare(String(a.id)));
   /* Grava a nova posição. Normalmente só a foto movida muda (fica entre as vizinhas): pouca coisa para
@@ -1685,7 +1685,7 @@
       if (ordenar) tornarOrdenavel(grade, async (fid, ids) => { if (fid) await moverFoto(fotos, ids, fid); desenharFotos(); });
       rc(boxFotos, h('h2', {}, 'Fotos da visita (' + fotos.length + ')'),
         grade || h('div', { class: 'vazio' }, 'Nenhuma foto ainda.'),
-        ordenar ? h('div', { class: 'dica' }, 'A ordem das fotos aqui é a ordem do relatório. Para mudar, segure a foto e arraste (no computador, clique e arraste).') : null,
+        ordenar ? h('div', { class: 'dica' }, 'No relatório, as fotos saem de baixo para cima: a de baixo é a primeira e a de cima, a última. Para mudar a ordem, segure a foto e arraste (no computador, clique e arraste).') : null,
         fotos.some((f) => f.fora_relatorio) ? h('div', { class: 'dica' }, 'Fotos esmaecidas não entram no relatório.') : null);
       const reverif = (await reverificadasNaVisita(r, id)).reverse(); // mais nova em cima, como as fotos
       const nIrr = irr.length + reverif.length;
@@ -1874,7 +1874,8 @@
   const LADO_RELATORIO = { 2: 1600, 4: 1280, 6: 1024 };
 
   async function dialogoRelatorio(v, r) {
-    const fotos = ordenarFotos((await DB.byIndex('fotos', 'visitaId', v.id)).filter((f) => !f.excluido)); // na ordem escolhida na tela da visita
+    // relatório: de baixo para cima da tela da visita (a foto de baixo, mais antiga, é a primeira; a de cima é a última)
+    const fotos = ordenarFotos((await DB.byIndex('fotos', 'visitaId', v.id)).filter((f) => !f.excluido)).reverse();
     const incl = fotos.filter((f) => !f.fora_relatorio);
     const escolha = { layout: String(await DB.kvGet('layoutRelatorio', '4')), tamanho: String(await DB.kvGet('tamanhoFotosRelatorio', 'reduzidas')) };
     const radio = (grupo, val, txt, desc) => h('label', { class: 'item', style: { display: 'flex', gap: '10px', alignItems: 'center', cursor: 'pointer' } },

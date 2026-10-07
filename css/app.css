@@ -714,3 +714,6 @@ body:has(.cv) .visor-fundo { display: none; }
 @media (pointer: coarse) {
   input:not([type=checkbox]):not([type=radio]):not([type=range]), select, textarea, .med-cols textarea.mono { font-size: 16px; }
 }
+
+/* 0,6 no Android: abre a câmera do celular (contorno indica que sai da câmera do app) */
+.cv-zoom button.cv-z-nativo { box-shadow: inset 0 0 0 1.5px rgba(255,255,255,.55); }

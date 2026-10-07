@@ -47,6 +47,10 @@
       /* Lentes traseiras: no iPhone a grande angular vem como zoom 0,5 da câmera principal.
          No Android ela costuma ser OUTRA câmera (outro deviceId) — então o 0,5 troca de câmera. */
       const lentes = { principal: null, extras: [], atual: null, naUltra: false, logico: false };
+      /* Android sem grande angular liberada para o navegador: o botão 0,6 abre a câmera do próprio celular
+         (que tem a grande angular) só para aquela foto; 1x, 2x, 5x continuam na câmera do app (melhor qualidade). */
+      const ANDROID = /Android/i.test(navigator.userAgent);
+      let noNativo = false;
       const sessao = []; // fotos desta sessao: {url, blob, foto: Promise}
 
       const video = el('video', { autoplay: '', playsinline: '', muted: '', class: 'cv-video' });
@@ -62,8 +66,13 @@
       const inpNativo = el('input', { type: 'file', accept: 'image/*', capture: 'environment', style: { display: 'none' } });
       inpNativo.addEventListener('change', () => {
         const files = inpNativo.files;
-        if (files && files.length) { fechar(true); resolve({ aparelho: files, total }); }
+        const de06 = noNativo;
+        if (!files || !files.length) { voltarDoNativo(); return; }
+        // 0,6x (Android): a foto da câmera do celular entra nesta sessão e a câmera do app volta a abrir
+        if (de06 && opts.modo !== 'unica') { registrarFoto(files[0]); inpNativo.value = ''; voltarDoNativo(); return; }
+        fechar(true); resolve({ aparelho: files, total });
       });
+      inpNativo.addEventListener('cancel', () => voltarDoNativo());
       const btnLentes = el('button', { class: 'cv-ic', 'aria-label': 'Escolher lente', title: 'Escolher lente', html: SVG.lentes, style: { display: 'none' }, onclick: () => menuLentes() });
       const btnFlash = el('button', { class: 'cv-ic', 'aria-label': 'Flash', html: SVG.flashOff, style: { visibility: 'hidden' }, onclick: () => alternarFlash() });
       const btnLente = el('button', { class: 'cv-ic cv-ic-grande', 'aria-label': 'Câmera frontal / traseira', html: SVG.lente, style: { visibility: 'hidden' }, onclick: () => alternarFrontal() });
@@ -321,8 +330,10 @@
         // zoom abaixo de 1 na própria câmera (iPhone e alguns Android): usa o zoom
         lentes.logico = !lentes.naUltra && temZoom && cap.zoom.min < 1;
         const outraLente = !lentes.logico && lentes.extras.length > 0;
-        if (!temZoom && !outraLente && !lentes.naUltra) return;
+        const nativo06 = ANDROID && !lentes.logico && !outraLente && !lentes.naUltra;
+        if (!temZoom && !outraLente && !lentes.naUltra && !nativo06) return;
         const pres = [];
+        if (nativo06) zoomBar.append(el('button', { 'data-nativo': '1', class: 'cv-z-nativo', title: 'Grande angular: abre a câmera do celular para esta foto', 'aria-label': 'Grande angular 0,6x (câmera do celular)', onclick: () => abrirNativo06() }, ',6'));
         if (lentes.logico) pres.push(Math.max(cap.zoom.min, 0.5));
         else if (outraLente || lentes.naUltra) pres.push(0.5);
         pres.push(1);
@@ -338,7 +349,7 @@
         return aplicarZoom(z);
       }
       function marcarZoom() {
-        const botoes = [...zoomBar.children];
+        const botoes = [...zoomBar.children].filter((b) => !b.dataset.nativo);
         let alvo = null;
         if (lentes.naUltra) alvo = botoes[0] || null;
         else botoes.forEach((b) => { if (+b.dataset.z <= zoom + 0.01) alvo = b; });
@@ -441,6 +452,13 @@
           if (!blob) { aviso('Câmera iniciando…'); return; }
           blob.angulo = angulo;
           if (opts.modo === 'unica') { fechar(true); resolve(blob); return; }
+          registrarFoto(blob, angulo);
+        } finally {
+          ocupado = false;
+          btnDisparo.classList.remove('ocupado');
+        }
+      }
+      function registrarFoto(blob, angulo) {
           const item = { blob, url: URL.createObjectURL(blob), angulo, foto: Promise.resolve(opts.aoFoto(blob)) };
           item.foto.then(async (foto) => {
             // troca a miniatura pela foto ja processada (girada e com carimbo)
@@ -449,11 +467,24 @@
           sessao.push(item);
           total++;
           atualizarContador();
-        } finally {
-          ocupado = false;
-          btnDisparo.classList.remove('ocupado');
-        }
       }
+      // 0,6x no Android: solta a câmera (senão o app de câmera do celular não consegue abri-la) e chama a do celular
+      function abrirNativo06() {
+        if (ocupado || fechado) return;
+        noNativo = true;
+        if (stream) { stream.getTracks().forEach((t) => t.stop()); stream = null; }
+        inpNativo.value = '';
+        aviso('Abrindo a câmera do celular… toque em 0,6 lá', 2500);
+        inpNativo.click();
+      }
+      async function voltarDoNativo() {
+        if (!noNativo || fechado) return;
+        noNativo = false;
+        try { await abrirStream(lentes.principal); } catch (e) { aviso('Não foi possível reabrir a câmera', 2500); }
+      }
+      // voltou da câmera do celular sem foto (alguns Android não avisam o cancelamento)
+      const aoVoltarVisivel = () => { if (noNativo && document.visibilityState === 'visible') setTimeout(() => { if (noNativo && !inpNativo.files.length) voltarDoNativo(); }, 1500); };
+      document.addEventListener('visibilitychange', aoVoltarVisivel);
 
       const fecharInterno = function (silencioso) {
         if (fechado) return;
@@ -466,6 +497,7 @@
         document.body.style.overflow = '';
         window.removeEventListener('popstate', aoVoltar);
         window.removeEventListener('devicemotion', aoMovimento);
+        document.removeEventListener('visibilitychange', aoVoltarVisivel);
         if (!silencioso) resolve(opts.modo === 'unica' ? null : { total });
       };
       function fechar(silencioso) {
