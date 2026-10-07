@@ -1216,6 +1216,7 @@
             h('a', { href: '#/irregularidade/' + irrDe.id, onclick: sair }, 'Ver histórico'))
             : h('label', { class: 'linha', style: { marginBottom: '8px' } }, chkIrr, h('b', {}, '⚠️ Registrar como irregularidade')),
           nVer ? h('div', { class: 'sub', style: { marginBottom: '8px' } }, 'Histórico: ' + nVer + ' verificação(ões) — ', h('a', { href: '#/irregularidade/' + f.id, onclick: sair }, 'abrir')) : null,
+          f.irregular ? blocoProjetoVisor(f, async () => { if (!(await salvar())) return false; return true; }, async () => { lista[api.idx] = (await DB.get('fotos', f.id)) || f; await api.redesenhar(); }) : null,
           h('label', { class: 'campo' }, rotDesc, area),
           h('label', { class: 'linha sub' }, chkRel, 'Incluir no relatório fotográfico'),
           podeEditar ? h('div', { class: 'acoes' },
@@ -1713,10 +1714,10 @@
           const img = h('img'); fotoAtualIrr(f).then(urlFoto).then((u) => { img.src = u; });
           return h('div', { class: 'li', style: { cursor: 'pointer' }, onclick: () => abrirIrregularidades(f, reverif, 'Não sanadas nesta visita', id, desenharFotos) }, img,
             h('div', { style: { flex: 1 } }, h('div', {}, f.descricao || '(sem descrição)'),
-              h('div', { class: 'sub' }, '✗ Não sanada nesta visita · constatada em ' + dataHoraBR(f.dataHora).slice(0, 10))));
+              h('div', { class: 'sub' }, '✗ Não sanada nesta visita · constatada em ' + dataHoraBR(f.dataHora).slice(0, 10))), botaoProjetoLista(f, desenharFotos));
         }), irr.map((f) => {
           const img = h('img'); urlFoto(f).then((u) => { img.src = u; });
-          return h('div', { class: 'li', style: { cursor: 'pointer' }, onclick: () => abrirFoto(f, desenharFotos, irr) }, img, h('div', { style: { flex: 1 } }, h('div', {}, f.descricao || '(sem descrição)'), h('div', { class: 'sub' }, dataHoraBR(f.dataHora))));
+          return h('div', { class: 'li', style: { cursor: 'pointer' }, onclick: () => abrirFoto(f, desenharFotos, irr) }, img, h('div', { style: { flex: 1 } }, h('div', {}, f.descricao || '(sem descrição)'), h('div', { class: 'sub' }, dataHoraBR(f.dataHora))), botaoProjetoLista(f, desenharFotos));
         })) : h('div', { class: 'sub' }, 'Nenhuma irregularidade registrada nesta visita.'),
         nIrr && pode.notificar() ? h('div', { class: 'acoes' }, h('button', { class: 'btn', onclick: async () => { await salvarVisita(true); notificarVisita(v0, r); } }, '📝 Gerar notificação com estas irregularidades')) : null,
         reverif.length ? h('div', { class: 'dica' }, 'Irregularidades não sanadas entram na notificação com a foto nova desta visita.') : null);
@@ -2062,6 +2063,50 @@
     toast('Foto do projeto removida');
     return true;
   }
+  // mostra a foto do projeto (sem abrir o visualizador de fotos, que permitiria editá-la como foto comum)
+  async function verProjeto(irr, aoMudar) {
+    const p = projetoDe(irr); if (!p) return;
+    const fp = await DB.get('fotos', p.fotoId);
+    const img = h('img', { class: 'grande projeto-img', alt: 'Projeto', title: 'Abrir em tamanho real' });
+    let url = '';
+    if (fp) urlFoto(fp, true).then((u) => { url = u; img.src = u; });
+    img.addEventListener('click', () => { if (url) window.open(url, '_blank'); });
+    const podeEd = pode.coletar();
+    const acao = await modal('📐 Foto do projeto', h('div', {}, h('p', { class: 'sub', style: { marginTop: 0 } }, irr.descricao || ''), img,
+      h('div', { class: 'projeto-leg' }, p.legenda ? 'Projeto: ' + p.legenda : 'Projeto (sem legenda)'),
+      h('div', { class: 'sub' }, 'Toque na imagem para ver em tamanho real.')),
+      podeEd ? [{ txt: 'Remover', cls: 'perigo', valor: 'remover' }, { txt: '✏️ Legenda', valor: 'legenda' }, { txt: '🔄 Trocar', valor: 'trocar' }, { txt: 'Fechar', cls: 'pri', valor: null }] : [{ txt: 'Fechar', cls: 'pri', valor: null }]);
+    let mudou = false;
+    if (acao === 'trocar') mudou = await editarProjeto(irr);
+    else if (acao === 'legenda') mudou = await editarLegendaProjeto(irr);
+    else if (acao === 'remover') mudou = await removerProjeto(irr);
+    if (mudou && aoMudar) aoMudar();
+  }
+  // botão compacto nas listas de irregularidades (visita): mostra se já tem projeto e permite incluir/ver
+  function botaoProjetoLista(irr, aoMudar) {
+    const p = projetoDe(irr);
+    if (!p && !pode.coletar()) return null;
+    return h('button', { class: 'btn peq btn-proj' + (p ? ' tem' : ''), title: p ? 'Ver a foto do projeto' : 'Incluir a foto do projeto (vai na notificação abaixo da foto da irregularidade)',
+      onclick: async (e) => {
+        e.stopPropagation();
+        if (p) { await verProjeto(irr, aoMudar); return; }
+        if (await editarProjeto(irr)) aoMudar();
+      } }, p ? '📐 Projeto ✓' : '📐 + Projeto');
+  }
+  // bloco no painel do visualizador de fotos (foto que é irregularidade)
+  function blocoProjetoVisor(irr, antes, depois) {
+    const p = projetoDe(irr), podeEd = pode.coletar();
+    if (!p && !podeEd) return null;
+    const mini = h('img', { alt: 'Projeto' });
+    if (p) DB.get('fotos', p.fotoId).then((fp) => (fp ? urlFoto(fp) : '')).then((u) => { if (u) mini.src = u; });
+    const editar = async () => { if (!(await antes())) return; if (await editarProjeto(irr)) await depois(); };
+    return h('div', { class: 'proj-linha' + (p ? '' : ' vazio-proj'), style: { margin: '4px 0 10px' } },
+      p ? mini : null,
+      p ? h('div', { style: { flex: 1, minWidth: 0 } }, h('div', { class: 'proj-tit' }, '📐 Projeto' + (p.legenda ? ': ' + p.legenda : '')),
+        h('div', { class: 'acoes', style: { marginTop: '4px' } },
+          h('button', { class: 'btn peq', onclick: async () => { if (!(await antes())) return; await verProjeto(irr, depois); } }, 'Ver / editar')))
+        : h('button', { class: 'btn peq', onclick: editar }, '📐 Incluir foto do projeto'));
+  }
   // cartão usado na tela da irregularidade
   function cartaoProjeto(irr, aoMudar) {
     const p = projetoDe(irr), podeEd = pode.coletar();
@@ -2073,7 +2118,7 @@
     }
     const img = h('img', { class: 'grande projeto-img', alt: 'Projeto' });
     DB.get('fotos', p.fotoId).then((fp) => (fp ? urlFoto(fp, true) : '')).then((u) => { if (u) img.src = u; });
-    img.addEventListener('click', async () => { const fp = await DB.get('fotos', p.fotoId); if (fp) abrirFoto(fp); });
+    img.addEventListener('click', () => verProjeto(irr, aoMudar));
     ap(box, img, h('div', { class: 'projeto-leg' }, p.legenda ? 'Projeto: ' + p.legenda : 'Projeto (sem legenda)'),
       h('div', { class: 'sub' }, 'Incluída em ' + dataHoraBR(p.em) + ' · por ' + (nomeDe(p.por) || '—')),
       podeEd ? h('div', { class: 'acoes' },
@@ -3742,7 +3787,7 @@
       for (const f of fotosSemDrive) if (!(await DB.blobGet(f.id))) semArquivo++;
       const log = Sync.lerLog().slice().reverse();
       const resumo = {
-        app: '3.15.1', servidor: Sync.versaoServidor || '?', usuario: (u || {}).email, perfil: perfil(), estado: Sync.estado, erro: Sync.erro || '',
+        app: '3.15.2', servidor: Sync.versaoServidor || '?', usuario: (u || {}).email, perfil: perfil(), estado: Sync.estado, erro: Sync.erro || '',
         online: navigator.onLine, ultimaSync: await DB.kvGet('ultimaSync', null), cursor: await DB.kvGet('servidorDesde', 0),
         pendentes: pendPor, fotosAguardandoEnvio: fotosSemDrive.length - semArquivo, fotosDeOutroAparelhoSemEnvio: semArquivo,
         aparelho: navigator.userAgent, log,
@@ -3997,7 +4042,7 @@
     // a partir de "Aparência e câmera", cada seção vira uma lista suspensa (fechada; lembra as abertas)
     const iniSecoes = cards.findIndex((c) => c.querySelector && (c.querySelector(':scope > h2') || {}).textContent === 'Aparência e câmera');
     if (iniSecoes >= 0) for (let i = iniSecoes; i < cards.length; i++) cards[i] = secaoRecolhivel(cards[i]);
-    cards.push(h('p', { class: 'dica', style: { textAlign: 'center' } }, 'Fiscalização de Obras · v3.15.1 · dados salvos no aparelho' + (Sync.habilitado() ? ' e no Google Drive do administrador' : '') + ' · ', h('a', { href: 'privacidade.html' }, 'Política de privacidade')));
+    cards.push(h('p', { class: 'dica', style: { textAlign: 'center' } }, 'Fiscalização de Obras · v3.15.2 · dados salvos no aparelho' + (Sync.habilitado() ? ' e no Google Drive do administrador' : '') + ' · ', h('a', { href: 'privacidade.html' }, 'Política de privacidade')));
     rcT(tk, ...cards);
   }
 
