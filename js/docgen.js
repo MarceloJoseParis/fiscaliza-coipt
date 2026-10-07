@@ -445,6 +445,15 @@
       } else seen.add(id);
     }
 
+    // numeração "N-A" (foto do projeto logo abaixo da foto N): o campo de numeração automática do Word (SEQ)
+    // recontaria tudo; vira texto fixo e as imagens seguintes continuam 2, 3… normalmente
+    for (const fs of byTag(doc, W, 'fldSimple')) {
+      if (!/\bSEQ\b/i.test(fs.getAttributeNS(W, 'instr') || fs.getAttribute('w:instr') || '')) continue;
+      if (/^\s*\d+\s*$/.test(fs.textContent)) continue;
+      while (fs.firstChild) fs.parentNode.insertBefore(fs.firstChild, fs);
+      fs.parentNode.removeChild(fs);
+    }
+
     // content types
     const have = new Set(byTag(ct, CT, 'Default').map((d) => (d.getAttribute('Extension') || '').toLowerCase()));
     for (const e of exts) {
@@ -551,7 +560,7 @@
     const valor = X.parseMoeda(reg.valor);
     const valorOs = X.parseMoeda(reg.valor_os);
     const rep = reg.n_representante || ''; // CPF do representante não vai mais ao documento (LGPD — minimização)
-    const fotos = (notif.fotosDoc || []).map((f, i) => ({ n: i + 1, legenda: f.legenda || '', imagem: f.imagem }));
+    const fotos = (notif.fotosDoc || []).map((f, i) => ({ n: f.n != null ? f.n : i + 1, legenda: f.legenda || '', imagem: f.imagem }));
     return {
       ordinal: notif.ordinal,
       numero_notificacao: notif.numero || '',

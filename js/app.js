@@ -302,7 +302,7 @@
     const v = f.visitaId ? await DB.get('visitas', f.visitaId) : null;
     const dt = f.dataHora ? new Date(f.dataHora) : null;
     const hora = dt ? doisDig(dt.getHours()) + '.' + doisDig(dt.getMinutes()) + '.' + doisDig(dt.getSeconds()) : '';
-    const nome = [hora, f.irregular ? 'IRREGULARIDADE' : '', String(f.descricao || '').slice(0, 60)].filter(Boolean).join(' - ');
+    const nome = [hora, f.irregular ? 'IRREGULARIDADE' : '', f.projetoDe ? 'PROJETO' : '', String(f.descricao || '').slice(0, 60)].filter(Boolean).join(' - ');
     return { pastas: segmentosPasta(f, r, v, (CONFIG || {}).pasta_fotos), nome: nomeArquivo(nome) };
   };
 
@@ -490,7 +490,7 @@
       .sort((a, b) => (b.ordinal || 0) - (a.ordinal || 0) || String(b.criadoEm).localeCompare(a.criadoEm));
   }
   async function fotosDe(registroId) {
-    return (await DB.byIndex('fotos', 'registroId', registroId)).filter((f) => !f.excluido)
+    return (await DB.byIndex('fotos', 'registroId', registroId)).filter((f) => !f.excluido && !f.projetoDe)
       .sort((a, b) => String(b.dataHora).localeCompare(a.dataHora));
   }
   /* ---------- Linha de lista (formato caixa de entrada) ---------- */
@@ -885,6 +885,7 @@
       if (f.irregular) {
         for (const vf of f.verificacoes || []) if (vf.fotoId) add(vf.fotoId);
         for (const o of todas.values()) if (o.verificacaoDe === id) add(o.id);
+        for (const o of todas.values()) if (o.projetoDe === id) add(o.id);
       }
     };
     ids.forEach((id) => add(id, true));
@@ -899,7 +900,12 @@
       }
     }
     const notifs = (await DB.listar('notificacoes')).filter((n) => (n.fotos || []).some((s) => excluir.has(s.fotoId)));
-    return { todas, excluir, iniciais, removerVerif, ajustar, rascunhos: notifs.filter((n) => n.status !== 'emitida'), emitidas: notifs.filter((n) => n.status === 'emitida') };
+    // foto do projeto usada numa notificação emitida também segura a exclusão (o documento emitido não pode mudar)
+    const jaListadas = new Set(notifs.map((n) => n.id));
+    const emitidasProj = (await DB.listar('notificacoes', (n) => n.status === 'emitida' && !jaListadas.has(n.id)))
+      .filter((n) => (n.fotos || []).some((s) => s.projeto && excluir.has(s.projeto.fotoId)));
+    const projetos = [...excluir].filter((id) => !iniciais.has(id) && (todas.get(id) || {}).projetoDe).length;
+    return { todas, excluir, iniciais, removerVerif, ajustar, projetos, rascunhos: notifs.filter((n) => n.status !== 'emitida'), emitidas: notifs.filter((n) => n.status === 'emitida').concat(emitidasProj) };
   }
   async function executarExclusao(plano) {
     for (const id of plano.excluir) await atualizarCampos('fotos', id, (o) => { o.excluido = true; });
@@ -918,8 +924,9 @@
       return false;
     }
     const linhas = [];
-    const extras = [...plano.excluir].filter((id) => !plano.iniciais.has(id)).length;
+    const extras = [...plano.excluir].filter((id) => !plano.iniciais.has(id)).length - (plano.projetos || 0);
     if (extras) linhas.push('Também será(ão) excluída(s) ' + extras + ' foto(s) do histórico de verificações da irregularidade.');
+    if (plano.projetos) linhas.push('Também será excluída a foto do projeto da irregularidade.');
     for (const a of plano.ajustar) linhas.push('A irregularidade “' + (a.f.descricao || 'sem descrição') + '” perde ' + a.removidas + ' registro(s) do histórico' + (a.voltaPendente ? ' e volta a ficar PENDENTE.' : '.'));
     if (plano.rascunhos.length) linhas.push('A(s) foto(s) será(ão) retirada(s) de ' + plano.rascunhos.length + ' rascunho(s) de notificação.');
     if (Sync.habilitado() && plano.excluir.size) linhas.push('No Google Drive, a(s) foto(s) vai(ão) para a lixeira (o dono da pasta pode recuperar em até 30 dias).');
@@ -973,6 +980,10 @@
             await atualizarCampos('fotos', f.id, (o) => { if (irr.excluido) o.excluido = true; else delete o.verificacaoDe; });
             n++; continue;
           }
+        }
+        if (f.projetoDe) {
+          const irr = mapa.get(f.projetoDe);
+          if (irr && irr.excluido) { await atualizarCampos('fotos', f.id, (o) => { o.excluido = true; }); n++; continue; }
         }
         if (f.irregular && (f.verificacoes || []).length && !f.verificacoes.every(valida)) {
           await atualizarCampos('fotos', f.id, (o) => { o.verificacoes = (o.verificacoes || []).filter(valida); recalcularSituacao(o); });
@@ -1099,6 +1110,7 @@
         idx = Math.min(k, total - 1); await mostrar(true);
       },
       ir: (d) => ir(d), fechar: () => fechar(),
+      redesenhar: () => mostrar(true),
       encerrar: (chamar) => encerrar(chamar),
     };
     async function mostrar(semSalvar) {
@@ -1256,8 +1268,11 @@
           const fv = vf.fotoId ? await DB.get('fotos', vf.fotoId) : null;
           if (fv && !fv.excluido) fotos.push({ f: fv, rot: (vf.status === 'sanada' ? '✓ Sanada' : '✗ Não sanada') + ' · ' + dataHoraBR(vf.data).slice(0, 10), vf });
         }
+        const pj = projetoDe(f), fpj = pj ? await DB.get('fotos', pj.fotoId) : null;
+        const nReais = fotos.length;
+        if (fpj && !fpj.excluido) fotos.push({ f: fpj, rot: '📐 Projeto', projeto: true });
         if (k !== api.idx) return;
-        let sel = fotos.length - 1; // começa pela foto mais recente
+        let sel = nReais - 1; // começa pela foto mais recente (o projeto fica por último, para consulta)
         const chips = h('div', { class: 'irr-chips' });
         const verFoto = (i) => {
           sel = i;
@@ -1292,6 +1307,10 @@
             : h('h3', { style: { margin: '8px 0' } }, f.descricao || '(sem descrição)'),
           h('div', { class: 'sub', style: { marginBottom: '10px' } }, 'Constatada em ' + dataHoraBR(f.dataHora) + (visOrig ? ' · Visita nº ' + visOrig.numero : '') + ' · por ' + (nomeDe(f.criadoPor) || '—')),
           fotos.length > 1 ? h('div', {}, h('div', { class: 'sub', style: { marginBottom: '4px' } }, 'Fotos (' + fotos.length + ') — toque para ver:'), chips) : null,
+          podeEd ? h('div', { class: 'acoes', style: { marginTop: '6px' } }, h('button', { class: 'btn peq', onclick: async () => {
+            if (!(await salvar())) return;
+            if (await editarProjeto(f)) { lista[api.idx] = (await DB.get('fotos', f.id)) || f; await api.redesenhar(); }
+          } }, pj ? '🔄 Trocar foto do projeto' : '📐 Incluir foto do projeto')) : null,
           podeEd && st === 'pendente' ? h('div', { class: 'grade-bt', style: { marginTop: '10px' } },
             h('button', { class: 'btn ok grande', onclick: () => verificar('sanada') }, '✓ Sanada'),
             h('button', { class: 'btn perigo grande', onclick: () => verificar('nao_sanada') }, '✗ Não sanada')) : null,
@@ -1940,6 +1959,130 @@
   /* ================================================================== */
   const situacao = (f) => (f.situacao === 'sanada' ? 'sanada' : 'pendente');
 
+  /* ================================================================== */
+  /* Foto do projeto de uma irregularidade (referência: como deveria ser) */
+  /* ================================================================== */
+  /* Fica na própria irregularidade: irr.projeto = { fotoId, legenda, em, por }. A imagem é uma foto
+     "auxiliar" (projetoDe = id da irregularidade): não aparece nas visitas nem no relatório fotográfico.
+     Na notificação, vai logo abaixo da foto da irregularidade (Imagem N-A). */
+  const projetoDe = (irr) => (irr && irr.projeto && irr.projeto.fotoId ? irr.projeto : null);
+  function escolherImagem() {
+    return new Promise((res) => {
+      const inp = h('input', { type: 'file', accept: 'image/*', class: 'oculto' });
+      inp.addEventListener('change', () => { res(inp.files[0] || null); inp.remove(); });
+      inp.addEventListener('cancel', () => { res(null); inp.remove(); });
+      document.body.appendChild(inp); inp.click();
+    });
+  }
+  // recorte: retângulo arrastável (cantos e o meio) sobre a imagem; devolve o recorte em pixels da imagem
+  async function recortarImagem(bm, legendaIni) {
+    const W = bm.width, H = bm.height;
+    const cv = h('canvas', { class: 'rec-img' }); cv.width = Math.min(W, 1400); cv.height = Math.round(H * cv.width / W);
+    cv.getContext('2d').drawImage(bm, 0, 0, cv.width, cv.height);
+    const caixa = h('div', { class: 'rec-caixa' });
+    const alcas = ['nw', 'ne', 'sw', 'se'].map((k) => h('span', { class: 'rec-alca ' + k, 'data-k': k }));
+    alcas.forEach((a) => caixa.appendChild(a));
+    const area = h('div', { class: 'rec-area' }, cv, caixa);
+    let r = { x: 0, y: 0, w: 1, h: 1 }; // frações da imagem
+    const pintar = () => Object.assign(caixa.style, { left: r.x * 100 + '%', top: r.y * 100 + '%', width: r.w * 100 + '%', height: r.h * 100 + '%' });
+    pintar();
+    let arr = null;
+    area.addEventListener('pointerdown', (e) => {
+      const bx = area.getBoundingClientRect();
+      const cheio = r.w > 0.98 && r.h > 0.98; // imagem inteira marcada: arrastar desenha a área nova
+      const k = e.target.dataset && e.target.dataset.k ? e.target.dataset.k : (e.target === caixa && !cheio ? 'mover' : 'novo');
+      arr = { k, x0: (e.clientX - bx.left) / bx.width, y0: (e.clientY - bx.top) / bx.height, r0: Object.assign({}, r), bx };
+      area.setPointerCapture(e.pointerId); e.preventDefault();
+    });
+    area.addEventListener('pointermove', (e) => {
+      if (!arr) return;
+      const x = Math.max(0, Math.min(1, (e.clientX - arr.bx.left) / arr.bx.width)), y = Math.max(0, Math.min(1, (e.clientY - arr.bx.top) / arr.bx.height));
+      const r0 = arr.r0, MIN = 0.05;
+      let x1 = r0.x, y1 = r0.y, x2 = r0.x + r0.w, y2 = r0.y + r0.h;
+      if (arr.k === 'mover') { const dx = x - arr.x0, dy = y - arr.y0; x1 = Math.max(0, Math.min(1 - r0.w, r0.x + dx)); y1 = Math.max(0, Math.min(1 - r0.h, r0.y + dy)); x2 = x1 + r0.w; y2 = y1 + r0.h; }
+      else if (arr.k === 'novo') { x1 = Math.min(arr.x0, x); x2 = Math.max(arr.x0, x); y1 = Math.min(arr.y0, y); y2 = Math.max(arr.y0, y); }
+      else { if (arr.k.includes('w')) x1 = Math.min(x, x2 - MIN); if (arr.k.includes('e')) x2 = Math.max(x, x1 + MIN); if (arr.k.includes('n')) y1 = Math.min(y, y2 - MIN); if (arr.k.includes('s')) y2 = Math.max(y, y1 + MIN); }
+      if (x2 - x1 < MIN || y2 - y1 < MIN) return;
+      r = { x: x1, y: y1, w: x2 - x1, h: y2 - y1 }; pintar();
+    });
+    const soltar = () => { arr = null; };
+    area.addEventListener('pointerup', soltar); area.addEventListener('pointercancel', soltar);
+    const ed = { legenda: legendaIni || '' };
+    const corpo = h('div', { class: 'rec' },
+      h('p', { class: 'sub', style: { marginTop: 0 } }, 'Arraste o dedo sobre o trecho do projeto que interessa para recortá-lo (ou deixe a imagem inteira). Depois, ajuste pelos cantos ou arraste a área.'),
+      area,
+      h('div', { class: 'acoes', style: { margin: '8px 0' } }, h('button', { class: 'btn peq', onclick: () => { r = { x: 0, y: 0, w: 1, h: 1 }; pintar(); } }, 'Imagem inteira')),
+      campo('Legenda na notificação', inputTxt(ed, 'legenda', { placeholder: 'Ex.: Projeto elétrico, prancha 05 — detalhe do aterramento do SPDA' }), 'Sai como “Imagem N-A – Projeto: …”, logo abaixo da foto da irregularidade.'));
+    const ok = await modal('📐 Foto do projeto', corpo, [{ txt: 'Cancelar', valor: false }, { txt: 'Salvar', cls: 'pri', valor: true }]);
+    if (!ok) return null;
+    return { x: Math.round(r.x * W), y: Math.round(r.y * H), w: Math.max(1, Math.round(r.w * W)), h: Math.max(1, Math.round(r.h * H)), legenda: (ed.legenda || '').trim() };
+  }
+  // escolhe a imagem, recorta, grava como foto auxiliar e liga à irregularidade (substitui a anterior)
+  async function editarProjeto(irr, opts) {
+    opts = opts || {};
+    const arq = opts.arquivo || await escolherImagem();
+    if (!arq) return false;
+    let bm;
+    try { bm = await createImageBitmap(arq, { imageOrientation: 'from-image' }); } catch (e) { toast('Não foi possível abrir a imagem.', true); return false; }
+    const atualP = projetoDe(irr);
+    const rec = await recortarImagem(bm, atualP ? atualP.legenda : '');
+    if (!rec) { if (bm.close) bm.close(); return false; }
+    // recorte em resolução cheia (até 16 MP) e pouca compressão: o projeto precisa ficar legível
+    const esc = Math.min(1, Math.sqrt(16000000 / (rec.w * rec.h)));
+    const cv = document.createElement('canvas'); cv.width = Math.floor(rec.w * esc); cv.height = Math.floor(rec.h * esc);
+    const g = cv.getContext('2d'); g.fillStyle = '#fff'; g.fillRect(0, 0, cv.width, cv.height);
+    g.imageSmoothingQuality = 'high'; g.drawImage(bm, rec.x, rec.y, rec.w, rec.h, 0, 0, cv.width, cv.height);
+    if (bm.close) bm.close();
+    const blob = await new Promise((res) => cv.toBlob(res, 'image/jpeg', 0.93));
+    const tw = 240, mc = document.createElement('canvas'); mc.width = tw; mc.height = Math.round(cv.height * tw / cv.width); mc.getContext('2d').drawImage(cv, 0, 0, mc.width, mc.height);
+    const foto = { id: DB.uuid(), registroId: irr.registroId, visitaId: null, tipo: irr.tipo, projetoDe: irr.id, origem: 'projeto', dataHora: new Date().toISOString(),
+      descricao: rec.legenda, largura: cv.width, altura: cv.height, miniatura: mc.toDataURL('image/jpeg', 0.6), carimbada: false, fora_relatorio: true };
+    await DB.blobSet(foto.id, blob);
+    await DB.salvar('fotos', foto, email());
+    await atualizarCampos('fotos', irr.id, (o) => { o.projeto = { fotoId: foto.id, legenda: rec.legenda, em: foto.dataHora, por: email() }; });
+    if (atualP && atualP.fotoId !== foto.id && !(await projetoEmUso(atualP.fotoId))) await atualizarCampos('fotos', atualP.fotoId, (o) => { o.excluido = true; });
+    App.agendarSync && App.agendarSync();
+    toast(atualP ? 'Foto do projeto substituída' : 'Foto do projeto incluída');
+    return true;
+  }
+  async function editarLegendaProjeto(irr) {
+    const p = projetoDe(irr); if (!p) return false;
+    const ed = { legenda: p.legenda || '' };
+    const ok = await modal('Legenda do projeto', campo('Legenda na notificação', inputTxt(ed, 'legenda')), [{ txt: 'Cancelar', valor: false }, { txt: 'Salvar', cls: 'pri', valor: true }]);
+    if (!ok) return false;
+    await atualizarCampos('fotos', irr.id, (o) => { if (o.projeto) o.projeto = Object.assign({}, o.projeto, { legenda: (ed.legenda || '').trim() }); });
+    await atualizarCampos('fotos', p.fotoId, (o) => { o.descricao = (ed.legenda || '').trim(); });
+    return true;
+  }
+  async function removerProjeto(irr) {
+    const p = projetoDe(irr); if (!p) return false;
+    if (!(await confirmar('Remover a foto do projeto desta irregularidade? Notificações já emitidas não mudam.', 'Remover', true))) return false;
+    await atualizarCampos('fotos', irr.id, (o) => { delete o.projeto; });
+    if (!(await projetoEmUso(p.fotoId))) await atualizarCampos('fotos', p.fotoId, (o) => { o.excluido = true; });
+    toast('Foto do projeto removida');
+    return true;
+  }
+  // cartão usado na tela da irregularidade
+  function cartaoProjeto(irr, aoMudar) {
+    const p = projetoDe(irr), podeEd = pode.coletar();
+    const box = h('div', { class: 'card projeto-card' }, h('h2', {}, '📐 Foto do projeto'));
+    if (!p) {
+      ap(box, h('p', { class: 'sub', style: { marginTop: 0 } }, 'Opcional. Um trecho do projeto que mostra como deveria ser. Na notificação, vai logo abaixo da foto da irregularidade. Pode ser incluída a qualquer momento.'),
+        podeEd ? h('button', { class: 'btn', onclick: async () => { if (await editarProjeto(irr)) aoMudar(); } }, '📐 Incluir foto do projeto') : h('div', { class: 'sub' }, 'Nenhuma foto do projeto.'));
+      return box;
+    }
+    const img = h('img', { class: 'grande projeto-img', alt: 'Projeto' });
+    DB.get('fotos', p.fotoId).then((fp) => (fp ? urlFoto(fp, true) : '')).then((u) => { if (u) img.src = u; });
+    img.addEventListener('click', async () => { const fp = await DB.get('fotos', p.fotoId); if (fp) abrirFoto(fp); });
+    ap(box, img, h('div', { class: 'projeto-leg' }, p.legenda ? 'Projeto: ' + p.legenda : 'Projeto (sem legenda)'),
+      h('div', { class: 'sub' }, 'Incluída em ' + dataHoraBR(p.em) + ' · por ' + (nomeDe(p.por) || '—')),
+      podeEd ? h('div', { class: 'acoes' },
+        h('button', { class: 'btn peq', onclick: async () => { if (await editarLegendaProjeto(irr)) aoMudar(); } }, '✏️ Legenda'),
+        h('button', { class: 'btn peq', onclick: async () => { if (await editarProjeto(irr)) aoMudar(); } }, '🔄 Trocar imagem'),
+        h('button', { class: 'btn peq perigo', onclick: async () => { if (await removerProjeto(irr)) aoMudar(); } }, 'Remover')) : null);
+    return box;
+  }
+
   async function irregularidadesDe(registroId) {
     return (await DB.byIndex('fotos', 'registroId', registroId)).filter((f) => !f.excluido && f.irregular)
       .sort((a, b) => String(b.dataHora).localeCompare(a.dataHora));
@@ -2084,7 +2227,7 @@
       img.addEventListener('touchstart', (e) => { if (e.touches.length === 1) { x0 = e.touches[0].clientX; y0 = e.touches[0].clientY; } }, { passive: true });
       img.addEventListener('touchend', (e) => { if (x0 == null) return; const t = e.changedTouches[0]; const dx = t.clientX - x0, dy = t.clientY - y0; x0 = null; if (Math.abs(dx) > 70 && Math.abs(dx) > Math.abs(dy) * 1.5) irPara(pos + (dx < 0 ? 1 : -1)); });
     }
-    rcT(tk, barraNav, cab, acoes, hist);
+    rcT(tk, barraNav, cab, cartaoProjeto(f, () => telaIrregularidade(id, visitaId)), acoes, hist);
     App._atualizarTela = () => telaIrregularidade(id, visitaId);
   }
 
@@ -2500,18 +2643,29 @@
     const prog = jp || { set() {} };
     const reg = n.status === 'emitida' && n.registroSnapshot ? n.registroSnapshot : r;
     const sels = n.fotos || [];
+    // foto do projeto de cada irregularidade (emitida: a que ficou registrada na emissão)
+    const projs = await Promise.all(sels.map((sel) => (n.status === 'emitida' ? Promise.resolve(sel.projeto || null) : projetoDaSel(sel))));
+    const projRegs = await Promise.all(projs.map((p) => (p && !p.semProjeto ? DB.get('fotos', p.fotoId) : null)));
     // fotos: do aparelho ou do Drive, várias ao mesmo tempo (0–70% da barra)
     const regs = await Promise.all(sels.map((sel) => DB.get('fotos', sel.fotoId)));
-    const lista = sels.map((sel, i) => regs[i] || { id: sel.fotoId });
+    const lista = sels.map((sel, i) => regs[i] || { id: sel.fotoId }).concat(projRegs.filter(Boolean));
     prog.set(sels.length ? 'Carregando as fotos…' : 'Montando o documento…', 0);
     const { blobs } = await obterFotos(lista, (k, t, bx) => prog.set('Carregando as fotos: ' + k + ' de ' + t + (bx ? ' · ' + bx + ' baixada(s) do Drive' : '') + '…', k / t * 0.7));
     const fotosDoc = [];
     const faltando = [];
+    let num = 0;
     sels.forEach((sel, i) => {
       const f = regs[i], blob = blobs.get(sel.fotoId);
       if (!blob && (!f || f.excluido)) return; // foto excluida: fica fora do documento
       if (!blob) { faltando.push(sel); return; }
-      fotosDoc.push({ legenda: sel.legenda || '', imagem: blob });
+      num++;
+      fotosDoc.push({ n: num, legenda: sel.legenda || '', imagem: blob });
+      const p = projs[i], fp = projRegs[i];
+      if (p && fp) {
+        const bp = blobs.get(fp.id);
+        if (bp) fotosDoc.push({ n: num + '-A', legenda: 'Projeto' + (p.legenda ? ': ' + p.legenda.replace(/[.;]?$/, '.') : '.'), imagem: bp });
+        else if (!fp.excluido) faltando.push(p);
+      }
     });
     if (faltando.length) throw new Error(faltando.length + ' foto(s) ainda não estão neste aparelho. Conecte-se à internet para baixá-las (ou peça a quem registrou para sincronizar).');
     prog.set('Montando o documento…', 0.7);
@@ -2523,6 +2677,29 @@
     return { blob, nome };
   }
 
+  // rascunho: projeto atual da irregularidade da foto anexada (a menos que tenha sido desmarcado)
+  async function projetoDaSel(sel) {
+    if (sel.semProjeto) return null;
+    let irr = sel.irrId ? await DB.get('fotos', sel.irrId) : null;
+    if (!irr) { const f = await DB.get('fotos', sel.fotoId); if (f && f.irregular) irr = f; else if (f && f.verificacaoDe) irr = await DB.get('fotos', f.verificacaoDe); }
+    const p = projetoDe(irr);
+    return p ? { fotoId: p.fotoId, legenda: p.legenda || '' } : null;
+  }
+  // na emissão, cada anexo guarda a foto do projeto usada (baixar de novo depois dá o mesmo documento)
+  async function fotosComProjeto(fotos) {
+    const out = [];
+    for (const s of fotos || []) {
+      const p = await projetoDaSel(s);
+      const c = Object.assign({}, s); delete c.projeto;
+      if (p) c.projeto = p;
+      out.push(c);
+    }
+    return out;
+  }
+  // a imagem do projeto continua guardada enquanto alguma notificação emitida usa
+  async function projetoEmUso(fotoId) {
+    return (await DB.listar('notificacoes', (o) => o.status === 'emitida' && (o.fotos || []).some((s) => s.projeto && s.projeto.fotoId === fotoId))).length > 0;
+  }
   function legendaPadrao(f) {
     if (f.descricao && f.descricao.trim()) return f.descricao.trim().replace(/[.;:]?$/, '.');
     return 'Foto registrada em ' + (dataLocalBR(f.dataHora) || X.dataBR(X.hojeISO())) + '.';
@@ -3051,6 +3228,25 @@
 
     /* --- fotos --- */
     const fotosBox = h('div');
+    // foto do projeto da irregularidade: vai logo abaixo desta imagem (Imagem N-A)
+    const irrDaSel = (s) => (s.irrId && mapaFotos.get(s.irrId)) || irrPorFoto.get(s.fotoId) || ((mapaFotos.get(s.fotoId) || {}).irregular ? mapaFotos.get(s.fotoId) : null);
+    const linhaProjeto = (s, i) => {
+      const irr = irrDaSel(s);
+      const p = ro ? s.projeto : projetoDe(irr);
+      if (!irr && !p) return null;
+      if (!p) {
+        return ro ? null : h('div', { class: 'proj-linha vazio-proj' }, h('button', { class: 'btn peq', onclick: async () => {
+          if (await editarProjeto(irr)) { mapaFotos.set(irr.id, await DB.get('fotos', irr.id)); s.semProjeto = false; marcar(); desenharFotos(); }
+        } }, '📐 Incluir foto do projeto'));
+      }
+      const mini = h('img', { alt: 'Projeto' });
+      DB.get('fotos', p.fotoId).then((fp) => (fp ? urlFoto(fp) : '')).then((u) => { if (u) mini.src = u; });
+      const chk = h('input', { type: 'checkbox', checked: s.semProjeto ? null : 'checked', disabled: ro ? 'disabled' : null, onchange: (e) => { s.semProjeto = !e.target.checked; marcar(); desenharFotos(); } });
+      return h('div', { class: 'proj-linha' + (s.semProjeto ? ' desligado' : '') }, mini,
+        h('div', { style: { flex: 1, minWidth: 0 } },
+          h('div', { class: 'proj-tit' }, 'Imagem ' + (i + 1) + '-A · 📐 Projeto' + (p.legenda ? ': ' + p.legenda : '')),
+          h('label', { class: 'linha sub' }, chk, ' incluir na notificação')));
+    };
     const desenharFotos = () => {
       const selIds = (n.fotos || []).map((s) => s.fotoId);
       const ordenada = h('div', { class: 'lista-ord' }, ...(n.fotos || []).map((s, i) => {
@@ -3060,7 +3256,7 @@
         const ta = h('textarea', { readonly: ro, placeholder: 'Legenda', oninput: (e) => { s.legenda = e.target.value; marcar(); } });
         ta.value = s.legenda || '';
         const nova = s.irrId && s.irrId !== s.fotoId && f.dataHora ? ' · foto atualizada em ' + dataHoraBR(f.dataHora).slice(0, 10) : '';
-        return h('div', { class: 'li' }, img, h('div', { style: { flex: 1 } }, h('div', { class: 'sub' }, 'Imagem ' + (i + 1) + nova), ta),
+        return h('div', { class: 'li' }, img, h('div', { style: { flex: 1 } }, h('div', { class: 'sub' }, 'Imagem ' + (i + 1) + nova), ta, linhaProjeto(s, i)),
           ro ? null : h('div', { class: 'ctl' },
             h('button', { class: 'btn peq', disabled: i === 0, onclick: () => { n.fotos.splice(i - 1, 0, n.fotos.splice(i, 1)[0]); marcar(); desenharFotos(); } }, '▲'),
             h('button', { class: 'btn peq', disabled: i === n.fotos.length - 1, onclick: () => { n.fotos.splice(i + 1, 0, n.fotos.splice(i, 1)[0]); marcar(); desenharFotos(); } }, '▼'),
@@ -3169,8 +3365,10 @@
       for (const k of ['_pendente', '_campos', '_base', 'atualizadoEm', 'atualizadoPor', 'criadoEm', 'criadoPor']) delete snap[k];
       n.status = 'emitida'; n.emitidaEm = new Date().toISOString(); n.emitidaPor = email();
       sujo = false;
+      const fotosEmit = await fotosComProjeto(n.fotos);
       const emit = await atualizarCampos('notificacoes', id, (o) => {
         o.registroSnapshot = snap; o.status = n.status; o.emitidaEm = n.emitidaEm; o.emitidaPor = n.emitidaPor;
+        o.fotos = fotosEmit;
         if (envio) aplicarEnvio(o, envio.data);
       });
       Object.assign(original, emit);
@@ -3544,7 +3742,7 @@
       for (const f of fotosSemDrive) if (!(await DB.blobGet(f.id))) semArquivo++;
       const log = Sync.lerLog().slice().reverse();
       const resumo = {
-        app: '3.15', servidor: Sync.versaoServidor || '?', usuario: (u || {}).email, perfil: perfil(), estado: Sync.estado, erro: Sync.erro || '',
+        app: '3.15.1', servidor: Sync.versaoServidor || '?', usuario: (u || {}).email, perfil: perfil(), estado: Sync.estado, erro: Sync.erro || '',
         online: navigator.onLine, ultimaSync: await DB.kvGet('ultimaSync', null), cursor: await DB.kvGet('servidorDesde', 0),
         pendentes: pendPor, fotosAguardandoEnvio: fotosSemDrive.length - semArquivo, fotosDeOutroAparelhoSemEnvio: semArquivo,
         aparelho: navigator.userAgent, log,
@@ -3580,7 +3778,7 @@
     cards.push(h('div', { class: 'card' }, h('h2', {}, 'Aparência e câmera'),
       campoBloco('Tema', seg([['auto', 'Automático'], ['claro', 'Claro'], ['escuro', 'Escuro']], temaAtual, aplicarTema)),
       campoBloco('Câmera nas visitas', seg([['app', 'Câmera do app'], ['aparelho', 'Câmera do celular']], prefCamera(), (v) => { try { localStorage.setItem('camera_pref', v); } catch (e) { /* */ } }),
-        'Câmera do app: fica aberta para várias fotos seguidas, com troca de lente (grande angular quando o celular permite), zoom, toque para focar e flash. Câmera do celular: abre a câmera do aparelho, uma foto por vez — em muitos Android ela funciona num modo simplificado (sem HDR e sem a nitidez extra), então a foto pode sair pior que na câmera do app. Para usar o 0,6x quando o app não consegue, fotografe com a câmera normal do celular e use o botão “🖼️ Galeria” na visita.'),
+        'Câmera do app: fica aberta para várias fotos seguidas, com troca de lente (grande angular quando o celular permite), zoom, toque para focar e flash. Câmera do celular: todos os recursos do aparelho, uma foto por vez.'),
       campoBloco('Qualidade das fotos', seg([['normal', 'Normal'], ['alta', 'Alta'], ['maxima', 'Máxima']], Foto.qualidadeAtual(), (v) => { try { localStorage.setItem('foto_qualidade', v); } catch (e) { /* */ } }),
         'Normal: até 2000 px (cerca de 0,4 a 1 MB por foto). Alta: até 3000 px e menos compressão (2 a 3 vezes maior). Máxima: a foto fica no tamanho original da câmera (até 16 megapixels), com o mínimo de compressão e as cores originais (cerca de 3 a 6 MB por foto) — o envio ao Drive demora mais. O relatório continua leve: as fotos são ajustadas ao tamanho da página. Vale para as próximas fotos deste aparelho.'),
       h('label', { class: 'linha sub' }, h('input', { type: 'checkbox', checked: rapida ? 'checked' : null, onchange: (e) => { try { localStorage.setItem('cam_rapida', e.target.checked ? '1' : '0'); } catch (er) { /* */ } } }),
@@ -3799,7 +3997,7 @@
     // a partir de "Aparência e câmera", cada seção vira uma lista suspensa (fechada; lembra as abertas)
     const iniSecoes = cards.findIndex((c) => c.querySelector && (c.querySelector(':scope > h2') || {}).textContent === 'Aparência e câmera');
     if (iniSecoes >= 0) for (let i = iniSecoes; i < cards.length; i++) cards[i] = secaoRecolhivel(cards[i]);
-    cards.push(h('p', { class: 'dica', style: { textAlign: 'center' } }, 'Fiscalização de Obras · v3.15 · dados salvos no aparelho' + (Sync.habilitado() ? ' e no Google Drive do administrador' : '') + ' · ', h('a', { href: 'privacidade.html' }, 'Política de privacidade')));
+    cards.push(h('p', { class: 'dica', style: { textAlign: 'center' } }, 'Fiscalização de Obras · v3.15.1 · dados salvos no aparelho' + (Sync.habilitado() ? ' e no Google Drive do administrador' : '') + ' · ', h('a', { href: 'privacidade.html' }, 'Política de privacidade')));
     rcT(tk, ...cards);
   }
 

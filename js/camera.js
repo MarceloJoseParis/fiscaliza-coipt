@@ -43,14 +43,10 @@
     opts = opts || {};
     return new Promise(async (resolve, reject) => {
       let stream = null, track = null, cap = {}, wake = null, fechado = false, total = 0, ocupado = false, torch = false;
-      let facing = 'environment', temFrontal = false, zoom = 1, imgCap = null, gravidade = null, ajustesFoto; // ajustesFoto: maior resolução de foto da lente aberta
+      let facing = 'environment', temFrontal = false, zoom = 1, imgCap = null, gravidade = null;
       /* Lentes traseiras: no iPhone a grande angular vem como zoom 0,5 da câmera principal.
          No Android ela costuma ser OUTRA câmera (outro deviceId) — então o 0,5 troca de câmera. */
       const lentes = { principal: null, extras: [], atual: null, naUltra: false, logico: false };
-      /* Android sem grande angular liberada para o navegador: o botão 0,6 abre a câmera do próprio celular
-         (que tem a grande angular) só para aquela foto; 1x, 2x, 5x continuam na câmera do app (melhor qualidade). */
-      const ANDROID = /Android/i.test(navigator.userAgent);
-      let noNativo = false;
       const sessao = []; // fotos desta sessao: {url, blob, foto: Promise}
 
       const video = el('video', { autoplay: '', playsinline: '', muted: '', class: 'cv-video' });
@@ -66,13 +62,8 @@
       const inpNativo = el('input', { type: 'file', accept: 'image/*', capture: 'environment', style: { display: 'none' } });
       inpNativo.addEventListener('change', () => {
         const files = inpNativo.files;
-        const de06 = noNativo;
-        if (!files || !files.length) { voltarDoNativo(); return; }
-        // 0,6x (Android): a foto da câmera do celular entra nesta sessão e a câmera do app volta a abrir
-        if (de06 && opts.modo !== 'unica') { registrarFoto(files[0]); inpNativo.value = ''; voltarDoNativo(); return; }
-        fechar(true); resolve({ aparelho: files, total });
+        if (files && files.length) { fechar(true); resolve({ aparelho: files, total }); }
       });
-      inpNativo.addEventListener('cancel', () => voltarDoNativo());
       const btnLentes = el('button', { class: 'cv-ic', 'aria-label': 'Escolher lente', title: 'Escolher lente', html: SVG.lentes, style: { display: 'none' }, onclick: () => menuLentes() });
       const btnFlash = el('button', { class: 'cv-ic', 'aria-label': 'Flash', html: SVG.flashOff, style: { visibility: 'hidden' }, onclick: () => alternarFlash() });
       const btnLente = el('button', { class: 'cv-ic cv-ic-grande', 'aria-label': 'Câmera frontal / traseira', html: SVG.lente, style: { visibility: 'hidden' }, onclick: () => alternarFrontal() });
@@ -115,7 +106,6 @@
         await video.play().catch(() => {});
         cap = track.getCapabilities ? track.getCapabilities() : {};
         imgCap = ('ImageCapture' in root) ? new root.ImageCapture(track) : null;
-        ajustesFoto = undefined; // outra lente: descobre de novo a resolução máxima
         btnFlash.style.visibility = cap.torch ? 'visible' : 'hidden';
         torch = false; btnFlash.innerHTML = SVG.flashOff; btnFlash.classList.remove('ativo');
         try { if (cap.focusMode && cap.focusMode.includes('continuous')) await track.applyConstraints({ advanced: [{ focusMode: 'continuous' }] }); } catch (e) { /* */ }
@@ -257,9 +247,16 @@
       }
 
       /* posicao do celular no momento da foto (para salvar na horizontal quando estiver na horizontal) */
+      /* Sentido do sensor: no padrão (Android e iPhone atuais) o eixo y dá +9,8 com o celular em pé; alguns
+         aparelhos/navegadores dão o sinal invertido. Aprende pelo próprio celular quando ele está em pé
+         (a câmera quase sempre abre assim) — antes a regra fixa do Android estava invertida e a foto deitada
+         saía de cabeça para baixo. */
+      let sinalY = 0;
       function aoMovimento(e) {
         const a = e.accelerationIncludingGravity;
-        if (a && a.x !== null) gravidade = { x: a.x, y: a.y };
+        if (!a || a.x === null || a.x === undefined) return;
+        gravidade = { x: a.x, y: a.y };
+        if (Math.abs(a.y) > 7 && Math.abs(a.x) < 3) sinalY = Math.max(-20, Math.min(20, sinalY + (a.y > 0 ? 1 : -1)));
       }
       window.addEventListener('devicemotion', aoMovimento);
       function anguloAtual() {
@@ -267,9 +264,9 @@
         if (screen.orientation && typeof screen.orientation.angle === 'number') ang = screen.orientation.angle;
         else if (typeof window.orientation === 'number') ang = (window.orientation + 360) % 360;
         if (ang === 0 && gravidade && Math.abs(gravidade.x) > 6 && Math.abs(gravidade.x) > Math.abs(gravidade.y) * 1.3) {
-          // tela travada em retrato, mas o celular esta deitado
-          const ios = /iPhone|iPad|iPod/.test(navigator.userAgent);
-          const topoEsquerda = ios ? gravidade.x > 0 : gravidade.x < 0;
+          // tela travada em retrato, mas o celular esta deitado: no padrão, x positivo = topo do celular à esquerda
+          const conv = sinalY < 0 ? -1 : 1;
+          const topoEsquerda = gravidade.x * conv > 0;
           ang = topoEsquerda ? 90 : 270;
         }
         return ang;
@@ -330,10 +327,8 @@
         // zoom abaixo de 1 na própria câmera (iPhone e alguns Android): usa o zoom
         lentes.logico = !lentes.naUltra && temZoom && cap.zoom.min < 1;
         const outraLente = !lentes.logico && lentes.extras.length > 0;
-        const nativo06 = ANDROID && !lentes.logico && !outraLente && !lentes.naUltra;
-        if (!temZoom && !outraLente && !lentes.naUltra && !nativo06) return;
+        if (!temZoom && !outraLente && !lentes.naUltra) return;
         const pres = [];
-        if (nativo06) zoomBar.append(el('button', { 'data-nativo': '1', class: 'cv-z-nativo', title: 'Grande angular: abre a câmera do celular para esta foto', 'aria-label': 'Grande angular 0,6x (câmera do celular)', onclick: () => abrirNativo06() }, ',6'));
         if (lentes.logico) pres.push(Math.max(cap.zoom.min, 0.5));
         else if (outraLente || lentes.naUltra) pres.push(0.5);
         pres.push(1);
@@ -349,7 +344,7 @@
         return aplicarZoom(z);
       }
       function marcarZoom() {
-        const botoes = [...zoomBar.children].filter((b) => !b.dataset.nativo);
+        const botoes = [...zoomBar.children];
         let alvo = null;
         if (lentes.naUltra) alvo = botoes[0] || null;
         else botoes.forEach((b) => { if (+b.dataset.z <= zoom + 0.01) alvo = b; });
@@ -410,30 +405,12 @@
         const cv = document.createElement('canvas');
         cv.width = w; cv.height = h;
         cv.getContext('2d').drawImage(video, 0, 0, w, h);
-        return new Promise((res) => cv.toBlob(res, 'image/jpeg', 0.95));
+        return new Promise((res) => cv.toBlob(res, 'image/jpeg', 0.92));
       }
-      // "Alta" e "Máxima": pede a foto na maior resolução que a câmera oferece (sem isso, alguns Android
-      // entregam a foto no tamanho do vídeo). Se o celular recusar, tira do jeito padrão.
-      async function ajustesMaximos() {
-        if (ajustesFoto !== undefined) return ajustesFoto;
-        ajustesFoto = null;
-        try {
-          const q = root.Foto && root.Foto.qualidadeAtual ? root.Foto.qualidadeAtual() : 'normal';
-          if (q === 'normal' || !imgCap.getPhotoCapabilities) return null;
-          const pc = await Promise.race([imgCap.getPhotoCapabilities(), new Promise((_, rj) => setTimeout(() => rj(new Error('tempo')), 1500))]);
-          if (pc && pc.imageWidth && pc.imageWidth.max && pc.imageHeight && pc.imageHeight.max) ajustesFoto = { imageWidth: pc.imageWidth.max, imageHeight: pc.imageHeight.max };
-        } catch (e) { ajustesFoto = null; }
-        return ajustesFoto;
-      }
-      const comPrazo = (pr, ms) => Promise.race([pr, new Promise((_, rj) => setTimeout(() => rj(new Error('tempo')), ms))]);
       async function capturar() {
         if (imgCap && ls.get('cam_rapida') !== '1') {
-          const aj = await ajustesMaximos();
-          if (aj) {
-            try { const b = await comPrazo(imgCap.takePhoto(aj), 5000); if (b && b.size) return b; } catch (e) { ajustesFoto = null; /* este celular não aceita: não tenta de novo */ }
-          }
           try {
-            const b = await comPrazo(imgCap.takePhoto(), 3500);
+            const b = await Promise.race([imgCap.takePhoto(), new Promise((_, rj) => setTimeout(() => rj(new Error('tempo')), 3500))]);
             if (b && b.size) return b;
           } catch (e) { /* usa o quadro do video */ }
         }
@@ -452,13 +429,6 @@
           if (!blob) { aviso('Câmera iniciando…'); return; }
           blob.angulo = angulo;
           if (opts.modo === 'unica') { fechar(true); resolve(blob); return; }
-          registrarFoto(blob, angulo);
-        } finally {
-          ocupado = false;
-          btnDisparo.classList.remove('ocupado');
-        }
-      }
-      function registrarFoto(blob, angulo) {
           const item = { blob, url: URL.createObjectURL(blob), angulo, foto: Promise.resolve(opts.aoFoto(blob)) };
           item.foto.then(async (foto) => {
             // troca a miniatura pela foto ja processada (girada e com carimbo)
@@ -467,24 +437,11 @@
           sessao.push(item);
           total++;
           atualizarContador();
+        } finally {
+          ocupado = false;
+          btnDisparo.classList.remove('ocupado');
+        }
       }
-      // 0,6x no Android: solta a câmera (senão o app de câmera do celular não consegue abri-la) e chama a do celular
-      function abrirNativo06() {
-        if (ocupado || fechado) return;
-        noNativo = true;
-        if (stream) { stream.getTracks().forEach((t) => t.stop()); stream = null; }
-        inpNativo.value = '';
-        aviso('Abrindo a câmera do celular… toque em 0,6 lá', 2500);
-        inpNativo.click();
-      }
-      async function voltarDoNativo() {
-        if (!noNativo || fechado) return;
-        noNativo = false;
-        try { await abrirStream(lentes.principal); } catch (e) { aviso('Não foi possível reabrir a câmera', 2500); }
-      }
-      // voltou da câmera do celular sem foto (alguns Android não avisam o cancelamento)
-      const aoVoltarVisivel = () => { if (noNativo && document.visibilityState === 'visible') setTimeout(() => { if (noNativo && !inpNativo.files.length) voltarDoNativo(); }, 1500); };
-      document.addEventListener('visibilitychange', aoVoltarVisivel);
 
       const fecharInterno = function (silencioso) {
         if (fechado) return;
@@ -497,7 +454,6 @@
         document.body.style.overflow = '';
         window.removeEventListener('popstate', aoVoltar);
         window.removeEventListener('devicemotion', aoMovimento);
-        document.removeEventListener('visibilitychange', aoVoltarVisivel);
         if (!silencioso) resolve(opts.modo === 'unica' ? null : { total });
       };
       function fechar(silencioso) {

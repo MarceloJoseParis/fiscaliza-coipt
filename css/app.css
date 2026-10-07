@@ -715,5 +715,21 @@ body:has(.cv) .visor-fundo { display: none; }
   input:not([type=checkbox]):not([type=radio]):not([type=range]), select, textarea, .med-cols textarea.mono { font-size: 16px; }
 }
 
-/* 0,6 no Android: abre a câmera do celular (contorno indica que sai da câmera do app) */
-.cv-zoom button.cv-z-nativo { box-shadow: inset 0 0 0 1.5px rgba(255,255,255,.55); }
+/* Foto do projeto (irregularidade) */
+.projeto-card .projeto-img { background: #fff; border: 1px solid var(--linha); cursor: zoom-in; }
+.projeto-leg { font-weight: 600; margin: 8px 0 2px; }
+.proj-linha { display: flex; align-items: center; gap: 10px; margin-top: 8px; padding: 8px 10px; border-radius: 12px; background: var(--pri-bg); }
+.lista-ord .proj-linha img, .proj-linha img { width: 64px; height: 48px; object-fit: contain; background: #fff; border-radius: 8px; flex: none; }
+.lista-ord .li > div { min-width: 0; }
+.proj-linha .proj-tit { font-size: 13px; font-weight: 600; color: var(--pri); overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow-wrap: anywhere; }
+.proj-linha.desligado { background: var(--sup2); }
+.proj-linha.desligado img, .proj-linha.desligado .proj-tit { opacity: .45; }
+.proj-linha.vazio-proj { background: none; padding: 0; }
+.rec { text-align: center; }
+.rec .campo, .rec .acoes, .rec p { text-align: left; }
+.rec-area { position: relative; display: inline-block; max-width: 100%; touch-action: none; user-select: none; line-height: 0; border-radius: 10px; overflow: hidden; background: #fff; }
+.rec-area .rec-img { display: block; max-width: 100%; max-height: 55vh; width: auto; height: auto; }
+.rec-caixa { position: absolute; border: 2px solid var(--pri); box-shadow: 0 0 0 9999px rgba(0, 0, 0, .45); cursor: move; }
+.rec-alca { position: absolute; width: 22px; height: 22px; background: #fff; border: 2px solid var(--pri); border-radius: 50%; }
+.rec-alca.nw { left: -11px; top: -11px; cursor: nwse-resize; } .rec-alca.ne { right: -11px; top: -11px; cursor: nesw-resize; }
+.rec-alca.sw { left: -11px; bottom: -11px; cursor: nesw-resize; } .rec-alca.se { right: -11px; bottom: -11px; cursor: nwse-resize; }
