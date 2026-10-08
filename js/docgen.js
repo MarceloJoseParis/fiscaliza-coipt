@@ -418,7 +418,8 @@
           while (drawing && !(drawing.namespaceURI === WP && (drawing.localName === 'inline' || drawing.localName === 'anchor'))) drawing = drawing.parentNode;
           if (!drawing) return;
           const extent = kids(drawing).find((c) => c.localName === 'extent');
-          const boxW = +extent.getAttribute('cx'), boxH = +extent.getAttribute('cy');
+          // notificação: largura padrão das fotos (13 cm), sem passar da altura da caixa do modelo
+          const boxW = opts.larguraFotoCm ? Math.round(opts.larguraFotoCm * 360000) : +extent.getAttribute('cx'), boxH = +extent.getAttribute('cy');
           const esc = Math.min(boxW / info.w, boxH / info.h);
           const cx = Math.round(info.w * esc), cy = Math.round(info.h * esc);
           extent.setAttribute('cx', cx); extent.setAttribute('cy', cy);

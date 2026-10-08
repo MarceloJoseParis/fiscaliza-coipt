@@ -77,6 +77,7 @@
     };
     const ascii1 = (t) => String.fromCharCode(v.getUint8(t0 + t.valOff));
     const ifd0 = ifd(u32(4));
+    if (ifd0[0x0112]) out.orientacao = u16(ifd0[0x0112].valOff); // 1 = normal; outros = a foto precisa ser girada para exibir
     if (ifd0[0x8769]) {
       const ex = ifd(u32(ifd0[0x8769].valOff));
       const dt = ex[0x9003] || ex[0x9004];
@@ -133,13 +134,30 @@
     maxima: { maxLado: 0, maxPixels: 16000000, qualidade: 0.95, p3: true },
   };
   Foto.qualidadeAtual = function () {
-    try { const q = localStorage.getItem('foto_qualidade'); return Foto.QUALIDADES[q] ? q : 'normal'; } catch (e) { return 'normal'; }
+    // sem escolha no aparelho: Alta (antes era Normal — 2000 px e mais compressão, o que piorava as fotos)
+    try { const q = localStorage.getItem('foto_qualidade'); return Foto.QUALIDADES[q] ? q : 'alta'; } catch (e) { return 'alta'; }
   };
   // contexto de desenho nas cores P3 quando o navegador permite (senão, o comum)
   function contexto2d(cv, p3) {
     if (p3) { try { const g = cv.getContext('2d', { colorSpace: 'display-p3' }); if (g) return g; } catch (e) { /* navegador antigo */ } }
     return cv.getContext('2d');
   }
+  /* Foto da galeria SEM carimbo: guarda o arquivo original, sem recomprimir (nenhuma perda). Só quando é
+     JPEG, já está "em pé" (sem giro no EXIF) e cabe no limite de memória (16 MP). Senão, devolve null. */
+  Foto.original = async function (arquivo, exif) {
+    try {
+      if (!/^image\/jpe?g$/i.test(arquivo.type || '') || (exif && exif.orientacao && exif.orientacao !== 1)) return null;
+      const bm = await createImageBitmap(arquivo);
+      const w = bm.width, h = bm.height;
+      if (!w || !h || w * h > 16000000) { if (bm.close) bm.close(); return null; }
+      const tw = 240, th = Math.round(h * (tw / w));
+      const cm = document.createElement('canvas'); cm.width = tw; cm.height = th;
+      const g = cm.getContext('2d'); g.imageSmoothingQuality = 'high'; g.drawImage(bm, 0, 0, tw, th);
+      if (bm.close) bm.close();
+      const blob = arquivo.slice(0, arquivo.size, 'image/jpeg');
+      return { blob, largura: w, altura: h, miniatura: cm.toDataURL('image/jpeg', 0.55), original: true };
+    } catch (e) { return null; }
+  };
   Foto.processar = async function (arquivo, opcoes) {
     opcoes = Object.assign({}, Foto.QUALIDADES[Foto.qualidadeAtual()], opcoes || {});
     const img = await carregarImagem(arquivo);
