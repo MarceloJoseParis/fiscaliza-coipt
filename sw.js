@@ -1,9 +1,9 @@
 /* Service worker: guarda o app no aparelho para funcionar sem internet */
-const VERSAO = 'notif-v3.15.4';
+const VERSAO = 'notif-v3.15.5';
 const ARQUIVOS = [
   './', 'index.html', 'privacidade.html', 'config.js', 'manifest.webmanifest', 'css/app.css',
-  'lib/jszip.min.js', 'js/extenso.js', 'js/docgen.js', 'js/db.js', 'js/foto.js', 'js/camera.js', 'js/sync.js', 'js/app.js',
-  'modelos/modelo_contrato.docx', 'modelos/modelo_convenio.docx', 'modelos/modelo_relatorio.docx', 'modelos/modelo_sanadas.docx', 'modelos/modelo_irregularidades.docx', 'modelos/modelo_medicao.docx',
+  'lib/jszip.min.js', 'js/extenso.js', 'js/docgen.js', 'js/xlsx.js', 'js/db.js', 'js/foto.js', 'js/camera.js', 'js/sync.js', 'js/app.js',
+  'modelos/modelo_contrato.docx', 'modelos/modelo_convenio.docx', 'modelos/modelo_relatorio.docx', 'modelos/modelo_sanadas.docx', 'modelos/modelo_irregularidades.docx', 'modelos/modelo_medicao.docx', 'modelos/logo_relfoto.png',
   'icons/icon-192.png', 'icons/icon-512.png',
   'fonts/poppins-Regular.woff', 'fonts/poppins-Medium.woff', 'fonts/poppins-Bold.woff',
 ];

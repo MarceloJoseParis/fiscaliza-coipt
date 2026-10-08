@@ -282,7 +282,7 @@
   /* Pasta e nome da foto no Google Drive (ex.: Fotos/Conv-013-2023/29.09.2026/14.21.05 - IRREGULARIDADE - ....jpg).
      A mesma regra existe no Code.gs (segmentosFoto_), usada para organizar fotos antigas. */
   const doisDig = (n) => String(n).padStart(2, '0');
-  function segmentosPasta(f, r, v, padrao) {
+  function segmentosPasta(f, r, v, padrao, rotulo) {
     r = r || {};
     let iso = v && v.data;
     if (!iso) { const d = new Date(f.dataHora || Date.now()); iso = d.getFullYear() + '-' + doisDig(d.getMonth() + 1) + '-' + doisDig(d.getDate()); }
@@ -293,17 +293,18 @@
       apelido: nomeArquivo(r.apelido || ''),
       data: d.length === 3 ? d[2] + '.' + d[1] + '.' + d[0] : 'sem-data',
       ano: d[0] || '',
-      visita: v ? 'Visita ' + v.numero : 'Sem visita',
+      visita: v ? 'Visita ' + v.numero : rotulo || 'Sem visita',
     };
     return String(padrao || CONFIG_PADRAO.pasta_fotos).split('/').map((seg) => nomeArquivo(seg.replace(/\{(\w+)\}/g, (m, k) => (val[k] != null ? val[k] : '')))).filter(Boolean);
   }
   App.infoFotoDrive = async function (f) {
     const r = await DB.get('registros', f.registroId);
     const v = f.visitaId ? await DB.get('visitas', f.visitaId) : null;
+    const md = !v && f.medicaoId ? await DB.get('medicoes', f.medicaoId) : null; // enviada para o relatório fotográfico da medição
     const dt = f.dataHora ? new Date(f.dataHora) : null;
     const hora = dt ? doisDig(dt.getHours()) + '.' + doisDig(dt.getMinutes()) + '.' + doisDig(dt.getSeconds()) : '';
     const nome = [hora, f.irregular ? 'IRREGULARIDADE' : '', f.projetoDe ? 'PROJETO' : '', String(f.descricao || '').slice(0, 60)].filter(Boolean).join(' - ');
-    return { pastas: segmentosPasta(f, r, v, (CONFIG || {}).pasta_fotos), nome: nomeArquivo(nome) };
+    return { pastas: segmentosPasta(f, r, v, (CONFIG || {}).pasta_fotos, md ? 'Medição ' + md.numero : null), nome: nomeArquivo(nome) };
   };
 
   /* ================================================================== */
@@ -432,6 +433,7 @@
       if (r === 'nova-notificacao') { return await criarNotificacao(a); }
       if (r === 'nova-medicao') { return await criarMedicao(a); }
       if (r === 'medicao') { return await telaMedicao(a); }
+      if (r === 'medicao-fotos') { return await telaMedicaoFotos(a); }
       if (r === 'coleta') { marcarNav(''); return await telaColeta(a); }
       if (r === 'notificacoes') { marcarNav('notificacoes'); return await telaNotificacoes(); }
       if (r === 'fila') { marcarNav('fila'); return await telaFila(); }
@@ -490,7 +492,8 @@
       .sort((a, b) => (b.ordinal || 0) - (a.ordinal || 0) || String(b.criadoEm).localeCompare(a.criadoEm));
   }
   async function fotosDe(registroId) {
-    return (await DB.byIndex('fotos', 'registroId', registroId)).filter((f) => !f.excluido && !f.projetoDe)
+    // (as enviadas da galeria só para o relatório fotográfico de uma medição ficam só nela)
+    return (await DB.byIndex('fotos', 'registroId', registroId)).filter((f) => !f.excluido && !f.projetoDe && !(f.medicaoId && !f.visitaId))
       .sort((a, b) => String(b.dataHora).localeCompare(a.dataHora));
   }
   /* ---------- Linha de lista (formato caixa de entrada) ---------- */
@@ -966,6 +969,7 @@
       const fotos = await DB.all('fotos');
       const mapa = new Map(fotos.map((f) => [f.id, f]));
       const visitas = new Map((await DB.all('visitas')).map((v) => [v.id, v]));
+      const medicoes = new Map((await DB.all('medicoes')).map((x) => [x.id, x]));
       const valida = (vf) => {
         const fv = vf.fotoId ? mapa.get(vf.fotoId) : null;
         if (fv && fv.excluido) return false;
@@ -981,6 +985,8 @@
             n++; continue;
           }
         }
+        // foto enviada para o relatório fotográfico de uma medição que foi excluída (em outro aparelho, por ex.)
+        if (f.medicaoId && !f.visitaId && (medicoes.get(f.medicaoId) || {}).excluido) { await atualizarCampos('fotos', f.id, (o) => { o.excluido = true; }); n++; continue; }
         if (f.projetoDe) {
           const irr = mapa.get(f.projetoDe);
           if (irr && irr.excluido) { await atualizarCampos('fotos', f.id, (o) => { o.excluido = true; }); n++; continue; }
@@ -1576,6 +1582,7 @@
         const res = (origem === 'galeria' && !carimbar && await Foto.original(arq, exif)) || await Foto.processar(arq, { carimbo: linhas, angulo: arq.angulo, origemCamera: arq.angulo !== undefined });
         const foto = { id: DB.uuid(), registroId: r.id, visitaId: v ? v.id : null, tipo: r.tipo, dataHora, lat, lng, precisao, origem,
           carimbada: !!carimbar, largura: res.largura, altura: res.altura, miniatura: res.miniatura, descricao: '', irregular: !!opt.irregular };
+        if (opt.medicaoId) foto.medicaoId = opt.medicaoId; // enviada para o relatório fotográfico da medição
         await DB.blobSet(foto.id, res.blob);
         await DB.salvar('fotos', foto, email());
         salvas.push(foto);
@@ -3619,13 +3626,322 @@
         (!concluida && pode.notificar()) || pode.admin() ? h('button', { class: 'btn peq perigo', onclick: async () => {
           if (!(await confirmar('Excluir esta medição?', 'Excluir', true))) return;
           App._sairNotif = null;
-          await DB.excluir('medicoes', id, email()); sessionStorage.setItem('aba_reg2', 'medicoes'); location.replace('#/registro/' + r.id);
+          await DB.excluir('medicoes', id, email());
+          for (const f of await DB.byIndex('fotos', 'registroId', r.id)) if (f.medicaoId === id && !f.visitaId && !f.excluido) await atualizarCampos('fotos', f.id, (o) => { o.excluido = true; });
+          sessionStorage.setItem('aba_reg2', 'medicoes'); location.replace('#/registro/' + r.id);
         } }, 'Excluir') : null),
       h('p', { class: 'dica' }, 'Os itens da próxima medição já vêm com as descrições (e memoriais) desta. Para PDF, abra o .docx no Word e use “Salvar como PDF”.'));
 
-    rcT(tk, cab, secItens, obs, equipe, acoes);
+    const cRF = await cartaoRelFoto(original, r);
+    rcT(tk, cab, secItens, obs, equipe, cRF, acoes);
     // salva o rascunho ao sair da tela
     App._sairNotif = async () => { if (sujo && !ro) await salvar(true); };
+  }
+
+  /* ================================================================== */
+  /* Relatório fotográfico da medição (Excel, no modelo "Registro        */
+  /* Fotográfico dos Serviços Executados"): fotos de quaisquer visitas   */
+  /* do contrato + fotos enviadas da galeria/computador só para ela.     */
+  /* Fica na medição: m.relFoto = { visitas: [ids], itens: [{ fotoId,   */
+  /* servico }], coordModo: 'foto'|'fixa', coordObra?: { lat, lng } }    */
+  /* ================================================================== */
+  const ORGAO_RELFOTO = 'SEDUC/MT  -  Secretaria de Estado de Educação';
+  const folhasDe = (n) => Math.max(1, Math.ceil(n / 6));
+  const servicoPadrao = (f) => String(f.descricao || '').trim().toUpperCase();
+  const dmsLat = (v) => RelFotoXlsx.dms(v, 'N', 'S'), dmsLng = (v) => RelFotoXlsx.dms(v, 'E', 'W');
+  const textoDMS = (c) => (c && c.lat != null ? dmsLat(c.lat) + '  ' + dmsLng(c.lng) : '');
+
+  async function dadosRelFoto(m, r) {
+    const rf = m.relFoto || {};
+    const visitas = await visitasDe(r.id);
+    const ini = m.periodo_inicio || '', fim = m.periodo_fim || '9999-12-31';
+    const noPeriodo = (v) => !!v.data && v.data >= ini && v.data <= fim;
+    const vivas = new Set(visitas.map((v) => v.id));
+    const marcadas = Array.isArray(rf.visitas) ? rf.visitas.filter((id) => vivas.has(id)) : visitas.filter(noPeriodo).map((v) => v.id);
+    // fotos das visitas (não excluídas) + as enviadas para esta medição
+    const todas = (await DB.byIndex('fotos', 'registroId', r.id))
+      .filter((f) => !f.excluido && !f.projetoDe && (f.visitaId ? vivas.has(f.visitaId) : f.medicaoId === m.id));
+    const mapa = new Map(todas.map((f) => [f.id, f]));
+    const itens = (rf.itens || []).filter((it) => mapa.has(it.fotoId));
+    // coordenada da obra: a digitada ou a da 1ª foto (mais antiga) do contrato com GPS
+    let obra = rf.coordObra && isFinite(rf.coordObra.lat) && isFinite(rf.coordObra.lng) ? { lat: +rf.coordObra.lat, lng: +rf.coordObra.lng, digitada: true } : null;
+    if (!obra) {
+      const c = todas.filter((f) => f.lat != null && f.lng != null).sort((a, b) => String(a.dataHora).localeCompare(String(b.dataHora)))[0];
+      if (c) obra = { lat: c.lat, lng: c.lng };
+    }
+    return { rf, visitas, noPeriodo, marcadas, todas, mapa, itens, obra };
+  }
+  // coordenada que sai na planilha: a da foto ou, sem GPS (ou "a mesma em todas"), a da obra
+  const coordItem = (f, obra, modo) => (modo !== 'fixa' && f.lat != null && f.lng != null ? { lat: f.lat, lng: f.lng } : obra ? { lat: obra.lat, lng: obra.lng, daObra: true } : null);
+
+  async function gerarRelFoto(id, compartilhar) {
+    const m = await DB.get('medicoes', id);
+    if (!m || m.excluido) return;
+    const r = await DB.get('registros', m.registroId);
+    if (!r) { toast('Contrato desta medição não encontrado.', true); return; }
+    const reg = m.registroSnapshot || r; // concluída: os dados do contrato daquele momento
+    const d = await dadosRelFoto(m, r);
+    if (!d.itens.length) { toast('Escolha ao menos uma foto para o relatório.', true); return; }
+    const semServ = d.itens.filter((it) => !String(it.servico || '').trim()).length;
+    if (semServ && !(await confirmar(semServ + ' foto(s) estão sem o “Serviço”. Gerar assim mesmo?', 'Gerar assim mesmo'))) return;
+    const jp = janelaProgresso('Preparando as fotos…', 'Relatório fotográfico · ' + m.numero + 'ª medição');
+    jp.set(null, 0);
+    const t0 = Date.now();
+    try {
+      const fotos = d.itens.map((it) => d.mapa.get(it.fotoId));
+      // do aparelho ou do Drive, já no tamanho da folha (a planilha fica leve e nítida na impressão)
+      const { blobs, faltando } = await obterFotos(fotos, (k, n, bx) => jp.set('Preparando as fotos: ' + k + ' de ' + n + (bx ? ' · ' + bx + ' baixada(s) do Drive' : '') + '…', k / n * 0.6), 6, (b) => Foto.reduzir(b, 1800, 0.88));
+      if (faltando.length && !(await confirmar(faltando.length + ' foto(s) não estão neste aparelho e não foi possível baixá-las do Drive (sem internet ou ainda não enviadas pelo aparelho que as registrou). Gerar o relatório sem elas?', 'Gerar sem elas'))) { jp.fechar(); return; }
+      const modo = d.rf.coordModo || 'foto';
+      const itens = [];
+      for (const it of d.itens) {
+        const f = d.mapa.get(it.fotoId), b = blobs.get(f.id);
+        if (!b) continue;
+        const c = coordItem(f, d.obra, modo);
+        itens.push({ img: new Uint8Array(await b.arrayBuffer()), lat: c ? dmsLat(c.lat) : '', lng: c ? dmsLng(c.lng) : '', local: reg.local_obra || '', servico: it.servico || '' });
+      }
+      let logo = null;
+      try { const resp = await fetch('modelos/logo_relfoto.png'); if (resp.ok) logo = new Uint8Array(await resp.arrayBuffer()); } catch (e) { /* sem o logotipo */ }
+      const cab = {
+        orgao: ORGAO_RELFOTO,
+        medicao: m.numero + 'ª Medição   -   Período:  ' + dataCurta(m.periodo_inicio) + '  a  ' + dataCurta(m.periodo_fim),
+        obra: reg.objeto || '', local: reg.local_obra || '', contratada: reg.n_nome || '', cnpj: reg.n_cnpj || '', contrato: reg.numero || '', os: reg.os_numero || '',
+      };
+      jp.set('Montando a planilha (' + itens.length + ' fotos)…', 0.62);
+      await pausaTela();
+      const titulo = 'RELATÓRIO FOTOGRÁFICO - ' + m.numero + 'ª MEDIÇÃO - ' + r.apelido;
+      const blob = await RelFotoXlsx.gerar({ cab, itens, logo, titulo }, { aoProgresso: (p) => jp.set(null, 0.62 + 0.38 * p) });
+      const nome = nomeArquivo(titulo) + '.xlsx';
+      jp.fechar();
+      if (compartilhar) await compartilharBlob(blob, nome, nome); else baixarBlob(blob, nome);
+      Sync.log('relfoto', itens.length + ' fotos, ' + (blob.size / 1048576).toFixed(1) + ' MB, ' + Math.round((Date.now() - t0) / 1000) + ' s');
+      toast('Relatório gerado: ' + nome + ' (' + (blob.size / 1048576).toFixed(1).replace('.', ',') + ' MB)');
+    } catch (e) { jp.fechar(); console.error(e); toast(e.message, true); }
+  }
+
+  /* Cartão na tela da medição */
+  async function cartaoRelFoto(m, r) {
+    const d = await dadosRelFoto(m, r);
+    const n = d.itens.length;
+    const deVis = new Set(d.itens.map((it) => d.mapa.get(it.fotoId).visitaId).filter(Boolean));
+    const env = d.itens.filter((it) => !d.mapa.get(it.fotoId).visitaId).length;
+    const tira = h('div', { class: 'rf-tira' });
+    for (const it of d.itens.slice(0, 8)) { const img = h('img', { alt: '' }); urlFoto(d.mapa.get(it.fotoId)).then((u) => { img.src = u; }); ap(tira, img); }
+    if (n > 8) ap(tira, h('span', { class: 'rf-mais' }, '+' + (n - 8)));
+    const nums = d.visitas.filter((v) => deVis.has(v.id)).map((v) => v.numero).sort((a, b) => a - b);
+    const origem = [nums.length ? (nums.length === 1 ? 'da visita nº ' : 'das visitas nº ') + nums.join(', ') : '', env ? env + ' enviada(s) da galeria/computador' : ''].filter(Boolean).join(' + ');
+    return h('div', { class: 'card rf-cartao' }, h('h2', {}, 'Relatório fotográfico (Excel)'),
+      n ? tira : null,
+      h('div', { class: 'sub' }, n ? n + ' foto(s) · ' + folhasDe(n) + ' folha(s)' + (origem ? ' · ' + origem : '')
+        : 'Nenhuma foto escolhida ainda. As visitas feitas no período da medição (' + dataCurta(m.periodo_inicio) + ' a ' + dataCurta(m.periodo_fim) + ') já vêm marcadas.'),
+      h('div', { class: 'acoes' },
+        h('a', { class: 'btn' + (n ? '' : ' pri'), href: '#/medicao-fotos/' + m.id }, n ? '🖼️ Escolher / ordenar fotos' : '🖼️ Escolher fotos'),
+        n ? h('button', { class: 'btn pri', onclick: () => gerarRelFoto(m.id, false) }, '⬇️ Baixar Excel (.xlsx)') : null,
+        n ? h('button', { class: 'btn', onclick: () => gerarRelFoto(m.id, true) }, '📤 Compartilhar') : null),
+      h('p', { class: 'dica' }, 'Segue o modelo “Registro Fotográfico dos Serviços Executados”: 6 fotos por folha (A4), com coordenada, localização e serviço em cada foto.'));
+  }
+
+  /* Tela de escolha das fotos */
+  async function telaMedicaoFotos(id) {
+    const tk = rotaSeq;
+    const m = await DB.get('medicoes', id);
+    if (!m || m.excluido) { rcT(tk, h('div', { class: 'vazio' }, 'Medição não encontrada.')); return; }
+    const r = await DB.get('registros', m.registroId);
+    if (!r) { rcT(tk, h('div', { class: 'vazio' }, 'Contrato desta medição não encontrado.')); return; }
+    marcarNav('contratos');
+    titulo('Fotos · ' + m.numero + 'ª Medição · ' + r.apelido, true);
+    const reg = m.registroSnapshot || r;
+    const ro = m.status === 'concluida' || !pode.notificar();
+    const d = await dadosRelFoto(m, r);
+    const marc = new Set(d.marcadas);
+    let itens = d.itens.map((it) => ({ fotoId: it.fotoId, servico: it.servico || '' }));
+    const rf = { coordModo: d.rf.coordModo === 'fixa' ? 'fixa' : 'foto', coordObra: d.rf.coordObra || null };
+    let verFora = d.visitas.some((v) => !d.noPeriodo(v) && marc.has(v.id));
+    let aba = sessionStorage.getItem('rf_aba') || 'visitas';
+    if (!['visitas', 'fotos', 'ordem'].includes(aba)) aba = 'visitas';
+    document.body.dataset.rfAba = aba;
+
+    /* gravação: logo depois de cada mudança e ao sair da tela */
+    let espera = null, sujo = false;
+    const gravarAgora = async () => {
+      clearTimeout(espera); espera = null;
+      if (!sujo || ro) return;
+      sujo = false;
+      const novo = { visitas: [...marc], itens: itens.map((it) => ({ fotoId: it.fotoId, servico: it.servico || '' })), coordModo: rf.coordModo };
+      if (rf.coordObra) novo.coordObra = { lat: rf.coordObra.lat, lng: rf.coordObra.lng };
+      await atualizarCampos('medicoes', m.id, (o) => { o.relFoto = novo; });
+    };
+    const mudou = () => { if (ro) return; sujo = true; clearTimeout(espera); espera = setTimeout(gravarAgora, 700); };
+
+    const sel = () => itens.map((it) => it.fotoId);
+    const fotosVis = (vid) => ordenarFotos(d.todas.filter((f) => f.visitaId === vid));
+    const enviadas = () => ordenarFotos(d.todas.filter((f) => !f.visitaId && f.medicaoId === m.id));
+    const alternar = (f) => {
+      if (ro) return;
+      const i = itens.findIndex((it) => it.fotoId === f.id);
+      if (i >= 0) itens.splice(i, 1); else itens.push({ fotoId: f.id, servico: servicoPadrao(f) });
+      mudou(); desenhar();
+    };
+
+    const boxVis = h('div'), boxFotos = h('div'), boxOrdem = h('div'), tituloOrdem = h('h2'), resumo = h('span');
+    const linhaVis = (v) => {
+      const fs = d.todas.filter((f) => f.visitaId === v.id), esc = fs.filter((f) => sel().includes(f.id)).length;
+      return h('label', { class: 'rf-vis' + (marc.has(v.id) ? ' on' : '') },
+        h('input', { type: 'checkbox', disabled: ro, checked: marc.has(v.id) ? 'checked' : null, onchange: async (e) => {
+          if (e.target.checked) marc.add(v.id);
+          else {
+            const minhas = itens.filter((it) => fs.some((f) => f.id === it.fotoId));
+            if (minhas.length) {
+              const resp = await modal('Desmarcar a visita nº ' + v.numero + '?', h('p', {}, minhas.length + ' foto(s) desta visita estão no relatório.'),
+                [{ txt: 'Cancelar', valor: null }, { txt: 'Manter as fotos', valor: 'manter' }, { txt: 'Tirar do relatório', cls: 'perigo', valor: 'tirar' }]);
+              if (!resp) { e.target.checked = true; return; }
+              if (resp === 'tirar') itens = itens.filter((it) => !minhas.includes(it));
+            }
+            marc.delete(v.id);
+          }
+          mudou(); desenhar();
+        } }),
+        h('div', { class: 'rf-vis-t' }, h('b', {}, 'Visita nº ' + v.numero), h('span', { class: 'sub' }, ' · ' + dataCurta(v.data)),
+          h('div', { class: 'sub' }, fs.length + ' foto(s)' + (esc ? ' · ' + esc + ' escolhida(s)' : ''))),
+        d.noPeriodo(v) ? etq('no período', 'ok') : etq('fora do período'));
+    };
+
+    /* enviar da galeria / computador (ou arrastar os arquivos) */
+    const status = h('div', { class: 'sub' });
+    const enviar = async (lista) => {
+      const arqs = Array.from(lista || []).filter((a) => /^image\//.test(a.type) || /\.(jpe?g|png|heic|heif|webp)$/i.test(a.name || ''));
+      if (!arqs.length) return;
+      const salvas = await salvarFotos(arqs, 'galeria', r, null, { medicaoId: m.id }, status);
+      rc(status);
+      for (const f of salvas) { d.todas.push(f); d.mapa.set(f.id, f); itens.push({ fotoId: f.id, servico: '' }); }
+      if (salvas.length) { toast(salvas.length + ' foto(s) incluída(s) no relatório — escreva o “Serviço” de cada uma na aba Ordem.'); mudou(); desenhar(); }
+    };
+    const inpArq = h('input', { type: 'file', accept: 'image/*', multiple: true, style: { display: 'none' }, onchange: (e) => { const l = e.target.files; enviar(l).finally(() => { e.target.value = ''; }); } });
+
+    const desenhar = () => {
+      const dentro = d.visitas.filter(d.noPeriodo), fora = d.visitas.filter((v) => !d.noPeriodo(v));
+      rc(boxVis,
+        h('div', { class: 'sub', style: { margin: '-4px 0 8px' } }, 'Período da medição: ' + dataCurta(m.periodo_inicio) + ' a ' + dataCurta(m.periodo_fim)),
+        ...dentro.map(linhaVis),
+        dentro.length ? null : h('div', { class: 'vazio' }, 'Nenhuma visita no período.'),
+        fora.length ? h('button', { class: 'btn peq', style: { marginTop: '8px' }, onclick: () => { verFora = !verFora; desenhar(); } }, verFora ? 'Esconder visitas fora do período' : 'Mostrar visitas fora do período (' + fora.length + ')') : null,
+        ...(verFora ? fora.map(linhaVis) : []));
+
+      const s = sel();
+      const grupos = d.visitas.filter((v) => marc.has(v.id)).map((v) => {
+        const fs = fotosVis(v.id);
+        const todasSel = fs.length && fs.every((f) => s.includes(f.id));
+        return h('div', { class: 'rf-grupo' },
+          h('div', { class: 'rf-grupo-t' }, h('b', {}, 'Visita nº ' + v.numero + ' · ' + dataCurta(v.data)),
+            fs.length && !ro ? h('button', { class: 'btn peq', onclick: () => {
+              if (todasSel) itens = itens.filter((it) => !fs.some((f) => f.id === it.fotoId));
+              else for (const f of fs.slice().reverse()) if (!s.includes(f.id)) itens.push({ fotoId: f.id, servico: servicoPadrao(f) }); // da mais antiga para a mais nova
+              mudou(); desenhar();
+            } }, todasSel ? 'Desmarcar todas' : 'Marcar todas') : null),
+          fs.length ? gradeFotos(fs, { selecionadas: s, onclick: alternar }) : h('div', { class: 'sub' }, 'Sem fotos.'));
+      });
+      const env = enviadas();
+      const naoUsadas = env.filter((f) => !s.includes(f.id));
+      rc(boxFotos,
+        grupos.length ? h('p', { class: 'sub', style: { marginTop: 0 } }, ro ? 'Fotos das visitas marcadas. O número é a posição no relatório.' : 'Toque nas fotos para incluir no relatório (ou tirar). O número é a posição no relatório.')
+          : h('div', { class: 'vazio' }, 'Marque ao menos uma visita.'),
+        ...grupos,
+        env.length || !ro ? h('div', { class: 'rf-grupo' },
+          h('div', { class: 'rf-grupo-t' }, h('b', {}, 'Enviadas da galeria / computador'),
+            !ro && naoUsadas.length ? h('button', { class: 'btn peq perigo', onclick: async () => {
+              if (!(await confirmar('Apagar ' + naoUsadas.length + ' foto(s) enviada(s) que não estão no relatório? Elas só existem nesta medição.', 'Apagar', true))) return;
+              for (const f of naoUsadas) { await atualizarCampos('fotos', f.id, (o) => { o.excluido = true; }); d.mapa.delete(f.id); }
+              d.todas = d.todas.filter((f) => !naoUsadas.includes(f));
+              desenhar();
+            } }, '🗑 Apagar as não usadas (' + naoUsadas.length + ')') : null),
+          env.length ? gradeFotos(env, { selecionadas: s, onclick: alternar }) : null,
+          ro ? null : h('label', { class: 'rf-envio',
+            ondragover: (e) => { e.preventDefault(); e.currentTarget.classList.add('sobre'); },
+            ondragleave: (e) => { e.currentTarget.classList.remove('sobre'); },
+            ondrop: (e) => { e.preventDefault(); e.currentTarget.classList.remove('sobre'); enviar(e.dataTransfer && e.dataTransfer.files); } },
+          inpArq, h('span', { class: 'btn' }, '📁 Enviar fotos da galeria ou do computador'), h('span', { class: 'sub rf-arraste' }, 'ou arraste os arquivos para cá')),
+          status,
+          ro ? null : h('div', { class: 'dica' }, 'Ficam guardadas só nesta medição (e no Drive, na pasta do contrato). A coordenada vem do GPS gravado na foto, quando houver.')) : null);
+
+      const n = itens.length;
+      rc(tituloOrdem, 'Ordem no relatório (' + n + ' foto' + (n === 1 ? '' : 's') + ' · ' + folhasDe(n) + ' folha' + (folhasDe(n) === 1 ? '' : 's') + ')');
+      rc(resumo, h('b', {}, n + ' foto' + (n === 1 ? '' : 's')), ' · ' + folhasDe(n) + ' folha' + (folhasDe(n) === 1 ? '' : 's'));
+      if (abas.children[1]) rc(abas.children[1], '2 · Fotos' + (n ? ' (' + n + ')' : ''));
+      const lista = [];
+      itens.forEach((it, i) => {
+        const f = d.mapa.get(it.fotoId);
+        if (i % 6 === 0) lista.push(h('div', { class: 'rf-folha' }, 'Folha ' + (i / 6 + 1) + '/' + folhasDe(n)));
+        const img = h('img', { alt: '' });
+        urlFoto(f).then((u) => { img.src = u; });
+        const ta = h('textarea', { rows: 1, class: 'rf-serv', readonly: ro, placeholder: ro ? '' : 'Serviço (ex.: EXECUÇÃO DE PISCINA)', oninput: (e) => { it.servico = e.target.value; e.target.style.height = 'auto'; e.target.style.height = e.target.scrollHeight + 2 + 'px'; mudou(); } });
+        ta.value = it.servico || '';
+        const v = d.visitas.find((x) => x.id === f.visitaId);
+        const c = coordItem(f, d.obra, rf.coordModo);
+        lista.push(h('div', { class: 'rf-item' },
+          h('div', { class: 'rf-mini' }, img, h('span', { class: 'num' }, i + 1)),
+          h('div', { class: 'rf-cont' }, h('span', { class: 'rf-rot' }, 'Serviço'), ta),
+          h('div', { class: 'sub rf-meta' },
+            h('div', {}, c ? h('span', { class: c.daObra && rf.coordModo !== 'fixa' ? 'rf-semgps' : '' }, '📍 ' + textoDMS(c) + (c.daObra && rf.coordModo !== 'fixa' ? ' (sem GPS: a da obra)' : '')) : h('span', { class: 'rf-semgps' }, '📍 sem coordenada')),
+            h('div', {}, v ? 'Visita nº ' + v.numero + ' · ' + dataCurta(v.data) : '📁 enviada da galeria')),
+          ro ? h('div') : h('div', { class: 'ctl' },
+            h('button', { class: 'btn peq', disabled: i === 0, title: 'Subir', onclick: () => { itens.splice(i - 1, 0, itens.splice(i, 1)[0]); mudou(); desenhar(); } }, '▲'),
+            h('button', { class: 'btn peq', disabled: i === n - 1, title: 'Descer', onclick: () => { itens.splice(i + 1, 0, itens.splice(i, 1)[0]); mudou(); desenhar(); } }, '▼'),
+            h('button', { class: 'btn peq perigo', title: 'Tirar do relatório', onclick: () => { itens.splice(i, 1); mudou(); desenhar(); } }, '✕'))));
+      });
+      rc(boxOrdem, n ? h('p', { class: 'sub', style: { marginTop: 0 } }, 'A legenda “Serviço” vem da descrição da foto e sai em maiúsculas. Altere aqui sem mudar a foto na visita.') : h('div', { class: 'vazio' }, 'Nenhuma foto escolhida.'), ...lista);
+      requestAnimationFrame(() => boxOrdem.querySelectorAll('textarea').forEach((t) => { if (t.offsetParent) { t.style.height = 'auto'; t.style.height = t.scrollHeight + 2 + 'px'; } }));
+      rc(boxCoord, linhaCoord());
+    };
+
+    /* cabeçalho e coordenada */
+    const lin = (rot, val) => h('div', { class: 'rf-cab-l' }, h('span', {}, rot), h('b', {}, val || '—'));
+    const boxCoord = h('div');
+    const obraDe = () => {
+      if (rf.coordObra) return { lat: rf.coordObra.lat, lng: rf.coordObra.lng, digitada: true };
+      const c = d.todas.filter((f) => f.lat != null && f.lng != null).sort((a, b) => String(a.dataHora).localeCompare(String(b.dataHora)))[0];
+      return c ? { lat: c.lat, lng: c.lng } : null;
+    };
+    const linhaCoord = () => h('div', { class: 'rf-coord' },
+      h('div', { class: 'sub' }, 'Coordenada da obra: ', h('b', {}, d.obra ? textoDMS(d.obra) : 'nenhuma'), d.obra && !d.obra.digitada ? ' (da 1ª foto do contrato com GPS)' : ''),
+      ro ? null : h('button', { class: 'btn peq', onclick: async () => {
+        const inp = h('input', { type: 'text', value: d.obra ? textoDMS(d.obra) : '', placeholder: '11°49\'59.7"S 55°32\'07.6"W  ou  -11.833250, -55.535444' });
+        const botoes = [{ txt: 'Cancelar', valor: null }];
+        if (rf.coordObra) botoes.push({ txt: 'Usar a da 1ª foto', valor: 'auto' });
+        botoes.push({ txt: 'Salvar', cls: 'pri', valor: () => inp.value, antes: () => { if (!RelFotoXlsx.lerCoord(inp.value)) { toast('Coordenada não reconhecida. Ex.: -11.833250, -55.535444', true); return false; } } });
+        const resp = await modal('Coordenada da obra', h('div', {}, h('p', { class: 'sub' }, 'Vale para as fotos sem GPS e para a opção “A mesma em todas”. Pode colar do Google Maps.'), inp), botoes);
+        if (resp == null) return;
+        rf.coordObra = resp === 'auto' ? null : RelFotoXlsx.lerCoord(resp);
+        d.obra = obraDe();
+        mudou(); desenhar();
+      } }, 'Alterar'));
+    const segCoord = h('div', { class: 'seg' }, [['foto', 'GPS de cada foto'], ['fixa', 'A mesma em todas']].map(([k, t]) => h('button', { type: 'button', disabled: ro, class: rf.coordModo === k ? 'ativo' : '',
+      onclick: () => { rf.coordModo = k; [...segCoord.children].forEach((b, j) => b.classList.toggle('ativo', j === (k === 'foto' ? 0 : 1))); mudou(); desenhar(); } }, t)));
+    const cab = h('div', { class: 'card rf-cab' }, h('h2', {}, 'Cabeçalho das folhas'),
+      lin('Medição', m.numero + 'ª Medição — Período: ' + dataCurta(m.periodo_inicio) + ' a ' + dataCurta(m.periodo_fim)),
+      lin('Obra', reg.objeto), lin('Localização', reg.local_obra), lin('Contratada', reg.n_nome), lin('CNPJ', reg.n_cnpj),
+      h('div', { class: 'grade2' }, lin('Contrato N.º', reg.numero), lin('O.S. Nº', reg.os_numero)),
+      h('div', { class: 'sub', style: { marginTop: '6px' } }, m.registroSnapshot ? 'Dados do contrato gravados ao concluir a medição.' : 'Vem do cadastro do contrato. ', !m.registroSnapshot && pode.cadastro() ? h('a', { href: '#/editar/' + r.id }, 'Editar cadastro') : null),
+      h('h3', {}, 'Coordenada nas fotos'), segCoord, boxCoord);
+    const gerar = async (comp) => { await gravarAgora(); await gerarRelFoto(m.id, comp); };
+    const acoes = h('div', { class: 'card' }, h('h2', {}, 'Gerar'),
+      h('div', { class: 'acoes', style: { marginTop: 0 } },
+        h('button', { class: 'btn pri', onclick: () => gerar(false) }, '⬇️ Baixar Excel (.xlsx)'),
+        h('button', { class: 'btn', onclick: () => gerar(true) }, '📤 Compartilhar')),
+      h('p', { class: 'dica' }, 'A escolha fica salva na medição (sincroniza com os colegas). Para PDF, abra o .xlsx no Excel e use “Salvar como PDF”.'));
+
+    const abas = h('div', { class: 'seg rf-abas' }, [['visitas', '1 · Visitas'], ['fotos', '2 · Fotos'], ['ordem', '3 · Ordem']].map(([k, t]) => h('button', { type: 'button', class: aba === k ? 'ativo' : '',
+      onclick: (e) => { document.body.dataset.rfAba = k; sessionStorage.setItem('rf_aba', k); [...abas.children].forEach((b) => b.classList.toggle('ativo', b === e.currentTarget)); window.scrollTo(0, 0); if (k === 'ordem') desenhar(); } }, t)));
+    const barra = h('div', { class: 'rf-barra' }, resumo, h('button', { class: 'btn pri', onclick: () => gerar(false) }, '⬇️ Gerar Excel'));
+    const esq = h('div', { class: 'rf-esq' },
+      h('div', { class: 'card rf-p-visitas' }, h('h2', {}, 'Visitas'), boxVis),
+      h('div', { class: 'card rf-p-fotos' }, h('h2', {}, 'Escolha as fotos'), boxFotos));
+    const dir = h('div', { class: 'rf-dir' },
+      h('div', { class: 'card rf-p-ordem' }, tituloOrdem, boxOrdem),
+      h('div', { class: 'rf-p-ordem' }, cab), h('div', { class: 'rf-p-ordem' }, acoes));
+    desenhar();
+    rcT(tk, ro ? h('div', { class: 'aviso' }, m.status === 'concluida' ? '🔒 Medição concluída: a escolha das fotos está bloqueada (um administrador pode reabrir). O relatório pode ser gerado normalmente.' : 'Seu perfil permite apenas consultar e gerar o relatório.') : null,
+      abas, h('div', { class: 'rf' }, esq, dir), barra);
+    App._sairNotif = async () => { delete document.body.dataset.rfAba; await gravarAgora(); };
   }
 
   /* ================================================================== */
@@ -3781,7 +4097,7 @@
       for (const f of fotosSemDrive) if (!(await DB.blobGet(f.id))) semArquivo++;
       const log = Sync.lerLog().slice().reverse();
       const resumo = {
-        app: '3.15.4', servidor: Sync.versaoServidor || '?', usuario: (u || {}).email, perfil: perfil(), estado: Sync.estado, erro: Sync.erro || '',
+        app: '3.15.5', servidor: Sync.versaoServidor || '?', usuario: (u || {}).email, perfil: perfil(), estado: Sync.estado, erro: Sync.erro || '',
         online: navigator.onLine, ultimaSync: await DB.kvGet('ultimaSync', null), cursor: await DB.kvGet('servidorDesde', 0),
         pendentes: pendPor, fotosAguardandoEnvio: fotosSemDrive.length - semArquivo, fotosDeOutroAparelhoSemEnvio: semArquivo,
         aparelho: navigator.userAgent, log,
@@ -4036,7 +4352,7 @@
     // a partir de "Aparência e câmera", cada seção vira uma lista suspensa (fechada; lembra as abertas)
     const iniSecoes = cards.findIndex((c) => c.querySelector && (c.querySelector(':scope > h2') || {}).textContent === 'Aparência e câmera');
     if (iniSecoes >= 0) for (let i = iniSecoes; i < cards.length; i++) cards[i] = secaoRecolhivel(cards[i]);
-    cards.push(h('p', { class: 'dica', style: { textAlign: 'center' } }, 'Fiscalização de Obras · v3.15.4 · dados salvos no aparelho' + (Sync.habilitado() ? ' e no Google Drive do administrador' : '') + ' · ', h('a', { href: 'privacidade.html' }, 'Política de privacidade')));
+    cards.push(h('p', { class: 'dica', style: { textAlign: 'center' } }, 'Fiscalização de Obras · v3.15.5 · dados salvos no aparelho' + (Sync.habilitado() ? ' e no Google Drive do administrador' : '') + ' · ', h('a', { href: 'privacidade.html' }, 'Política de privacidade')));
     rcT(tk, ...cards);
   }
 

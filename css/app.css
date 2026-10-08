@@ -733,3 +733,52 @@ body:has(.cv) .visor-fundo { display: none; }
 .rec-alca { position: absolute; width: 22px; height: 22px; background: #fff; border: 2px solid var(--pri); border-radius: 50%; }
 .rec-alca.nw { left: -11px; top: -11px; cursor: nwse-resize; } .rec-alca.ne { right: -11px; top: -11px; cursor: nesw-resize; }
 .rec-alca.sw { left: -11px; bottom: -11px; cursor: nesw-resize; } .rec-alca.se { right: -11px; bottom: -11px; cursor: nwse-resize; }
+
+/* ---- relatório fotográfico da medição (3.15.5) ---- */
+.rf-tira { display: flex; gap: 6px; overflow: hidden; margin: 2px 0 8px; align-items: center; }
+.rf-tira img { width: 84px; height: 63px; object-fit: cover; border-radius: 8px; flex: none; }
+.rf-mais { flex: none; width: 56px; height: 63px; border-radius: 8px; background: var(--sup2); display: grid; place-items: center; font-weight: 700; color: var(--txt2); }
+.rf-abas { margin-bottom: 12px; position: sticky; top: calc(58px + env(safe-area-inset-top)); z-index: 6; }
+.rf-vis { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-radius: 12px; background: var(--sup2); margin-bottom: 6px; cursor: pointer; }
+.rf-vis.on { background: color-mix(in srgb, var(--pri) 12%, var(--sup)); outline: 1.5px solid color-mix(in srgb, var(--pri) 45%, transparent); }
+.rf-vis input { width: 20px; height: 20px; flex: none; accent-color: var(--pri); }
+.rf-vis-t { flex: 1; min-width: 0; }
+.rf-grupo { margin-top: 14px; }
+.rf-grupo-t { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
+.rf-envio.sobre { border-color: var(--pri); background: color-mix(in srgb, var(--pri) 8%, transparent); }
+.rf-envio { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; border: 2px dashed var(--borda, #cfd3e6); border-radius: 14px; padding: 14px; margin-top: 8px; cursor: pointer; }
+.rf-folha { font-size: 12px; font-weight: 700; color: var(--txt2); text-transform: uppercase; letter-spacing: .04em; margin: 14px 0 6px; display: flex; align-items: center; gap: 8px; }
+.rf-folha::after { content: ''; flex: 1; height: 1px; background: var(--sup2); }
+.rf-item { display: grid; grid-template-columns: auto minmax(0,1fr) auto; grid-template-areas: 'mini cont ctl' 'mini meta ctl'; column-gap: 10px; row-gap: 2px; align-items: start; padding: 8px; border-radius: 12px; background: var(--sup2); margin-bottom: 6px; }
+.rf-mini { position: relative; grid-area: mini; } .rf-cont { grid-area: cont; } .rf-meta { grid-area: meta; } .rf-item .ctl { grid-area: ctl; }
+.rf-mini img { width: 96px; height: 72px; object-fit: cover; border-radius: 8px; display: block; }
+.rf-mini .num { position: absolute; top: 4px; left: 4px; background: var(--pri); color: var(--pri-txt); border-radius: 999px; min-width: 22px; height: 22px; font-size: 12px; display: grid; place-items: center; font-weight: 700; }
+.rf-cont { flex: 1; min-width: 0; }
+.rf-rot { font-size: 11.5px; color: var(--txt2); }
+.rf-serv { text-transform: uppercase; min-height: 0 !important; font-size: 13px; resize: none; padding: 8px 10px !important; line-height: 1.35; overflow: hidden; background: var(--sup) !important; display: block; }
+.rf-meta { margin-top: 4px; font-size: 12px; }
+.rf-semgps { color: var(--alerta); }
+.rf-item .ctl { display: flex; flex-direction: column; gap: 4px; }
+.rf-cab-l { display: flex; flex-direction: column; padding: 5px 0; border-bottom: 1px solid var(--sup2); font-size: 13px; }
+.rf-cab-l span { font-size: 11.5px; color: var(--txt2); }
+.rf-cab-l b { font-weight: 500; }
+.rf-barra { display: none; }
+@media (max-width: 1023px) {
+  body[data-rf-aba="visitas"] .rf-p-fotos, body[data-rf-aba="visitas"] .rf-p-ordem,
+  body[data-rf-aba="fotos"] .rf-p-visitas, body[data-rf-aba="fotos"] .rf-p-ordem,
+  body[data-rf-aba="ordem"] .rf-esq { display: none; }
+  body[data-tela="medicao-fotos"] main { padding-bottom: 150px; }
+  .rf-barra { display: flex; align-items: center; justify-content: space-between; gap: 10px; position: fixed; left: 10px; right: 10px; bottom: calc(76px + env(safe-area-inset-bottom)); z-index: 15; background: var(--sup); border-radius: 16px; padding: 8px 8px 8px 14px; box-shadow: 0 6px 24px rgba(20,22,50,.18); }
+  .rf-arraste { display: none; }
+  .rf-mini img { width: 88px; height: 66px; }
+  .rf-item { grid-template-areas: 'mini meta ctl' 'cont cont cont'; row-gap: 8px; }
+  .rf-item .ctl { flex-direction: row; }
+  .rf-meta { margin-top: 0; align-self: center; }
+}
+@media (min-width: 1024px) {
+  .rf-abas { display: none; }
+  .rf { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); gap: 20px; align-items: start; }
+  .rf-dir { position: sticky; top: 12px; max-height: calc(100vh - 24px); overflow: auto; border-radius: 22px; }
+  body[data-tela="medicao-fotos"] .fotos { grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); }
+}
+.rf-coord { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin-top: 8px; }
