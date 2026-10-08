@@ -432,8 +432,8 @@
       if (r === 'notificacao') { return await telaNotificacao(a); }
       if (r === 'nova-notificacao') { return await criarNotificacao(a); }
       if (r === 'nova-medicao') { return await criarMedicao(a); }
-      if (r === 'medicao') { return await telaMedicao(a); }
-      if (r === 'medicao-fotos') { return await telaMedicaoFotos(a); }
+      if (r === 'medicao') { return await telaMedicao(a, b); }
+      if (r === 'medicao-fotos') { location.replace('#/medicao/' + a + '/fotos'); return; } // endereço da 3.15.5
       if (r === 'coleta') { marcarNav(''); return await telaColeta(a); }
       if (r === 'notificacoes') { marcarNav('notificacoes'); return await telaNotificacoes(); }
       if (r === 'fila') { marcarNav('fila'); return await telaFila(); }
@@ -648,7 +648,8 @@
             h('span', { class: 'badge ' + (m.status === 'concluida' ? 'emit' : 'rasc') }, m.status === 'concluida' ? 'Concluída' : 'Rascunho'),
             h('div', { class: 't' }, m.numero + 'ª Medição', m._pendente ? h('span', { class: 'pend' }) : null),
             h('div', { class: 'd' }, 'Período ' + X.dataBR(m.periodo_inicio) + ' a ' + X.dataBR(m.periodo_fim)),
-            h('div', { class: 'd' }, c.total + ' item(ns)' + (c.nao ? ' · ' + c.nao + ' não medido(s)' : '') + (c.parcial ? ' · ' + c.parcial + ' parcial(is)' : '') + ' · por ' + (nomeDe(m.criadoPor) || '—')));
+            h('div', { class: 'd' }, '📄 ' + c.total + ' item(ns)' + (c.nao ? ' · ' + c.nao + ' não medido(s)' : '') + (c.parcial ? ' · ' + c.parcial + ' parcial(is)' : '') +
+              '  ·  📷 ' + (((m.relFoto || {}).itens || []).length ? m.relFoto.itens.length + ' foto(s)' : 'sem fotos') + ' · por ' + (nomeDe(m.criadoPor) || '—')));
         }) : [h('div', { class: 'vazio' }, 'Nenhuma medição registrada para este contrato.')]));
     } else if (aba === 'irr') {
       ap(conteudo, await painelIrregularidades(r));
@@ -3494,7 +3495,51 @@
     location.replace('#/medicao/' + salvo.id);
   }
 
-  async function telaMedicao(id) {
+  /* A medição tem dois documentos: o Relatório de Medição (itens, Word) e o Relatório Fotográfico
+     (fotos, Excel). O cabeçalho comum mostra os dois lado a lado; tocar num deles troca o conteúdo.
+     Concluir / Reabrir / Excluir valem para a medição inteira (os dois documentos). */
+  async function hubMedicao(m, r, aba, ctx) {
+    const concluida = m.status === 'concluida';
+    const c = contarSituacao(m);
+    const d = await dadosRelFoto(m, r);
+    const n = d.itens.length;
+    const doc = (k, ico, tit, fmt, resumo, href) => h('a', { class: 'med-doc' + (aba === k ? ' ativo' : ''), href, 'aria-current': aba === k ? 'page' : null },
+      h('span', { class: 'med-doc-ico', 'aria-hidden': 'true' }, ico),
+      h('span', { class: 'med-doc-txt' }, h('b', {}, tit), h('span', { class: 'med-doc-res' }, h('span', { class: 'med-doc-fmt' }, fmt), ' · ', ...resumo)));
+    const concluir = async () => {
+      if (!(await confirmar('Concluir a medição? Os itens e a escolha de fotos ficam bloqueados (um administrador pode reabrir). Os dois relatórios continuam podendo ser gerados.', 'Concluir'))) return;
+      if (ctx && ctx.antes) await ctx.antes();
+      const snap = Object.assign({}, r); for (const k of ['_pendente', '_campos', '_base', '_versaoBase', 'atualizadoEm', 'atualizadoPor', 'criadoEm', 'criadoPor']) delete snap[k];
+      await atualizarCampos('medicoes', m.id, (o) => { o.status = 'concluida'; o.concluidaEm = new Date().toISOString(); o.concluidaPor = email(); o.registroSnapshot = snap; });
+      App._sairNotif = null; telaMedicao(m.id, aba);
+    };
+    const acoes = h('div', { class: 'med-hub-acoes' },
+      !concluida && pode.notificar() ? h('button', { class: 'btn ok peq', onclick: concluir }, '✅ Concluir', h('span', { class: 'med-pc' }, ' medição')) : null,
+      concluida && pode.admin() ? h('button', { class: 'btn peq', onclick: async () => {
+        if (!(await confirmar('Reabrir a medição para edição?', 'Reabrir'))) return;
+        await atualizarCampos('medicoes', m.id, (o) => { o.status = 'rascunho'; delete o.concluidaEm; delete o.concluidaPor; delete o.registroSnapshot; });
+        App._sairNotif = null; telaMedicao(m.id, aba);
+      } }, '🔓 Reabrir') : null,
+      (!concluida && pode.notificar()) || pode.admin() ? h('button', { class: 'btn peq perigo', title: 'Excluir a medição', onclick: async () => {
+        if (!(await confirmar('Excluir esta medição? Sai junto o relatório de medição e a escolha de fotos (as fotos das visitas continuam).', 'Excluir', true))) return;
+        App._sairNotif = null;
+        await DB.excluir('medicoes', m.id, email());
+        for (const f of await DB.byIndex('fotos', 'registroId', r.id)) if (f.medicaoId === m.id && !f.visitaId && !f.excluido) await atualizarCampos('fotos', f.id, (o) => { o.excluido = true; });
+        sessionStorage.setItem('aba_reg2', 'medicoes'); location.replace('#/registro/' + r.id);
+      } }, h('span', { class: 'med-pc' }, 'Excluir'), h('span', { class: 'med-cel', 'aria-label': 'Excluir' }, '🗑')) : null);
+    return h('div', { class: 'card med-hub' },
+      h('div', { class: 'med-hub-topo' },
+        h('div', { class: 'med-hub-id' },
+          h('div', { class: 'med-hub-t' }, m.numero + 'ª Medição'),
+          h('div', { class: 'sub' }, h('span', { class: 'badge ' + (concluida ? 'emit' : 'rasc') }, concluida ? 'Concluída' : 'Rascunho'), ' Período ' + dataCurta(m.periodo_inicio) + ' a ' + dataCurta(m.periodo_fim) + (m.data_vistoria ? ' · vistoria ' + dataCurta(m.data_vistoria) : ''))),
+        acoes),
+      concluida ? h('div', { class: 'aviso med-hub-aviso' }, '🔒 Concluída em ' + dataHoraBR(m.concluidaEm) + ' por ' + (nomeDe(m.concluidaPor) || '—') + '. Para alterar, um administrador reabre.') : null,
+      h('div', { class: 'med-docs', role: 'tablist' },
+        doc('itens', '📄', 'Relatório de Medição', 'Word', c.total ? [c.total + ' ite' + (c.total === 1 ? 'm' : 'ns'), h('span', { class: 'med-pc' }, ' · ' + c.medido + ' medido' + (c.medido === 1 ? '' : 's'))] : ['nenhum item'], '#/medicao/' + m.id),
+        doc('fotos', '📷', 'Relatório Fotográfico', 'Excel', n ? [n + ' foto' + (n === 1 ? '' : 's'), h('span', { class: 'med-pc' }, ' · ' + folhasDe(n) + ' folha' + (folhasDe(n) === 1 ? '' : 's'))] : ['nenhuma foto'], '#/medicao/' + m.id + '/fotos')));
+  }
+
+  async function telaMedicao(id, aba) {
     const tk = rotaSeq;
     const original = await DB.get('medicoes', id);
     if (!original || original.excluido) { rcT(tk, h('div', { class: 'vazio' }, 'Medição não encontrada.')); return; }
@@ -3502,6 +3547,16 @@
     if (!r) { rcT(tk, h('div', { class: 'vazio' }, 'Contrato desta medição não encontrado.')); return; }
     marcarNav('contratos');
     titulo(original.numero + 'ª Medição · ' + r.apelido, true);
+    aba = aba === 'fotos' ? 'fotos' : 'itens';
+    if (aba === 'fotos') {
+      const ctx = {};
+      const hub = await hubMedicao(original, r, 'fotos', ctx); // antes do corpo: o corpo é desenhado e entra na tela sem esperar
+      const corpo = await corpoMedFotos(original, r, ctx);
+      rcT(tk, hub, ...corpo);
+      App._sairNotif = ctx.sair;
+      return;
+    }
+    delete document.body.dataset.rfAba;
     const m = clonar(original);
     let base = clonar(original);
     m.itens = m.itens || [];
@@ -3514,7 +3569,6 @@
     const data = (k) => h('input', { type: 'date', value: m[k] || '', readonly: ro, oninput: (e) => { m[k] = e.target.value; marcar(); } });
 
     const cab = h('div', { class: 'card' }, h('h2', {}, 'Dados da medição'),
-      concluida ? h('div', { class: 'aviso' }, '🔒 Medição concluída em ' + dataHoraBR(m.concluidaEm) + ' por ' + (nomeDe(m.concluidaPor) || '—') + '. Para alterar, reabra.') : null,
       h('div', { class: 'grade2' },
         campo('Medição nº', h('input', { type: 'number', min: '1', value: m.numero, readonly: ro, oninput: (e) => { m.numero = parseInt(e.target.value, 10) || m.numero; marcar(); } })),
         campo('Data da vistoria', data('data_vistoria')),
@@ -3606,34 +3660,15 @@
         toast('Relatório gerado: ' + nome);
       } catch (e) { fundo.remove(); console.error(e); toast(e.message, true); }
     }
-    const acoes = h('div', { class: 'card' }, h('h2', {}, 'Relatório'),
+    const acoes = h('div', { class: 'card' }, h('h2', {}, 'Gerar o Relatório de Medição'),
       h('div', { class: 'acoes', style: { marginTop: 0 } },
         !ro ? h('button', { class: 'btn', onclick: () => salvar() }, '💾 Salvar') : null,
         h('button', { class: 'btn pri', onclick: () => gerar(false) }, '⬇️ Baixar Word (.docx)'),
-        h('button', { class: 'btn', onclick: () => gerar(true) }, '📤 Compartilhar'),
-        !ro ? h('button', { class: 'btn ok', onclick: async () => {
-          if (!(await confirmar('Concluir a medição? O conteúdo fica bloqueado (um administrador pode reabrir).', 'Concluir'))) return;
-          await salvar(true);
-          const snap = Object.assign({}, r); for (const k of ['_pendente', '_campos', '_base', '_versaoBase', 'atualizadoEm', 'atualizadoPor', 'criadoEm', 'criadoPor']) delete snap[k];
-          await atualizarCampos('medicoes', id, (o) => { o.status = 'concluida'; o.concluidaEm = new Date().toISOString(); o.concluidaPor = email(); o.registroSnapshot = snap; });
-          App._sairNotif = null; telaMedicao(id);
-        } }, '✅ Concluir') : null,
-        concluida && pode.admin() ? h('button', { class: 'btn peq', onclick: async () => {
-          if (!(await confirmar('Reabrir a medição para edição?', 'Reabrir'))) return;
-          await atualizarCampos('medicoes', id, (o) => { o.status = 'rascunho'; delete o.concluidaEm; delete o.concluidaPor; delete o.registroSnapshot; });
-          telaMedicao(id);
-        } }, '🔓 Reabrir') : null,
-        (!concluida && pode.notificar()) || pode.admin() ? h('button', { class: 'btn peq perigo', onclick: async () => {
-          if (!(await confirmar('Excluir esta medição?', 'Excluir', true))) return;
-          App._sairNotif = null;
-          await DB.excluir('medicoes', id, email());
-          for (const f of await DB.byIndex('fotos', 'registroId', r.id)) if (f.medicaoId === id && !f.visitaId && !f.excluido) await atualizarCampos('fotos', f.id, (o) => { o.excluido = true; });
-          sessionStorage.setItem('aba_reg2', 'medicoes'); location.replace('#/registro/' + r.id);
-        } }, 'Excluir') : null),
+        h('button', { class: 'btn', onclick: () => gerar(true) }, '📤 Compartilhar')),
       h('p', { class: 'dica' }, 'Os itens da próxima medição já vêm com as descrições (e memoriais) desta. Para PDF, abra o .docx no Word e use “Salvar como PDF”.'));
-
-    const cRF = await cartaoRelFoto(original, r);
-    rcT(tk, cab, secItens, obs, equipe, cRF, acoes);
+    const barra = h('div', { class: 'rf-barra' }, h('span', { class: 'rf-barra-t' }, h('b', {}, 'Relatório de Medição')), h('button', { class: 'btn pri', onclick: () => gerar(false) }, '⬇️ Baixar Word'));
+    const hub = await hubMedicao(original, r, 'itens', { antes: () => salvar(true) });
+    rcT(tk, hub, cab, secItens, obs, equipe, acoes, barra);
     // salva o rascunho ao sair da tela
     App._sairNotif = async () => { if (sujo && !ro) await salvar(true); };
   }
@@ -3719,37 +3754,8 @@
     } catch (e) { jp.fechar(); console.error(e); toast(e.message, true); }
   }
 
-  /* Cartão na tela da medição */
-  async function cartaoRelFoto(m, r) {
-    const d = await dadosRelFoto(m, r);
-    const n = d.itens.length;
-    const deVis = new Set(d.itens.map((it) => d.mapa.get(it.fotoId).visitaId).filter(Boolean));
-    const env = d.itens.filter((it) => !d.mapa.get(it.fotoId).visitaId).length;
-    const tira = h('div', { class: 'rf-tira' });
-    for (const it of d.itens.slice(0, 8)) { const img = h('img', { alt: '' }); urlFoto(d.mapa.get(it.fotoId)).then((u) => { img.src = u; }); ap(tira, img); }
-    if (n > 8) ap(tira, h('span', { class: 'rf-mais' }, '+' + (n - 8)));
-    const nums = d.visitas.filter((v) => deVis.has(v.id)).map((v) => v.numero).sort((a, b) => a - b);
-    const origem = [nums.length ? (nums.length === 1 ? 'da visita nº ' : 'das visitas nº ') + nums.join(', ') : '', env ? env + ' enviada(s) da galeria/computador' : ''].filter(Boolean).join(' + ');
-    return h('div', { class: 'card rf-cartao' }, h('h2', {}, 'Relatório fotográfico (Excel)'),
-      n ? tira : null,
-      h('div', { class: 'sub' }, n ? n + ' foto(s) · ' + folhasDe(n) + ' folha(s)' + (origem ? ' · ' + origem : '')
-        : 'Nenhuma foto escolhida ainda. As visitas feitas no período da medição (' + dataCurta(m.periodo_inicio) + ' a ' + dataCurta(m.periodo_fim) + ') já vêm marcadas.'),
-      h('div', { class: 'acoes' },
-        h('a', { class: 'btn' + (n ? '' : ' pri'), href: '#/medicao-fotos/' + m.id }, n ? '🖼️ Escolher / ordenar fotos' : '🖼️ Escolher fotos'),
-        n ? h('button', { class: 'btn pri', onclick: () => gerarRelFoto(m.id, false) }, '⬇️ Baixar Excel (.xlsx)') : null,
-        n ? h('button', { class: 'btn', onclick: () => gerarRelFoto(m.id, true) }, '📤 Compartilhar') : null),
-      h('p', { class: 'dica' }, 'Segue o modelo “Registro Fotográfico dos Serviços Executados”: 6 fotos por folha (A4), com coordenada, localização e serviço em cada foto.'));
-  }
-
   /* Tela de escolha das fotos */
-  async function telaMedicaoFotos(id) {
-    const tk = rotaSeq;
-    const m = await DB.get('medicoes', id);
-    if (!m || m.excluido) { rcT(tk, h('div', { class: 'vazio' }, 'Medição não encontrada.')); return; }
-    const r = await DB.get('registros', m.registroId);
-    if (!r) { rcT(tk, h('div', { class: 'vazio' }, 'Contrato desta medição não encontrado.')); return; }
-    marcarNav('contratos');
-    titulo('Fotos · ' + m.numero + 'ª Medição · ' + r.apelido, true);
+  async function corpoMedFotos(m, r, ctx) {
     const reg = m.registroSnapshot || r;
     const ro = m.status === 'concluida' || !pode.notificar();
     const d = await dadosRelFoto(m, r);
@@ -3866,7 +3872,7 @@
       const n = itens.length;
       rc(tituloOrdem, 'Ordem no relatório (' + n + ' foto' + (n === 1 ? '' : 's') + ' · ' + folhasDe(n) + ' folha' + (folhasDe(n) === 1 ? '' : 's') + ')');
       rc(resumo, h('b', {}, n + ' foto' + (n === 1 ? '' : 's')), ' · ' + folhasDe(n) + ' folha' + (folhasDe(n) === 1 ? '' : 's'));
-      if (abas.children[1]) rc(abas.children[1], '2 · Fotos' + (n ? ' (' + n + ')' : ''));
+      if (abas.children[1]) rc(abas.children[1].lastChild, 'Fotos' + (n ? ' (' + n + ')' : ''));
       const lista = [];
       itens.forEach((it, i) => {
         const f = d.mapa.get(it.fotoId);
@@ -3923,25 +3929,27 @@
       h('div', { class: 'sub', style: { marginTop: '6px' } }, m.registroSnapshot ? 'Dados do contrato gravados ao concluir a medição.' : 'Vem do cadastro do contrato. ', !m.registroSnapshot && pode.cadastro() ? h('a', { href: '#/editar/' + r.id }, 'Editar cadastro') : null),
       h('h3', {}, 'Coordenada nas fotos'), segCoord, boxCoord);
     const gerar = async (comp) => { await gravarAgora(); await gerarRelFoto(m.id, comp); };
-    const acoes = h('div', { class: 'card' }, h('h2', {}, 'Gerar'),
+    const acoes = h('div', { class: 'card' }, h('h2', {}, 'Gerar o Relatório Fotográfico'),
       h('div', { class: 'acoes', style: { marginTop: 0 } },
         h('button', { class: 'btn pri', onclick: () => gerar(false) }, '⬇️ Baixar Excel (.xlsx)'),
         h('button', { class: 'btn', onclick: () => gerar(true) }, '📤 Compartilhar')),
       h('p', { class: 'dica' }, 'A escolha fica salva na medição (sincroniza com os colegas). Para PDF, abra o .xlsx no Excel e use “Salvar como PDF”.'));
 
-    const abas = h('div', { class: 'seg rf-abas' }, [['visitas', '1 · Visitas'], ['fotos', '2 · Fotos'], ['ordem', '3 · Ordem']].map(([k, t]) => h('button', { type: 'button', class: aba === k ? 'ativo' : '',
-      onclick: (e) => { document.body.dataset.rfAba = k; sessionStorage.setItem('rf_aba', k); [...abas.children].forEach((b) => b.classList.toggle('ativo', b === e.currentTarget)); window.scrollTo(0, 0); if (k === 'ordem') desenhar(); } }, t)));
-    const barra = h('div', { class: 'rf-barra' }, resumo, h('button', { class: 'btn pri', onclick: () => gerar(false) }, '⬇️ Gerar Excel'));
+    const abas = h('div', { class: 'rf-abas' }, [['visitas', 'Visitas'], ['fotos', 'Fotos'], ['ordem', 'Ordem']].map(([k, t], i) => h('button', { type: 'button', class: aba === k ? 'ativo' : '',
+      onclick: (e) => { document.body.dataset.rfAba = k; sessionStorage.setItem('rf_aba', k); [...abas.children].forEach((b) => b.classList.toggle('ativo', b === e.currentTarget)); window.scrollTo(0, 0); if (k === 'ordem') desenhar(); } }, h('span', { class: 'rf-n' }, i + 1), h('span', { class: 'rf-et' }, t))));
+    const prox = (k, t) => h('button', { class: 'btn rf-prox', onclick: () => abas.children[k].click() }, t + ' ›');
+    const barra = h('div', { class: 'rf-barra' }, h('span', { class: 'rf-barra-t' }, resumo), h('button', { class: 'btn pri', onclick: () => gerar(false) }, '⬇️ Baixar Excel'));
     const esq = h('div', { class: 'rf-esq' },
-      h('div', { class: 'card rf-p-visitas' }, h('h2', {}, 'Visitas'), boxVis),
-      h('div', { class: 'card rf-p-fotos' }, h('h2', {}, 'Escolha as fotos'), boxFotos));
+      h('div', { class: 'card rf-p-visitas' }, h('h2', {}, 'De quais visitas?'), boxVis, prox(1, 'Próximo: escolher as fotos')),
+      h('div', { class: 'card rf-p-fotos' }, h('h2', {}, 'Escolha as fotos'), boxFotos, prox(2, 'Próximo: ordem e legendas')));
     const dir = h('div', { class: 'rf-dir' },
       h('div', { class: 'card rf-p-ordem' }, tituloOrdem, boxOrdem),
       h('div', { class: 'rf-p-ordem' }, cab), h('div', { class: 'rf-p-ordem' }, acoes));
     desenhar();
-    rcT(tk, ro ? h('div', { class: 'aviso' }, m.status === 'concluida' ? '🔒 Medição concluída: a escolha das fotos está bloqueada (um administrador pode reabrir). O relatório pode ser gerado normalmente.' : 'Seu perfil permite apenas consultar e gerar o relatório.') : null,
-      abas, h('div', { class: 'rf' }, esq, dir), barra);
-    App._sairNotif = async () => { delete document.body.dataset.rfAba; await gravarAgora(); };
+    ctx.antes = gravarAgora;
+    ctx.sair = async () => { delete document.body.dataset.rfAba; await gravarAgora(); };
+    return [!pode.notificar() ? h('div', { class: 'aviso' }, 'Seu perfil permite apenas consultar e gerar o relatório.') : null,
+      abas, h('div', { class: 'rf' }, esq, dir), barra];
   }
 
   /* ================================================================== */
@@ -4097,7 +4105,7 @@
       for (const f of fotosSemDrive) if (!(await DB.blobGet(f.id))) semArquivo++;
       const log = Sync.lerLog().slice().reverse();
       const resumo = {
-        app: '3.15.5', servidor: Sync.versaoServidor || '?', usuario: (u || {}).email, perfil: perfil(), estado: Sync.estado, erro: Sync.erro || '',
+        app: '3.15.6', servidor: Sync.versaoServidor || '?', usuario: (u || {}).email, perfil: perfil(), estado: Sync.estado, erro: Sync.erro || '',
         online: navigator.onLine, ultimaSync: await DB.kvGet('ultimaSync', null), cursor: await DB.kvGet('servidorDesde', 0),
         pendentes: pendPor, fotosAguardandoEnvio: fotosSemDrive.length - semArquivo, fotosDeOutroAparelhoSemEnvio: semArquivo,
         aparelho: navigator.userAgent, log,
@@ -4352,7 +4360,7 @@
     // a partir de "Aparência e câmera", cada seção vira uma lista suspensa (fechada; lembra as abertas)
     const iniSecoes = cards.findIndex((c) => c.querySelector && (c.querySelector(':scope > h2') || {}).textContent === 'Aparência e câmera');
     if (iniSecoes >= 0) for (let i = iniSecoes; i < cards.length; i++) cards[i] = secaoRecolhivel(cards[i]);
-    cards.push(h('p', { class: 'dica', style: { textAlign: 'center' } }, 'Fiscalização de Obras · v3.15.5 · dados salvos no aparelho' + (Sync.habilitado() ? ' e no Google Drive do administrador' : '') + ' · ', h('a', { href: 'privacidade.html' }, 'Política de privacidade')));
+    cards.push(h('p', { class: 'dica', style: { textAlign: 'center' } }, 'Fiscalização de Obras · v3.15.6 · dados salvos no aparelho' + (Sync.habilitado() ? ' e no Google Drive do administrador' : '') + ' · ', h('a', { href: 'privacidade.html' }, 'Política de privacidade')));
     rcT(tk, ...cards);
   }
 

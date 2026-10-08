@@ -738,7 +738,12 @@ body:has(.cv) .visor-fundo { display: none; }
 .rf-tira { display: flex; gap: 6px; overflow: hidden; margin: 2px 0 8px; align-items: center; }
 .rf-tira img { width: 84px; height: 63px; object-fit: cover; border-radius: 8px; flex: none; }
 .rf-mais { flex: none; width: 56px; height: 63px; border-radius: 8px; background: var(--sup2); display: grid; place-items: center; font-weight: 700; color: var(--txt2); }
-.rf-abas { margin-bottom: 12px; position: sticky; top: calc(58px + env(safe-area-inset-top)); z-index: 6; }
+.rf-abas { display: flex; gap: 6px; margin-bottom: 12px; position: sticky; top: calc(58px + env(safe-area-inset-top)); z-index: 6; background: color-mix(in srgb, var(--bg) 90%, transparent); backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); padding: 6px 0; }
+.rf-abas button { flex: 1; display: flex; align-items: center; justify-content: center; gap: 7px; border: 0; background: var(--sup); color: var(--txt2); border-radius: 999px; padding: 8px 6px; font: inherit; font-weight: 500; cursor: pointer; }
+.rf-abas .rf-n { width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center; background: var(--sup2); font-size: 12px; font-weight: 700; flex: none; }
+.rf-abas button.ativo { background: var(--pri); color: var(--pri-txt); }
+.rf-abas button.ativo .rf-n { background: color-mix(in srgb, var(--pri-txt) 25%, transparent); }
+.rf-prox { display: none; margin-top: 12px; width: 100%; justify-content: center; }
 .rf-vis { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-radius: 12px; background: var(--sup2); margin-bottom: 6px; cursor: pointer; }
 .rf-vis.on { background: color-mix(in srgb, var(--pri) 12%, var(--sup)); outline: 1.5px solid color-mix(in srgb, var(--pri) 45%, transparent); }
 .rf-vis input { width: 20px; height: 20px; flex: none; accent-color: var(--pri); }
@@ -767,7 +772,7 @@ body:has(.cv) .visor-fundo { display: none; }
   body[data-rf-aba="visitas"] .rf-p-fotos, body[data-rf-aba="visitas"] .rf-p-ordem,
   body[data-rf-aba="fotos"] .rf-p-visitas, body[data-rf-aba="fotos"] .rf-p-ordem,
   body[data-rf-aba="ordem"] .rf-esq { display: none; }
-  body[data-tela="medicao-fotos"] main { padding-bottom: 150px; }
+  body[data-tela="medicao"] main { padding-bottom: 150px; }
   .rf-barra { display: flex; align-items: center; justify-content: space-between; gap: 10px; position: fixed; left: 10px; right: 10px; bottom: calc(76px + env(safe-area-inset-bottom)); z-index: 15; background: var(--sup); border-radius: 16px; padding: 8px 8px 8px 14px; box-shadow: 0 6px 24px rgba(20,22,50,.18); }
   .rf-arraste { display: none; }
   .rf-mini img { width: 88px; height: 66px; }
@@ -779,6 +784,43 @@ body:has(.cv) .visor-fundo { display: none; }
   .rf-abas { display: none; }
   .rf { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); gap: 20px; align-items: start; }
   .rf-dir { position: sticky; top: 12px; max-height: calc(100vh - 24px); overflow: auto; border-radius: 22px; }
-  body[data-tela="medicao-fotos"] .fotos { grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); }
+  body[data-tela="medicao"] .fotos { grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); }
 }
 .rf-coord { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin-top: 8px; }
+
+/* ---- medição: cabeçalho com os dois documentos (3.15.6) ---- */
+.med-hub-topo { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.med-hub-id { min-width: 0; }
+.med-hub .badge { position: static; margin-right: 6px; vertical-align: 1px; }
+.med-hub-t { font-size: 20px; font-weight: 700; display: flex; align-items: center; gap: 8px; }
+.med-hub-acoes { display: flex; gap: 6px; flex-wrap: wrap; }
+.med-hub-aviso { margin: 10px 0 0; }
+.med-docs { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 14px; }
+.med-doc { display: flex; align-items: center; gap: 12px; padding: 12px 14px; border-radius: 16px; background: var(--sup2); color: inherit; text-decoration: none; border: 2px solid transparent; min-width: 0; }
+.med-doc:hover { border-color: color-mix(in srgb, var(--pri) 30%, transparent); }
+.med-doc.ativo { background: color-mix(in srgb, var(--pri) 12%, var(--sup)); border-color: var(--pri); }
+.med-doc-ico { font-size: 26px; line-height: 1; flex: none; }
+.med-doc-txt { display: flex; flex-direction: column; min-width: 0; }
+.med-doc-txt b { font-size: 15px; }
+.med-doc.ativo .med-doc-txt b { color: var(--pri); }
+.med-doc-fmt { font-size: 11px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; }
+.med-cel { display: none; }
+.rf-barra .btn { white-space: nowrap; }
+.med-doc-res { font-size: 12.5px; color: var(--txt2); margin-top: 2px; }
+@media (max-width: 1023px) {
+  .rf-prox { display: flex; }
+  .med-hub-t { font-size: 18px; }
+  .med-hub-topo { flex-wrap: nowrap; align-items: center; }
+  .med-pc { display: none; } .med-cel { display: inline; }
+  .med-docs { margin-top: 10px; gap: 8px; }
+  .med-doc { gap: 8px; padding: 10px; }
+  .med-doc-ico { font-size: 22px; }
+  .med-hub-acoes { flex-wrap: nowrap; }
+  .med-hub-acoes .btn { white-space: nowrap; }
+  .med-doc-txt b { font-size: 14px; line-height: 1.2; }
+  .rf-barra-t { min-width: 0; font-size: 14px; }
+}
+@media (min-width: 1024px) {
+  .rf-abas { display: none; }
+  body[data-tela="medicao"] main > .med-hub { max-width: none; }
+}
