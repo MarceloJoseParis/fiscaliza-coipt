@@ -40,6 +40,9 @@
   }
   if (window.matchMedia) matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => { let t = 'auto'; try { t = localStorage.getItem('tema') || 'auto'; } catch (e) { /* */ } if (t === 'auto') aplicarTema('auto'); });
 
+  // imagem que não carregou (foto ainda não baixada do Drive): esconde o ícone de imagem quebrada
+  document.addEventListener('error', (e) => { const t = e.target; if (t && t.tagName === 'IMG') t.classList.add('img-falhou'); }, true);
+  document.addEventListener('load', (e) => { const t = e.target; if (t && t.tagName === 'IMG') t.classList.remove('img-falhou'); }, true);
   function toast(msg, erro) {
     const t = h('div', { class: 'toast' + (erro ? ' erro' : '') }, msg);
     document.body.appendChild(t);
@@ -1620,18 +1623,43 @@
     let vBase = clonar(v0);
     const podeEd = pode.coletar();
     const pessoas = await pessoasMap();
-    let sujo = false;
-    const marcar = () => { sujo = true; };
-
-    const salvarVisita = async (silencioso) => {
-      v.fiscais = snapshotAssinantes(edFiscais, pessoas, true);
-      const salvo = await salvarMudancas('visitas', vBase, v);
-      Object.assign(v0, salvo);
-      vBase = clonar(v);
-      sujo = false;
-      if (!silencioso) toast('Dados da visita salvos');
+    let sujo = false, versao = 0, tAuto = null, filaSalvar = Promise.resolve();
+    /* Salvamento automático (3.15.7): os dados da visita (observações gerais etc.) são gravados 1,5 s depois
+       de parar de digitar, ao sair da tela e quando o app vai para segundo plano (tela apagada, outro app). */
+    const statusAuto = h('span', { class: 'sub auto-status' }, podeEd ? 'As alterações são salvas automaticamente.' : '');
+    const marcar = () => {
+      sujo = true; versao++;
+      if (!podeEd) return;
+      clearTimeout(tAuto);
+      rc(statusAuto, 'Alterações ainda não salvas…');
+      tAuto = setTimeout(() => autoSalvar(), 1500);
     };
-    App._sairNotif = async () => { if (sujo && podeEd) await salvarVisita(true); };
+    // grava uma cópia do que está na tela; o que for digitado durante a gravação continua pendente
+    const salvarVisita = (silencioso) => (filaSalvar = filaSalvar.catch(() => {}).then(async () => {
+      clearTimeout(tAuto); tAuto = null;
+      v.fiscais = snapshotAssinantes(edFiscais, pessoas, true);
+      const vInicio = versao, copia = clonar(v);
+      const salvo = await salvarMudancas('visitas', vBase, copia);
+      Object.assign(v0, salvo);
+      vBase = copia;
+      sujo = versao !== vInicio;
+      if (!silencioso) toast('Dados da visita salvos');
+      if (!sujo) rc(statusAuto, '✓ Salvo às ' + horaAgora());
+    }));
+    const autoSalvar = async () => {
+      if (!sujo || !podeEd) return;
+      try { await salvarVisita(true); } catch (e) { rc(statusAuto, '⚠️ Não foi possível salvar: ' + e.message); }
+    };
+    // app indo para segundo plano (tela apagada, troca de app, fechar o navegador): grava na hora
+    const aoEsconder = (e) => {
+      if (!document.body.contains(statusAuto)) { document.removeEventListener('visibilitychange', aoEsconder); removeEventListener('pagehide', aoEsconder); return; }
+      if (document.visibilityState === 'hidden' || (e && e.type === 'pagehide')) autoSalvar();
+    };
+    if (podeEd) { document.addEventListener('visibilitychange', aoEsconder); addEventListener('pagehide', aoEsconder); }
+    App._sairNotif = async () => {
+      document.removeEventListener('visibilitychange', aoEsconder); removeEventListener('pagehide', aoEsconder);
+      if (sujo && podeEd) await salvarVisita(true);
+    };
 
     /* --- cabecalho --- */
     const cab = h('div', { class: 'card' },
@@ -1773,7 +1801,8 @@
           campo('Avanço físico executado (%)', num('avanco_exec', { min: '0', max: '100', step: '0.1' })),
           campo('Avanço previsto no cronograma (%)', num('avanco_prev', { min: '0', max: '100', step: '0.1' }))),
         campo('Observações gerais', area('observacoes'), 'Use **texto** para negrito. Cada linha vira um parágrafo.'),
-        podeEd ? h('button', { class: 'btn pri', onclick: () => salvarVisita() }, '💾 Salvar dados') : null));
+        podeEd ? h('div', { class: 'linha', style: { flexWrap: 'wrap', gap: '10px', alignItems: 'center' } },
+          h('button', { class: 'btn', onclick: () => salvarVisita() }, '💾 Salvar agora'), statusAuto) : null));
 
     /* --- acoes --- */
     const acoes = h('div', { class: 'card' }, h('h2', {}, 'Relatório e encerramento'),
@@ -3338,7 +3367,9 @@
       if (!ro) {
         n.fiscais = snapshotAssinantes(edFiscais, pessoas, true);
         n.coordenadores = snapshotAssinantes(edCoord, pessoas, false);
-        n.itens = (n.itens || []).map((t) => t.trim()).filter(Boolean);
+        const limpos = (n.itens || []).map((t) => t.trim()).filter(Boolean);
+        // itens vazios saem: a tela é redesenhada, senão o que se digitasse depois iria para a posição errada
+        if (JSON.stringify(limpos) !== JSON.stringify(n.itens || [])) { n.itens = limpos; desenharItens(); }
       }
       const salvo = await salvarMudancas('notificacoes', nBase, n);
       Object.assign(original, salvo);
@@ -3467,7 +3498,7 @@
     for (const it of m.itens || []) { if (!(it.descricao || '').trim()) continue; c.total++; if (c[it.situacao] !== undefined) c[it.situacao]++; }
     return c;
   }
-  const novoItemMed = (descricao) => ({ id: DB.uuid(), descricao: descricao || '', situacao: '', comentario: '', memorial: '' });
+  const novoItemMed = (descricao) => ({ id: DB.uuid(), descricao: descricao || '', quantitativo: '', situacao: '', comentario: '', memorial: '' });
   const somaDia = (iso, n) => { const d = new Date(iso + 'T12:00:00'); d.setDate(d.getDate() + n); return d.toISOString().slice(0, 10); };
 
   async function criarMedicao(registroId) {
@@ -3579,7 +3610,8 @@
     const SIT = [['medido', 'Medido'], ['parcial', 'Parcial'], ['nao', 'Não medido']];
     const boxItens = h('div', { class: 'med-itens' });
     const tituloItens = h('h2', {});
-    const crescer = (t) => { t.style.height = 'auto'; t.style.height = Math.max(t.scrollHeight + 2, 64) + 'px'; };
+    // no celular a caixa do quantitativo (uma linha) fica baixa; as outras, com no mínimo 64 px
+    const crescer = (t) => { t.style.height = 'auto'; t.style.height = Math.max(t.scrollHeight + 2, t.closest('.med-qtd') && innerWidth < 1024 ? 46 : 64) + 'px'; };
     const area = (it, k, ph, attrs) => { const t = h('textarea', Object.assign({ rows: 2, readonly: ro, placeholder: ro ? '' : ph, oninput: (e) => { it[k] = e.target.value; crescer(e.target); marcar(); } }, attrs || {})); t.value = it[k] || ''; return t; };
     const desenharItens = () => {
       const c = contarSituacao(m);
@@ -3593,9 +3625,12 @@
             ro ? null : h('div', { class: 'ctl' },
               h('button', { class: 'btn peq', disabled: i === 0, title: 'Subir', onclick: () => { m.itens.splice(i - 1, 0, m.itens.splice(i, 1)[0]); marcar(); desenharItens(); } }, '▲'),
               h('button', { class: 'btn peq', disabled: i === m.itens.length - 1, title: 'Descer', onclick: () => { m.itens.splice(i + 1, 0, m.itens.splice(i, 1)[0]); marcar(); desenharItens(); } }, '▼'),
-              h('button', { class: 'btn peq perigo', title: 'Excluir item', onclick: async () => { if ((it.descricao || it.comentario || it.memorial) && !(await confirmar('Excluir o item ' + (i + 1) + '?', 'Excluir', true))) return; m.itens.splice(i, 1); marcar(); desenharItens(); } }, '✕'))),
+              h('button', { class: 'btn peq perigo', title: 'Excluir item', onclick: async () => { if ((it.descricao || it.quantitativo || it.comentario || it.memorial) && !(await confirmar('Excluir o item ' + (i + 1) + '?', 'Excluir', true))) return; m.itens.splice(i, 1); marcar(); desenharItens(); } }, '✕'))),
           h('div', { class: 'med-cols' },
             h('label', { class: 'campo' }, h('span', {}, 'Descrição do item'), area(it, 'descricao', 'Ex.: 3.1 Alvenaria de vedação em bloco cerâmico')),
+            // o que a empresa apresentou na medição (opcional), ao lado da descrição — sai em coluna própria no Word
+            h('label', { class: 'campo med-qtd' }, h('span', {}, h('span', { class: 'med-pc', title: 'Quantitativo apresentado pela empresa (opcional)' }, 'Quant. empresa'), h('span', { class: 'med-cel' }, 'Quantitativo da empresa (opcional)')),
+              area(it, 'quantitativo', 'Ex.: 40 h', { rows: 1, title: 'Quantitativo apresentado pela empresa na medição (opcional). Ex.: 40 h, 85,00 m², 30%' })),
             h('label', { class: 'campo' }, h('span', {}, 'Comentário'), area(it, 'comentario', 'Ex.: não medido — serviço iniciado, aguardando conclusão do pano')),
             memAberto
               ? h('label', { class: 'campo' }, h('span', {}, 'Memorial de cálculo (opcional)'), area(it, 'memorial', 'Ex.: Parede eixo A: 12,40 × 2,80 = 34,72 m²\nDescontar porta: 0,80 × 2,10 = 1,68 m²\nTotal = 33,04 m²', { class: 'mono' }))
@@ -3622,7 +3657,7 @@
           const linhas = ta.value.split(/\r?\n/).map((l) => l.replace(/\t+/g, ' — ').trim()).filter(Boolean);
           if (!linhas.length) return;
           // tira o item vazio inicial, se houver
-          m.itens = m.itens.filter((it) => (it.descricao || it.comentario || it.memorial || '').trim()).concat(linhas.map((l) => novoItemMed(l)));
+          m.itens = m.itens.filter((it) => (it.descricao || it.quantitativo || it.comentario || it.memorial || '').trim()).concat(linhas.map((l) => novoItemMed(l)));
           marcar(); desenharItens(); toast(linhas.length + ' item(ns) adicionado(s)');
         } }, '📋 Colar vários itens')));
 
@@ -3635,10 +3670,12 @@
     async function salvar(silencioso) {
       if (ro) return;
       m.fiscais = snapshotAssinantes(edFiscais, pessoas, true);
-      m.itens = m.itens.map((it) => { const c = Object.assign({}, it); delete c._memAberto; return c; });
-      const salvo = await salvarMudancas('medicoes', base, m);
+      // grava uma cópia limpa: os itens na tela continuam sendo os mesmos objetos. Antes m.itens era trocado por
+      // cópias e o que se digitava DEPOIS de tocar em "Salvar" ia para os objetos antigos e se perdia ao sair.
+      const paraSalvar = Object.assign({}, m, { itens: m.itens.map((it) => { const c = Object.assign({}, it); delete c._memAberto; return c; }) });
+      const salvo = await salvarMudancas('medicoes', base, paraSalvar);
       Object.assign(original, salvo);
-      base = clonar(m);
+      base = clonar(paraSalvar);
       sujo = false;
       if (!silencioso) toast('Medição salva');
     }
@@ -3653,7 +3690,13 @@
         await pausaTela();
         const dados = DocGen.montarDadosMedicao(atual.registroSnapshot || r, atual, atual.fiscais || []);
         jp.set(null, 0.3);
-        const blob = await DocGen.gerar(await modeloDocx('medicao'), dados, { type: 'blob', aoProgresso: progGravar(jp, 0.3, 1) });
+        const modelo = await modeloDocx('medicao');
+        // modelo personalizado sem a coluna do quantitativo: ele sai junto da descrição do item
+        try {
+          if (!(await DocGen.listarMarcadores(modelo)).includes('quantitativo'))
+            for (const it of dados.itens) if (it.quantitativo && it.quantitativo !== '—') it.descricao += '\nQuantitativo da empresa: ' + it.quantitativo;
+        } catch (e) { /* segue sem */ }
+        const blob = await DocGen.gerar(modelo, dados, { type: 'blob', aoProgresso: progGravar(jp, 0.3, 1) });
         const nome = nomeArquivo('RELATÓRIO DE MEDIÇÃO ' + atual.numero + ' - ' + r.apelido) + '.docx';
         fundo.remove();
         if (compartilhar) await compartilharBlob(blob, nome, nome); else baixarBlob(blob, nome);
@@ -3669,6 +3712,7 @@
     const barra = h('div', { class: 'rf-barra' }, h('span', { class: 'rf-barra-t' }, h('b', {}, 'Relatório de Medição')), h('button', { class: 'btn pri', onclick: () => gerar(false) }, '⬇️ Baixar Word'));
     const hub = await hubMedicao(original, r, 'itens', { antes: () => salvar(true) });
     rcT(tk, hub, cab, secItens, obs, equipe, acoes, barra);
+    requestAnimationFrame(ajustarAlturas); // as caixas de texto só têm altura depois de entrar na tela
     // salva o rascunho ao sair da tela
     App._sairNotif = async () => { if (sujo && !ro) await salvar(true); };
   }
@@ -4105,7 +4149,7 @@
       for (const f of fotosSemDrive) if (!(await DB.blobGet(f.id))) semArquivo++;
       const log = Sync.lerLog().slice().reverse();
       const resumo = {
-        app: '3.15.6', servidor: Sync.versaoServidor || '?', usuario: (u || {}).email, perfil: perfil(), estado: Sync.estado, erro: Sync.erro || '',
+        app: '3.15.7', servidor: Sync.versaoServidor || '?', usuario: (u || {}).email, perfil: perfil(), estado: Sync.estado, erro: Sync.erro || '',
         online: navigator.onLine, ultimaSync: await DB.kvGet('ultimaSync', null), cursor: await DB.kvGet('servidorDesde', 0),
         pendentes: pendPor, fotosAguardandoEnvio: fotosSemDrive.length - semArquivo, fotosDeOutroAparelhoSemEnvio: semArquivo,
         aparelho: navigator.userAgent, log,
@@ -4360,7 +4404,7 @@
     // a partir de "Aparência e câmera", cada seção vira uma lista suspensa (fechada; lembra as abertas)
     const iniSecoes = cards.findIndex((c) => c.querySelector && (c.querySelector(':scope > h2') || {}).textContent === 'Aparência e câmera');
     if (iniSecoes >= 0) for (let i = iniSecoes; i < cards.length; i++) cards[i] = secaoRecolhivel(cards[i]);
-    cards.push(h('p', { class: 'dica', style: { textAlign: 'center' } }, 'Fiscalização de Obras · v3.15.6 · dados salvos no aparelho' + (Sync.habilitado() ? ' e no Google Drive do administrador' : '') + ' · ', h('a', { href: 'privacidade.html' }, 'Política de privacidade')));
+    cards.push(h('p', { class: 'dica', style: { textAlign: 'center' } }, 'Fiscalização de Obras · v3.15.7 · dados salvos no aparelho' + (Sync.habilitado() ? ' e no Google Drive do administrador' : '') + ' · ', h('a', { href: 'privacidade.html' }, 'Política de privacidade')));
     rcT(tk, ...cards);
   }
 

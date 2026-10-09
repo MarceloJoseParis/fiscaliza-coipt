@@ -824,3 +824,73 @@ body:has(.cv) .visor-fundo { display: none; }
   .rf-abas { display: none; }
   body[data-tela="medicao"] main > .med-hub { max-width: none; }
 }
+
+/* ==== 3.15.7 — revisão geral de layout (iPhone, Android, tablet e computador) ==== */
+/* textos longos sem espaço (protocolos, números de processo) quebram em vez de vazar da caixa */
+.item .t, .item .d, .lin-t, .lin-s, .rf-meta div, .med-doc-txt b, .med-doc-res, .tabela-info td, .t, .d { overflow-wrap: anywhere; }
+/* imagem que não carregou (foto ainda não baixada): sem o ícone de "imagem quebrada" */
+img.img-falhou { opacity: 0; }
+body { overflow-wrap: break-word; }
+.cv-cont { min-width: 0; }
+/* iPhone/iPad sem color-mix (iOS anterior ao 16.2): fundos sólidos em vez de transparentes */
+@supports not (background: color-mix(in srgb, red 50%, blue)) {
+  .topo, .nav-irr, .rf-abas { background: var(--bg); }
+  .nav { background: var(--sup); }
+  .rf-vis.on, .med-doc.ativo { background: var(--pri-bg); }
+  .rf-abas button.ativo .rf-n { background: rgba(255, 255, 255, .25); }
+}
+/* Safari fora do app instalado: a barra de endereço come parte da tela (100vh > altura visível) */
+@supports (height: 100dvh) {
+  .cv-visor { max-height: calc(100dvh - 56px - 170px - env(safe-area-inset-top) - env(safe-area-inset-bottom)); }
+}
+@supports (height: 100dvh) { @media (min-width: 1024px) { .rf-dir { max-height: calc(100dvh - 24px); } } }
+/* telas de toque: campos com 16 px (o iPhone não dá zoom ao tocar) e alvos de toque maiores */
+@media (pointer: coarse) {
+  input:not([type=checkbox]):not([type=radio]):not([type=range]), select, textarea, textarea.rf-serv { font-size: 16px !important; }
+  .btn.peq { min-height: 36px; min-width: 36px; }
+  .chip-sync { min-height: 32px; }
+  .seg button, .med-sit button { min-height: 34px; }
+  input[type=checkbox], input[type=radio] { min-width: 22px; min-height: 22px; }
+}
+/* medição no celular/tablet: título e ações na 1ª linha, período na 2ª (antes o período se espremia ao lado dos botões) */
+@media (max-width: 1023px) {
+  .med-hub-topo { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 4px 10px; }
+  .med-hub-id { display: contents; }
+  .med-hub-t { grid-column: 1; grid-row: 1; }
+  .med-hub-acoes { grid-column: 2; grid-row: 1; }
+  .med-hub-id > .sub { grid-column: 1 / -1; grid-row: 2; }
+}
+/* lista de ordem do relatório fotográfico no celular: botões numa linha própria (sobra espaço para a coordenada) */
+@media (max-width: 600px) {
+  .rf-item { grid-template-columns: auto minmax(0, 1fr); grid-template-areas: 'mini meta' 'cont cont' 'ctl ctl'; }
+  .rf-item .ctl { justify-content: flex-end; }
+}
+/* celulares estreitos (iPhone SE 1ª geração, Galaxy Fold fechado) */
+@media (max-width: 370px) {
+  .med-docs { grid-template-columns: 1fr; }
+  .rf-abas .rf-n { display: none; }
+  .rf-abas button { padding: 8px 4px; font-size: 14px; }
+}
+@media (max-width: 340px) {
+  .grade-bt { grid-template-columns: 1fr; }
+  .seg.med-sit { flex-wrap: wrap; }
+  .nav a { font-size: 9px; padding-left: 0; padding-right: 0; letter-spacing: -.2px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .visor-topo { gap: 6px; padding-left: 8px; padding-right: 8px; }
+  .card { padding-left: 14px; padding-right: 14px; }
+  .med-hub-t { font-size: 16px; }
+}
+/* celular deitado (pouca altura): sem a barra flutuante e sem etapas grudadas no topo */
+@media (max-width: 1023px) and (max-height: 500px) {
+  .rf-barra { display: none; }
+  .rf-abas { position: static; }
+  body[data-tela="medicao"] main { padding-bottom: 90px; }
+}
+
+/* medição: quantitativo apresentado pela empresa (3.15.7) — coluna estreita entre a descrição e o comentário,
+   com a mesma caixa das outras colunas (texto no alto, mesma altura) */
+.med-cols .med-qtd textarea { font-weight: 600; }
+.med-qtd > span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+@media (max-width: 1023px) { .med-cols .med-qtd textarea { max-width: 260px; min-height: 0; } }
+@media (min-width: 1024px) {
+  .med-cols { grid-template-columns: minmax(0, 1.15fr) minmax(120px, .5fr) minmax(0, 1.25fr) minmax(0, 1fr); }
+}

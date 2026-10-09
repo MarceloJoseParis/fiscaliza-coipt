@@ -41,13 +41,25 @@
    */
   Camera.abrir = function (opts) {
     opts = opts || {};
+    /* iPhone (iOS 13+): o sensor de movimento só funciona depois de o usuário permitir, e o pedido precisa sair
+       do toque no botão. Sem ele, com a rotação da tela travada, a foto tirada com o celular deitado saía em pé. */
+    try {
+      if (!Camera._movPedido && root.DeviceMotionEvent && typeof root.DeviceMotionEvent.requestPermission === 'function') {
+        Camera._movPedido = true;
+        root.DeviceMotionEvent.requestPermission().catch(() => {});
+      }
+    } catch (e) { /* */ }
     return new Promise(async (resolve, reject) => {
       let stream = null, track = null, cap = {}, wake = null, fechado = false, total = 0, ocupado = false, torch = false;
       let facing = 'environment', temFrontal = false, zoom = 1, imgCap = null, gravidade = null;
       /* Lentes traseiras: no iPhone a grande angular vem como zoom 0,5 da câmera principal.
          No Android ela costuma ser OUTRA câmera (outro deviceId) — então o 0,5 troca de câmera. */
       const lentes = { principal: null, extras: [], atual: null, naUltra: false, logico: false };
-      const sessao = []; // fotos desta sessao: {url, blob, foto: Promise}
+      const sessao = []; // fotos desta sessao: {url (miniatura), cheia(), foto: Promise}
+      /* Vigia da câmera (3.15.7). No iPhone, com o aparelho sem memória ou depois de uma interrupção, o
+         Safari às vezes para de mandar imagem: o visor congela (parece "fora de foco") e a foto sai PRETA.
+         O app percebe (quadros parados, trilha "muda"/encerrada, foto preta) e reabre a câmera sozinho. */
+      let ultimoQuadro = performance.now(), galeriaAberta = false, reabrindo = null, perfilando = false, ultimoRefoco = 0;
 
       const video = el('video', { autoplay: '', playsinline: '', muted: '', class: 'cv-video' });
       video.muted = true;
@@ -102,8 +114,15 @@
         }
         video.classList.toggle('espelho', facing === 'user');
         track = stream.getVideoTracks()[0];
+        const esta = track;
+        track.addEventListener('ended', () => { if (esta === track && !fechado && !perfilando) reabrir('A câmera foi interrompida — reabrindo…'); });
+        track.addEventListener('mute', () => {
+          if (esta !== track || fechado) return;
+          setTimeout(() => { if (esta === track && track.muted && !fechado && !document.hidden && !perfilando) reabrir('A câmera parou — reabrindo…'); }, 1200);
+        });
         video.srcObject = stream;
         await video.play().catch(() => {});
+        ultimoQuadro = performance.now();
         cap = track.getCapabilities ? track.getCapabilities() : {};
         imgCap = ('ImageCapture' in root) ? new root.ImageCapture(track) : null;
         btnFlash.style.visibility = cap.torch ? 'visible' : 'hidden';
@@ -116,6 +135,44 @@
 
       const FRONTAL = /front|frontal|user|selfie|facing front|dianteira/i;
 
+      /* reabre a câmera na mesma lente e no mesmo zoom (é o que acontecia ao sair e voltar ao app) */
+      function reabrir(texto) {
+        if (reabrindo || fechado) return reabrindo || Promise.resolve();
+        reabrindo = (async () => {
+          if (texto) aviso(texto, 2200);
+          const z = zoom, ultra = lentes.naUltra;
+          try { await abrirStream(ultra ? lentes.atual : (facing === 'environment' ? lentes.principal : null)); }
+          catch (e) { try { lentes.naUltra = false; await abrirStream(); } catch (e2) { aviso('Não foi possível reabrir a câmera. Feche e abra de novo.', 4000); } }
+          if (lentes.naUltra) { zoom = 0.5; montarZoom(); }
+          else if (z && cap.zoom && Math.abs(z - zoom) > 0.01) await aplicarZoom(z);
+          ultimoQuadro = performance.now();
+        })().finally(() => { reabrindo = null; });
+        return reabrindo;
+      }
+      // quadros chegando: requestVideoFrameCallback (iPhone 15.4+ e Chrome) ou o relógio do vídeo
+      const temRVFC = typeof HTMLVideoElement !== 'undefined' && 'requestVideoFrameCallback' in HTMLVideoElement.prototype;
+      const aoQuadro = () => { ultimoQuadro = performance.now(); if (!fechado && temRVFC) video.requestVideoFrameCallback(aoQuadro); };
+      if (temRVFC) video.requestVideoFrameCallback(aoQuadro); else video.addEventListener('timeupdate', () => { ultimoQuadro = performance.now(); });
+      function esperarQuadro(ms) {
+        return new Promise((res) => {
+          const t0 = ultimoQuadro, fim = Date.now() + ms;
+          const ver = () => { if ((ultimoQuadro > t0 && video.readyState >= 2) || Date.now() > fim) res(); else setTimeout(ver, 60); };
+          ver();
+        });
+      }
+      const vigia = setInterval(() => {
+        if (fechado || galeriaAberta || reabrindo || perfilando || document.hidden || !track) return;
+        if (video.paused) video.play().catch(() => {});
+        if (performance.now() - ultimoQuadro > 3000) reabrir('A imagem da câmera parou — reabrindo…');
+      }, 1000);
+      const aoVoltarAoApp = () => {
+        if (fechado || document.hidden) return;
+        ultimoQuadro = performance.now();
+        if (!track || track.readyState !== 'live' || track.muted) reabrir('Reabrindo a câmera…');
+        else video.play().catch(() => {});
+      };
+      document.addEventListener('visibilitychange', aoVoltarAoApp);
+
       /* Perfil das lentes do celular (feito uma vez e guardado): abre cada câmera traseira por um instante
          e lê o zoom de cada uma. Em muitos Android existe uma câmera "combinada" com zoom abaixo de 1x
          (ex.: 0,6x) que NÃO é a que o navegador abre por padrão — é ela que dá a grande angular. */
@@ -125,6 +182,7 @@
         try { perf = JSON.parse(ls.get('cam_perfil') || 'null'); } catch (e) { /* */ }
         if (perf && perf.assinatura === assinatura) return perf;
         aviso('Reconhecendo as lentes deste celular…', 5000);
+        perfilando = true; setTimeout(() => { perfilando = false; ultimoQuadro = performance.now(); }, 15000);
         if (stream) { stream.getTracks().forEach((t) => t.stop()); stream = null; }
         perf = { assinatura, cams: [] };
         for (const d of devs) {
@@ -138,6 +196,7 @@
           } catch (e) { perf.cams.push({ label: d.label || d.deviceId, erro: e.name || 'erro' }); }
         }
         ls.set('cam_perfil', JSON.stringify(perf));
+        perfilando = false; ultimoQuadro = performance.now();
         return perf;
       }
 
@@ -276,9 +335,15 @@
       function abrirGaleria() {
         if (!sessao.some((f) => !f.excluida)) { aviso('Nenhuma foto nesta sessão ainda'); return; }
         video.pause();
+        galeriaAberta = true;
         const gal = el('div', { class: 'cv-gal' });
         const vivas = () => sessao.filter((f) => !f.excluida);
-        const fecharGal = () => { gal.remove(); video.play().catch(() => {}); };
+        let urlCheia = null;
+        const soltarCheia = () => { if (urlCheia) { const u = urlCheia; urlCheia = null; setTimeout(() => URL.revokeObjectURL(u), 500); } };
+        const fecharGal = () => {
+          soltarCheia(); gal.remove(); galeriaAberta = false; ultimoQuadro = performance.now();
+          if (!track || track.readyState !== 'live') reabrir(); else video.play().catch(() => {});
+        };
         const desenharGrade = () => {
           const v = vivas();
           gal.replaceChildren(
@@ -290,11 +355,14 @@
             el('div', { class: 'cv-gal-base' }, el('button', { class: 'cv-gal-bt', onclick: fecharGal }, 'Voltar à câmera')));
         };
         const verFoto = (f) => {
+          soltarCheia();
           const v = vivas();
           const pos = v.indexOf(f);
+          const img = el('img', { class: 'cv-ver-img', src: f.url });
+          if (f.cheia) f.cheia().then((u) => { if (!u) return; if (gal.isConnected && img.isConnected) { urlCheia = u; img.src = u; } else URL.revokeObjectURL(u); }).catch(() => {});
           gal.replaceChildren(
             el('div', { class: 'cv-gal-topo' },
-              el('button', { class: 'cv-ic', 'aria-label': 'Voltar', html: SVG.esq, onclick: desenharGrade }),
+              el('button', { class: 'cv-ic', 'aria-label': 'Voltar', html: SVG.esq, onclick: () => { soltarCheia(); desenharGrade(); } }),
               el('div', { class: 'cv-cont' }, 'Foto ' + (pos + 1) + ' de ' + v.length),
               el('button', { class: 'cv-ic', 'aria-label': 'Excluir foto', html: SVG.lixo, onclick: async () => {
                 if (!confirm('Excluir esta foto?')) return;
@@ -303,7 +371,7 @@
                 total--; atualizarContador();
                 if (vivas().length) desenharGrade(); else fecharGal();
               } })),
-            el('div', { class: 'cv-ver' }, el('img', { class: 'cv-ver-img', src: f.url }),
+            el('div', { class: 'cv-ver' }, img,
               pos > 0 ? el('button', { class: 'cv-ver-nav esq', html: SVG.esq, onclick: () => verFoto(v[pos - 1]) }) : null,
               pos < v.length - 1 ? el('button', { class: 'cv-ver-nav dir', html: SVG.dir, onclick: () => verFoto(v[pos + 1]) }) : null),
             el('div', { class: 'cv-gal-base' }, el('button', { class: 'cv-gal-bt', onclick: fecharGal }, 'Voltar à câmera')));
@@ -380,6 +448,11 @@
         foco.style.left = (e.clientX - r.left) + 'px'; foco.style.top = (e.clientY - r.top) + 'px';
         foco.classList.remove('on'); void foco.offsetWidth; foco.classList.add('on');
         if (!track) return;
+        // sem controle de foco pelo navegador (iPhone): reabre a câmera, o que refaz o foco automático
+        if (!(cap.focusMode && cap.focusMode.length) && !cap.pointsOfInterest) {
+          if (Date.now() - ultimoRefoco > 4000 && !ocupado) { ultimoRefoco = Date.now(); reabrir('Focando…'); }
+          return;
+        }
         const pt = { x: (e.clientX - r.left) / r.width, y: (e.clientY - r.top) / r.height };
         try {
           const adv = {};
@@ -399,13 +472,30 @@
         } catch (e) { torch = false; aviso('Flash indisponível'); }
       }
 
-      function capturarQuadro() {
+      // o quadro está todo preto? (amostra reduzida: um ambiente escuro de verdade ainda tem pontos de luz)
+      function quadroPreto(cv) {
+        try {
+          const s = document.createElement('canvas'); s.width = 24; s.height = 32;
+          const g = s.getContext('2d'); g.drawImage(cv, 0, 0, 24, 32);
+          const d = g.getImageData(0, 0, 24, 32).data;
+          let max = 0;
+          for (let i = 0; i < d.length; i += 4) { const m = Math.max(d[i], d[i + 1], d[i + 2]); if (m > max) max = m; }
+          s.width = s.height = 0;
+          return max < 14;
+        } catch (e) { return false; }
+      }
+      async function capturarQuadro() {
         const w = video.videoWidth, h = video.videoHeight;
-        if (!w || !h) return Promise.resolve(null);
+        if (!w || !h || video.readyState < 2) return null;
         const cv = document.createElement('canvas');
         cv.width = w; cv.height = h;
-        cv.getContext('2d').drawImage(video, 0, 0, w, h);
-        return new Promise((res) => cv.toBlob(res, 'image/jpeg', 0.92));
+        const g = cv.getContext('2d');
+        if (!g) { cv.width = cv.height = 0; return 'preto'; } // sem memória para o quadro
+        g.drawImage(video, 0, 0, w, h);
+        if (quadroPreto(cv)) { cv.width = cv.height = 0; return 'preto'; }
+        const b = await new Promise((res) => cv.toBlob(res, 'image/jpeg', 0.92));
+        cv.width = cv.height = 0; // libera a memória do quadro já (o iPhone tem pouca memória para imagens)
+        return b && b.size ? b : 'preto';
       }
       async function capturar() {
         if (imgCap && ls.get('cam_rapida') !== '1') {
@@ -414,7 +504,18 @@
             if (b && b.size) return b;
           } catch (e) { /* usa o quadro do video */ }
         }
-        return capturarQuadro();
+        let b = await capturarQuadro();
+        if (b !== 'preto') return b;
+        // foto preta: espera o próximo quadro; se continuar preta, reabre a câmera e tenta de novo
+        await esperarQuadro(400);
+        b = await capturarQuadro();
+        if (b !== 'preto') return b;
+        await reabrir('A câmera parou de mandar imagem — reabrindo…');
+        await esperarQuadro(2500);
+        b = await capturarQuadro();
+        if (b && b !== 'preto') return b;
+        aviso('A câmera não entregou a imagem (tela preta). A foto NÃO foi salva — tente de novo.', 4500);
+        return 'falhou';
       }
 
       async function disparar() {
@@ -427,12 +528,19 @@
           const angulo = anguloAtual();
           const blob = await capturar();
           if (!blob) { aviso('Câmera iniciando…'); return; }
+          if (blob === 'falhou') return;
           blob.angulo = angulo;
           if (opts.modo === 'unica') { fechar(true); resolve(blob); return; }
-          const item = { blob, url: URL.createObjectURL(blob), angulo, foto: Promise.resolve(opts.aoFoto(blob)) };
+          const item = { url: URL.createObjectURL(blob), angulo, foto: Promise.resolve(opts.aoFoto(blob)) };
           item.foto.then(async (foto) => {
-            // troca a miniatura pela foto ja processada (girada e com carimbo)
-            if (foto && opts.urlFoto) { try { const u = await opts.urlFoto(foto); if (u) { const velha = item.url; item.url = u; atualizarContador(); if (fechado) URL.revokeObjectURL(u); setTimeout(() => URL.revokeObjectURL(velha), 1500); } } catch (e) { /* */ } }
+            // troca pela miniatura da foto já processada (girada e com carimbo). A foto inteira só é carregada
+            // ao abri-la na galeria — antes cada foto da sessão ficava inteira na memória e, numa visita longa,
+            // o iPhone ficava sem memória (fotos pretas e câmera travada)
+            if (!foto) return;
+            const velha = item.url;
+            if (foto.miniatura) { item.url = foto.miniatura; item.cheia = opts.urlFoto ? () => opts.urlFoto(foto) : null; }
+            else if (opts.urlFoto) { try { const u = await opts.urlFoto(foto); if (u) { item.url = u; if (fechado) URL.revokeObjectURL(u); } } catch (e) { /* */ } }
+            if (item.url !== velha) { atualizarContador(); setTimeout(() => URL.revokeObjectURL(velha), 1500); }
           }).catch((e) => aviso('Erro ao salvar: ' + e.message, 3000));
           sessao.push(item);
           total++;
@@ -446,6 +554,8 @@
       const fecharInterno = function (silencioso) {
         if (fechado) return;
         fechado = true;
+        clearInterval(vigia);
+        document.removeEventListener('visibilitychange', aoVoltarAoApp);
         if (stream) stream.getTracks().forEach((t) => t.stop());
         if (wake) { try { wake.release(); } catch (e) { /* */ } }
         ov.remove();

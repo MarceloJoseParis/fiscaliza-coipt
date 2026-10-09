@@ -797,7 +797,7 @@
   const SITUACAO_MED = { medido: 'MEDIDO', parcial: 'MEDIDO PARCIALMENTE', nao: 'NÃO MEDIDO' };
   function montarDadosMedicao(reg, med, fiscais) {
     const X = E();
-    const itens = (med.itens || []).filter((it) => (it.descricao || '').trim() || (it.comentario || '').trim() || (it.memorial || '').trim());
+    const itens = (med.itens || []).filter((it) => (it.descricao || '').trim() || (it.quantitativo || '').trim() || (it.comentario || '').trim() || (it.memorial || '').trim());
     const cont = { medido: 0, parcial: 0, nao: 0 };
     itens.forEach((it) => { if (cont[it.situacao] !== undefined) cont[it.situacao]++; });
     const pl = (k, s, p) => k + ' ' + (k === 1 ? s : p);
@@ -826,6 +826,7 @@
       itens: itens.map((it, i) => ({
         n: String(i + 1),
         descricao: (it.descricao || '').trim() || '—',
+        quantitativo: (it.quantitativo || '').trim() || '—',
         situacao: SITUACAO_MED[it.situacao] || '',
         comentario: (it.comentario || '').trim() || (SITUACAO_MED[it.situacao] ? '' : '—'),
         memorial: (it.memorial || '').trim() || '—',

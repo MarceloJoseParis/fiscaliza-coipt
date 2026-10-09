@@ -155,7 +155,9 @@
       const g = cm.getContext('2d'); g.imageSmoothingQuality = 'high'; g.drawImage(bm, 0, 0, tw, th);
       if (bm.close) bm.close();
       const blob = arquivo.slice(0, arquivo.size, 'image/jpeg');
-      return { blob, largura: w, altura: h, miniatura: cm.toDataURL('image/jpeg', 0.55), original: true };
+      const miniatura = cm.toDataURL('image/jpeg', 0.55);
+      cm.width = cm.height = 0;
+      return { blob, largura: w, altura: h, miniatura, original: true };
     } catch (e) { return null; }
   };
   Foto.processar = async function (arquivo, opcoes) {
@@ -204,7 +206,7 @@
     }
     const blob = await new Promise((res) => cv.toBlob(res, 'image/jpeg', opcoes.qualidade || 0.82));
     // o iPhone pode devolver imagem vazia quando falta memória: melhor avisar agora do que ficar sem foto no Drive
-    if (!blob || !blob.size) throw new Error('Não foi possível gerar a imagem da foto (memória do aparelho). Feche outros apps e tente de novo.');
+    if (!blob || !blob.size) { cv.width = cv.height = 0; if (img.close) img.close(); throw new Error('Não foi possível gerar a imagem da foto (memória do aparelho). Feche outros apps e tente de novo.'); }
     // miniatura
     const tw = 240, th = Math.round(h * (tw / w));
     const cm = document.createElement('canvas');
@@ -212,6 +214,8 @@
     cm.getContext('2d').drawImage(cv, 0, 0, tw, th);
     const miniatura = cm.toDataURL('image/jpeg', 0.55);
     if (img.close) img.close();
+    // libera a memória das imagens já (no iPhone ela só voltava "quando der", e numa visita longa acabava)
+    cv.width = cv.height = 0; cm.width = cm.height = 0;
     return { blob, largura: w, altura: h, miniatura };
   };
 
