@@ -511,9 +511,9 @@
   /** o: { href, de, titulo, pre, resumo, chips[], prazos[{rot, data, txt, cls}], objeto, pend, cls } */
   function linhaLista(o) {
     const corpo = [
-      h('div', { class: 'lin-de' }, o.de),
+      h('div', { class: 'lin-de' }, ...[].concat(o.de)),
       h('div', { class: 'lin-meio' },
-        h('div', { class: 'lin-l1' }, h('span', { class: 'lin-t' }, o.titulo, o.pend ? h('span', { class: 'pend', title: 'Aguardando sincronização' }) : null), o.resumo ? h('span', { class: 'lin-s' }, o.pre ? h('span', { class: 'so-cel' }, o.pre) : null, o.resumo) : null),
+        h('div', { class: 'lin-l1' }, h('span', { class: 'lin-t' }, o.titulo, o.pend ? h('span', { class: 'pend', title: 'Aguardando sincronização' }) : null), o.selo || null, o.resumo ? h('span', { class: 'lin-s' }, o.pre ? h('span', { class: 'so-cel' }, o.pre) : null, o.resumo) : null),
         o.orgao || o.objeto ? linha2(o, o.orgao ? 'lin-l2 lin-l2-dentro' : 'lin-l2') : null,
         o.chips && o.chips.filter(Boolean).length ? h('div', { class: 'etqs lin-chips' }, ...o.chips) : null),
       // à direita: os prazos com o nome (ex.: Vigência do Convênio · 05/11/26 · faltam 35 dias)
@@ -553,7 +553,7 @@
       const q = busca.value.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
       const fs = filtroSt.value;
       const filtrados = regs.filter((r) => (!fs || (fs === '__sem' ? !r.status_obra : r.status_obra === fs)) &&
-        (!q || [r.apelido, r.numero, r.n_nome, r.objeto, r.processo, r.status_obra].join(' ').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').includes(q)));
+        (!q || [r.apelido, r.numero, r.n_nome, r.objeto, r.processo, r.status_obra, r.os_numero ? 'os ' + r.os_numero : ''].join(' ').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').includes(q)));
       rc(lista, ...(filtrados.length ? filtrados.map((r) => {
         const ns = notifs.filter((n) => n.registroId === r.id);
         const ult = ns.sort((a, b) => String(b.data).localeCompare(a.data))[0];
@@ -563,8 +563,12 @@
         const st = infoStatus(r.status_obra, r.tipo);
         return linhaLista({
           href: '#/registro/' + r.id, cls: 'item', pend: r._pendente,
-          de: h('span', { class: 'lin-st' }, h('span', { class: 'lin-dot', style: { background: COR_AVATAR[st ? st.cor : 'neutro'] } }), h('span', { class: 'lin-st-t' }, r.status_obra || 'Sem status')),
+          de: [h('span', { class: 'lin-st' }, h('span', { class: 'lin-dot', style: { background: COR_AVATAR[st ? st.cor : 'neutro'] } }), h('span', { class: 'lin-st-t' }, r.status_obra || 'Sem status')),
+            // computador: a O.S. fica embaixo do status (espaço livre, sem encurtar o nome da obra)
+            r.tipo === 'contrato' && String(r.os_numero || '').trim() ? h('span', { class: 'lin-os lin-os-pc', title: 'Ordem de Serviço' }, 'O.S. nº ' + String(r.os_numero).trim()) : null],
           titulo: r.apelido || '(sem nome)',
+          // contrato com Ordem de Serviço: selo em destaque ao lado do nome (3.15.8)
+          selo: r.tipo === 'contrato' && String(r.os_numero || '').trim() ? h('span', { class: 'lin-os lin-os-cel', title: 'Ordem de Serviço' }, 'O.S. nº ' + String(r.os_numero).trim()) : null,
           // convênio: a prefeitura vai numa linha própria (sempre visível); contrato: empresa no resumo
           orgao: r.tipo === 'convenio' ? String(r.n_nome || '').trim() : '',
           resumo: (r.tipo === 'convenio' ? ROTULO[r.tipo] + ' nº ' + (r.numero || '—') : descricaoRegistro(r)) + ' · ' + (ns.length ? ns.length + ' notificação(ões), última em ' + X.dataBR(ult.data) : 'nenhuma notificação no app'),
@@ -4149,7 +4153,7 @@
       for (const f of fotosSemDrive) if (!(await DB.blobGet(f.id))) semArquivo++;
       const log = Sync.lerLog().slice().reverse();
       const resumo = {
-        app: '3.15.7', servidor: Sync.versaoServidor || '?', usuario: (u || {}).email, perfil: perfil(), estado: Sync.estado, erro: Sync.erro || '',
+        app: '3.15.8', servidor: Sync.versaoServidor || '?', usuario: (u || {}).email, perfil: perfil(), estado: Sync.estado, erro: Sync.erro || '',
         online: navigator.onLine, ultimaSync: await DB.kvGet('ultimaSync', null), cursor: await DB.kvGet('servidorDesde', 0),
         pendentes: pendPor, fotosAguardandoEnvio: fotosSemDrive.length - semArquivo, fotosDeOutroAparelhoSemEnvio: semArquivo,
         aparelho: navigator.userAgent, log,
@@ -4404,7 +4408,7 @@
     // a partir de "Aparência e câmera", cada seção vira uma lista suspensa (fechada; lembra as abertas)
     const iniSecoes = cards.findIndex((c) => c.querySelector && (c.querySelector(':scope > h2') || {}).textContent === 'Aparência e câmera');
     if (iniSecoes >= 0) for (let i = iniSecoes; i < cards.length; i++) cards[i] = secaoRecolhivel(cards[i]);
-    cards.push(h('p', { class: 'dica', style: { textAlign: 'center' } }, 'Fiscalização de Obras · v3.15.7 · dados salvos no aparelho' + (Sync.habilitado() ? ' e no Google Drive do administrador' : '') + ' · ', h('a', { href: 'privacidade.html' }, 'Política de privacidade')));
+    cards.push(h('p', { class: 'dica', style: { textAlign: 'center' } }, 'Fiscalização de Obras · v3.15.8 · dados salvos no aparelho' + (Sync.habilitado() ? ' e no Google Drive do administrador' : '') + ' · ', h('a', { href: 'privacidade.html' }, 'Política de privacidade')));
     rcT(tk, ...cards);
   }
 
