@@ -672,3 +672,9 @@ body:has(.n-seq-card) .fixo-visita { display: none; }
 .n-off-ok { background: var(--ok-bg); color: var(--ok); }
 .n-fotos-ap .n-barra { height: 8px; margin: 10px 0 6px; }
 .visor-aviso-mini { position: absolute; left: 50%; top: 14px; transform: translateX(-50%); background: rgba(0,0,0,.66); color: #fff; font-size: 12px; padding: 6px 12px; border-radius: 99px; z-index: 3; pointer-events: none; max-width: calc(100% - 24px); text-align: center; }
+.n-passos-n .passos-acoes { display: flex; align-items: center; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
+.n-passos-n .passos-acoes .btn.peq { padding: 6px 12px; font-size: 12.5px; flex: none; }
+.n-passos-n .passos-acoes .passos-modo { margin: 0 0 0 auto; }
+.n-passos-n .passos-acoes .btn { background: var(--sup2); color: var(--txt); text-align: center; font-weight: 600; }
+.n-passos-n .passos-acoes .btn.perigo { background: var(--er-bg); color: var(--er); }
+.n-passos-n .passos-acoes .passos-modo { flex: none; white-space: nowrap; }
