@@ -847,44 +847,53 @@
     const pc = matchMedia('(min-width: 1024px)').matches;
     const sub = h('div', { class: nc('sub') + ' ' + nc('saud') }, DIAS_L[hoje.getDay()] + ', ' + hoje.getDate() + ' de ' + MESES[hoje.getMonth()] + ' de ' + hoje.getFullYear());
 
-    // perto de você: obras com coordenadas (da última visita) ordenadas pela distância; sem GPS, as usadas por último
+    // perto de você: distância (GPS do aparelho) até cada obra, pela coordenada das fotos tiradas nela
+    // (ou da visita); sem GPS (computador, permissão negada, obra sem coordenada) mostra as visitadas por último
     const perto = h('div', { class: nc('perto') });
-    const coord = new Map();
-    for (const x of d.visitas.slice().sort((a, b) => String(a.data).localeCompare(b.data))) if (x.lat != null && x.lng != null) coord.set(x.registroId, { lat: x.lat, lng: x.lng });
+    const titPerto = h('h2', {}, 'Visitadas recentemente');
     const ultimaVis = new Map();
     for (const x of d.visitas) { const u = ultimaVis.get(x.registroId); if (!u || String(x.data) > String(u.data)) ultimaVis.set(x.registroId, x); }
     const candidatas = d.regs.filter((r) => !encerrada(r) && !(v && v.registroId === r.id));
-    const desenharPerto = (pos) => {
-      let l;
-      if (pos) l = candidatas.filter((r) => coord.has(r.id)).map((r) => ({ r, km: distKm(pos, coord.get(r.id)) })).sort((a, b) => a.km - b.km).slice(0, 2);
-      if (!l || !l.length) {
+    let recentesCache = [];
+    try { recentesCache = await DB.kvGet('coletaRecentes', []); } catch (e) { /* */ }
+    const desenharPerto = (pos, coord, aviso) => {
+      let l = [];
+      if (pos && coord) l = candidatas.filter((r) => coord[r.id]).map((r) => ({ r, km: distKm(pos, coord[r.id]) })).sort((a, b) => a.km - b.km).slice(0, 2);
+      const comGps = l.length > 0;
+      if (!comGps) {
         const rec = recentesCache.map((id) => candidatas.find((r) => r.id === id)).filter(Boolean);
-        const outras = candidatas.filter((r) => !rec.includes(r)).sort((a, b) => String((ultimaVis.get(b.id) || {}).data || '').localeCompare((ultimaVis.get(a.id) || {}).data || ''));
+        const outras = candidatas.filter((r) => !rec.includes(r) && ultimaVis.has(r.id)).sort((a, b) => String(ultimaVis.get(b.id).data).localeCompare(ultimaVis.get(a.id).data));
         l = rec.concat(outras).slice(0, 2).map((r) => ({ r, km: null }));
       }
+      rc(titPerto, comGps ? 'Perto de você' : 'Visitadas recentemente');
       rc(perto, l.map(({ r, km }, i) => {
         const u = ultimaVis.get(r.id);
         return h('div', { class: nc('card') },
-          h('div', { class: nc('dist') }, ico(km != null ? 'pin' : 'relogio'), h('span', { class: nc('num') }, km != null ? (km < 10 ? km.toFixed(1).replace('.', ',') : Math.round(km)) + ' km' : (u ? 'última ' + dataCurta(u.data) : 'sem visita'))),
+          h('div', { class: nc('dist') }, ico(km != null ? 'pin' : 'relogio'), h('span', { class: nc('num') }, km != null ? (km < 1 ? Math.round(km * 1000) + ' m' : (km < 10 ? km.toFixed(1).replace('.', ',') : Math.round(km)) + ' km') : (u ? 'última ' + dataCurta(u.data) : 'sem visita'))),
           h('div', { class: nc('t') }, r.apelido || ''),
           h('div', { class: nc('sub') }, 'Visita ' + (u ? haQuanto(u.data) : 'nunca feita')),
           h('a', { class: 'btn ' + (i ? '' : 'pri'), href: '#/coleta/' + r.id }, 'Iniciar visita'));
-      }));
+      }), aviso ? h('div', { class: nc('dica'), style: { gridColumn: '1 / -1' } }, aviso) : null);
+      if (!l.length) rc(perto, h('div', { class: nc('dica'), style: { gridColumn: '1 / -1' } }, aviso || 'Nenhuma visita feita ainda. Comece pelo botão da câmera.'));
     };
-    let recentesCache = [];
-    try { recentesCache = await DB.kvGet('coletaRecentes', []); } catch (e) { /* */ }
     desenharPerto(null);
-    if (pode.coletar() && !pc && navigator.permissions && navigator.permissions.query) {
-      navigator.permissions.query({ name: 'geolocation' }).then((st) => {
-        if (st.state !== 'granted') return;
-        Foto.posicaoAtual(300000).then((p) => { if (p && tk === rotaSeq) desenharPerto(p); });
-      }).catch(() => {});
+    if (pode.coletar() && !pc && 'geolocation' in navigator) {
+      (async () => {
+        let estado = 'prompt';
+        try { if (navigator.permissions && navigator.permissions.query) estado = (await navigator.permissions.query({ name: 'geolocation' })).state; } catch (e) { /* */ }
+        if (estado === 'denied') { desenharPerto(null, null, 'Para ver as obras mais perto, libere a localização para o app.'); return; }
+        desenharPerto(null, null, 'Procurando sua localização…'); rc(titPerto, 'Perto de você');
+        const [pos, coord] = await Promise.all([Foto.posicaoAtual(300000), coordenadasObras(d, candidatas)]);
+        if (tk !== rotaSeq) return;
+        const semCoord = candidatas.filter((r) => !coord[r.id]).length;
+        desenharPerto(pos, coord, !pos ? 'Localização indisponível agora — mostrando as visitadas por último.' : semCoord === candidatas.length ? 'As obras ganham localização na primeira visita com fotos (GPS).' : '');
+      })().catch((e) => console.warn('perto', e));
     }
 
     const blocoAgenda = h('div', { class: nc('card'), style: { padding: '12px' } }, agendaSemana(d, at));
     const ban = bannerAniv(d);
     const vivo = cartaoVivo(v, v ? d.porId.get(v.registroId) : null, nF, nI, pc);
-    const secPerto = pode.coletar() && candidatas.length ? [h('div', { class: nc('sec') }, h('h2', {}, 'Perto de você'), h('a', { class: nc('lk'), href: '#/obras' }, 'Todas as obras')), perto] : [];
+    const secPerto = pode.coletar() && candidatas.length ? [h('div', { class: nc('sec') }, titPerto, h('a', { class: nc('lk'), href: '#/obras' }, 'Todas as obras')), perto] : [];
     if (!pc) {
       rcT(tk, h('div', { class: nc('pag') }, sub, vivo, secPerto, ban, h('div', { class: nc('sec') }, h('h2', {}, 'Agenda e atenção'), h('a', { class: nc('lk'), href: '#/prazos' }, 'Prazos')), blocoAgenda));
       return;
@@ -912,6 +921,38 @@
           h('div', { class: nc('sec'), style: ban ? null : { marginTop: 0 } }, h('h2', {}, 'Visita em andamento')), vivo,
           secPerto,
           recentes.length ? [h('div', { class: nc('sec') }, h('h2', {}, 'Atividade recente')), h('div', { class: nc('lista') }, recentes.map(liPrazo))] : null))));
+  }
+  /* Coordenada de cada obra: a mediana das fotos com GPS da visita mais recente (as fotos são tiradas na obra;
+     o início da visita pode ter sido marcado fora dela); sem fotos, a da visita. Guardada no aparelho e refeita
+     quando há visita nova. */
+  async function coordenadasObras(d, regs) {
+    let cache = {};
+    try { cache = (await DB.kvGet('coordObras', {})) || {}; } catch (e) { /* */ }
+    const med = (l) => { const s = l.slice().sort((a, b) => a - b); return s[Math.floor(s.length / 2)]; };
+    const out = {};
+    let mudou = false;
+    for (const r of regs) {
+      const vs = d.visitas.filter((x) => x.registroId === r.id).sort((a, b) => String(b.data).localeCompare(a.data));
+      const chave = vs.map((x) => x.id + (x.atualizadoEm || '')).slice(0, 3).join('|');
+      const c = cache[r.id];
+      if (c && c.chave === chave && c.lat != null) { out[r.id] = c; continue; }
+      if (c && c.chave === chave) continue; // já procurou e não tem coordenada
+      let lat = null, lng = null;
+      try {
+        const fs = (await DB.byIndex('fotos', 'registroId', r.id)).filter((f) => !f.excluido && f.lat != null && f.lng != null && (f.precisao == null || f.precisao <= 100));
+        if (fs.length) {
+          const ult = fs.slice().sort((a, b) => String(b.dataHora).localeCompare(a.dataHora));
+          const daVis = ult[0].visitaId ? ult.filter((f) => f.visitaId === ult[0].visitaId) : ult.slice(0, 15);
+          lat = med(daVis.map((f) => f.lat)); lng = med(daVis.map((f) => f.lng));
+        }
+      } catch (e) { /* */ }
+      if (lat == null) { const vc = vs.find((x) => x.lat != null && x.lng != null); if (vc) { lat = vc.lat; lng = vc.lng; } }
+      cache[r.id] = { chave, lat, lng };
+      if (lat != null) out[r.id] = cache[r.id];
+      mudou = true;
+    }
+    if (mudou) { try { await DB.kvSet('coordObras', cache); } catch (e) { /* */ } }
+    return out;
   }
   function distKm(a, b) {
     const R = 6371, rad = Math.PI / 180;
@@ -1155,13 +1196,26 @@
     const redesenhar = () => { manterRolagem = true; telaRegistro(id, aba).finally(() => { manterRolagem = false; }); };
     const irAba = (k) => { sessionStorage.setItem('aba_reg2', k); aba = k; manterRolagem = true; telaRegistro(id, k).then(() => { manterRolagem = false; const a = document.querySelector('.' + nc('abas')); if (a && a.getBoundingClientRect().top < 60) a.scrollIntoView({ block: 'start' }); }); };
 
+    // fila de atendimento do convênio: fechada até tocar em "Atendimentos"
+    let filaAberta = false;
+    try { filaAberta = sessionStorage.getItem('fila_aberta_' + id) === '1'; } catch (e) { /* */ }
+    const boxFila = h('div', { class: 'fila-convenio-box', style: { display: filaAberta ? '' : 'none' } });
+    if (r.tipo === 'convenio') { const c = cartaoFilaConvenio(r); c.classList.add('fila-convenio', nc('fila-c')); boxFila.appendChild(c); }
     // ações rápidas
     const rasc = medicoes.find((m) => m.status !== 'concluida');
     const acao = (icn, txt, onclick, prim) => h('button', { class: prim ? nc('prim') : null, onclick }, h('span', { class: nc('ic') }, ico(icn)), txt);
     const acoes = h('div', { class: nc('acoes') },
       pode.coletar() ? acao(aberta ? 'play' : 'cam', aberta ? 'Continuar' : 'Visita', () => { location.hash = aberta ? '#/visita/' + aberta.id : '#/coleta/' + id; }, true) : null,
       r.tipo === 'contrato' && pode.notificar() ? acao('regua', 'Medição', () => { location.hash = rasc ? '#/medicao/' + rasc.id : '#/nova-medicao/' + id; }) : null,
-      r.tipo === 'convenio' ? acao('fila', 'Fila', () => { const c = document.querySelector('.fila-convenio'); if (c && !c.classList.contains('oculto')) c.scrollIntoView({ behavior: 'smooth', block: 'center' }); else location.hash = '#/fila'; }) : null,
+      r.tipo === 'convenio' ? acao('fila', 'Atendimentos', () => {
+        // a fila de atendimento do convênio só aparece depois de tocar no botão (toque de novo para fechar)
+        const aberta2 = boxFila.style.display === 'none';
+        boxFila.style.display = aberta2 ? '' : 'none';
+        try { sessionStorage.setItem('fila_aberta_' + id, aberta2 ? '1' : ''); } catch (e) { /* */ }
+        const c = boxFila.firstChild;
+        if (aberta2 && c && c.classList.contains('oculto')) { boxFila.style.display = 'none'; location.hash = '#/fila'; return; }
+        if (aberta2) setTimeout(() => boxFila.scrollIntoView({ behavior: 'smooth', block: 'nearest' }), 50);
+      }) : null,
       pode.notificar() ? acao('sino', 'Notificar', () => { location.hash = '#/nova-notificacao/' + id; }) : null,
       acao('foto', 'Fotos', () => irAba('fotos')));
 
@@ -1234,7 +1288,7 @@
     } else {
       ap(conteudo, dadosObra(r));
     }
-    const corpo = h('div', { class: nc('md-r') }, heroObra(r, !!aberta), r.tipo === 'convenio' ? (() => { const c = cartaoFilaConvenio(r); c.classList.add('fila-convenio', nc('fila-c')); return c; })() : null, acoes, abas, conteudo);
+    const corpo = h('div', { class: nc('md-r') }, heroObra(r, !!aberta), acoes, boxFila, abas, conteudo);
     // computador: a lista de obras fica à esquerda
     let esquerda = null;
     if (matchMedia('(min-width: 1024px)').matches) {
@@ -3808,15 +3862,18 @@
   const btnHistorico = (aberto, n, onclick) => h('button', { class: 'btn peq btn-hist', onclick }, (aberto ? '▾ Ocultar' : '▸ Ver') + ' histórico de atendimento (' + n + ')');
   function itemFila(l, reg) {
     const conv = l.convenio ? 'Convênio ' + l.convenio : 'Convênio não informado';
-    return linhaLista({
+    const el = linhaLista({
       href: reg ? '#/registro/' + reg.id : null, cls: 'item fila-item' + (atendido(l) ? ' atendida' : ''),
-      
+
       de: [l.convenio, l.municipio].filter(Boolean).join(' · ') || conv,
       titulo: h('span', {}, l.solicitacao || 'Solicitação não informada', h('span', { class: 'so-cel' }, ' · ' + [conv, l.municipio].filter(Boolean).join(' · '))),
       resumo: [l.escola, l.protocolo ? 'Protocolo nº ' + l.protocolo : '', 'linha ' + l.linha + ' da planilha', ...(l.extras || []).map(([k, v]) => k + ': ' + v)].filter(Boolean).join(' · '),
       chips: [l.status ? etq(l.status, atendido(l) ? 'ok' : '') : null, l.situacao ? etq(l.situacao, corSituacao(l.situacao)) : null,
         reg ? h('span', { class: 'lin-link' }, 'Abrir “' + (reg.apelido || reg.numero) + '” no app ›') : null],
     });
+    // vindo da Fila, o convênio abre com os atendimentos à vista
+    if (reg) el.addEventListener('click', () => { try { sessionStorage.setItem('fila_aberta_' + reg.id, '1'); } catch (e) { /* */ } });
+    return el;
   }
   const avisoLeitura = (dados, erro) => {
     if (!erro || erro === 'local') return null;
@@ -4128,51 +4185,70 @@
         sugs, vence));
   }
 
-  /* Rascunho em 4 passos: barra de passos no topo (toque para ir) e "Próximo" no pé da tela.
-     Tudo continua na mesma página (nada se perde ao voltar um passo). */
-  function passosNotificacao(secoes, emitirTxt) {
+  /* Rascunho em 4 passos (Dados → Texto → Anexos → Emitir): um passo por vez, com "Voltar" e "Próximo" no pé
+     da tela e a barra de passos no topo (toque para ir direto). O que foi preenchido fica guardado ao trocar de
+     passo. "Ver tudo numa página" mostra todas as seções de uma vez (fica lembrado neste aparelho). */
+  const modoNotif = () => { try { return localStorage.getItem('notif_modo') === 'tudo' ? 'tudo' : 'passos'; } catch (e) { return 'passos'; } };
+  function passosNotificacao(secoes, opc) {
     const nomes = ['Dados', 'Texto', 'Anexos', 'Emitir'];
+    const chave = 'passo_notif_' + (opc.id || '');
     let atual = 0;
-    const barra = h('div', { class: nc('passos-n') });
+    try { atual = Math.min(secoes.length - 1, +sessionStorage.getItem(chave) || 0); } catch (e) { /* */ }
+    const tudo = modoNotif() === 'tudo';
+    const barra = h('div', { class: nc('passos-n') + (tudo ? ' passos-tudo' : '') });
     const prox = h('button', { class: 'btn pri' });
     const ant = h('button', { class: 'btn', style: { flex: '0 0 auto' } }, 'Voltar');
-    const ir = (i, rolar) => {
+    const resumoBox = opc.resumoBox || h('div');
+    const trocarModo = h('button', { type: 'button', class: nc('lk') + ' passos-modo', style: { background: 'none', border: '0', cursor: 'pointer', padding: '4px 2px' }, onclick: () => {
+      try { localStorage.setItem('notif_modo', tudo ? 'passos' : 'tudo'); } catch (e) { /* */ }
+      if (opc.redesenhar) opc.redesenhar();
+    } }, tudo ? 'Ver em passos' : 'Ver tudo numa página');
+    const mostrar = () => {
+      if (tudo) return;
+      secoes.forEach((g, i) => g.forEach((el) => { el.style.display = i === atual ? '' : 'none'; }));
+      if (atual === secoes.length - 1 && opc.resumo) rc(resumoBox, opc.resumo());
+    };
+    const ir = (i) => {
       atual = Math.max(0, Math.min(secoes.length - 1, i));
-      pintar();
-      if (rolar) {
+      try { sessionStorage.setItem(chave, String(atual)); } catch (e) { /* */ }
+      pintar(); mostrar();
+      if (tudo) {
         const el = secoes[atual][0];
-        const y = el.getBoundingClientRect().top + scrollY - (barra.offsetHeight + 70);
-        scrollTo({ top: Math.max(0, y), behavior: 'smooth' });
-      }
+        scrollTo({ top: Math.max(0, el.getBoundingClientRect().top + scrollY - (barra.offsetHeight + 70)), behavior: 'smooth' });
+      } else scrollTo({ top: 0, behavior: 'smooth' });
     };
     const pintar = () => {
-      rc(barra, nomes.map((t, i) => h('button', { type: 'button', class: i === atual ? nc('on') : i < atual ? nc('feito') : null, onclick: () => ir(i, true) }, h('i'), (i + 1) + ' ' + t)));
-      rc(prox, atual < nomes.length - 1 ? 'Próximo · ' + nomes[atual + 1] : emitirTxt);
+      rc(barra, h('div', { class: nc('passos-bts') }, nomes.map((t, i) => h('button', { type: 'button', class: i === atual ? nc('on') : i < atual ? nc('feito') : null, onclick: () => ir(i) }, h('i'), (i + 1) + ' ' + t))), trocarModo);
+      const ultimo = atual >= nomes.length - 1;
+      rc(prox, ultimo ? 'Revisar e emitir' : 'Próximo · ' + nomes[atual + 1]);
+      prox.style.display = ultimo && !tudo ? 'none' : '';
       ant.style.display = atual ? '' : 'none';
     };
     prox.addEventListener('click', () => {
-      if (atual < secoes.length - 1) { ir(atual + 1, true); return; }
+      if (atual < secoes.length - 1) { ir(atual + 1); return; }
       const g = secoes[secoes.length - 1], el = g[g.length - 1];
       el.scrollIntoView({ behavior: 'smooth', block: 'center' });
     });
-    ant.addEventListener('click', () => ir(atual - 1, true));
-    // passo atual acompanha a rolagem
-    let t = null;
-    const aoRolar = () => {
-      if (!document.body.contains(barra)) { removeEventListener('scroll', aoRolar); return; }
-      clearTimeout(t);
-      t = setTimeout(() => {
-        const lim = barra.getBoundingClientRect().bottom + 40;
-        let k = 0;
-        secoes.forEach((s, i) => { if (s[0].getBoundingClientRect().top <= lim + 80) k = i; });
-        if (innerHeight + scrollY >= document.documentElement.scrollHeight - 4) k = secoes.length - 1;
-        if (k !== atual) { atual = k; pintar(); }
-      }, 60);
-    };
-    addEventListener('scroll', aoRolar, { passive: true });
+    ant.addEventListener('click', () => ir(atual - 1));
+    if (tudo) {
+      // página única: o passo marcado acompanha a rolagem
+      let t = null;
+      const aoRolar = () => {
+        if (!document.body.contains(barra)) { removeEventListener('scroll', aoRolar); return; }
+        clearTimeout(t);
+        t = setTimeout(() => {
+          const lim = barra.getBoundingClientRect().bottom + 40;
+          let k = 0;
+          secoes.forEach((sc, i) => { if (sc[0].getBoundingClientRect().top <= lim + 80) k = i; });
+          if (innerHeight + scrollY >= document.documentElement.scrollHeight - 4) k = secoes.length - 1;
+          if (k !== atual) { atual = k; pintar(); }
+        }, 60);
+      };
+      addEventListener('scroll', aoRolar, { passive: true });
+    }
     pintar();
-    const pe = h('div', { class: nc('fixo') + ' pe-notif' }, ant, prox);
-    return { barra, pe };
+    const pe = h('div', { class: nc('fixo') + ' pe-notif' + (tudo ? ' pe-tudo' : '') }, ant, prox);
+    return { barra, pe, resumoBox, mostrar };
   }
 
   async function telaNotificacao(id) {
@@ -4486,9 +4562,24 @@
 
     if (!ro) {
       // rascunho: 4 passos (dados → texto → anexos → emitir)
-      const ps = passosNotificacao([[secCab], [secFatos, secProv], [secFotos], [secAss, acoes]], 'Revisar e emitir');
+      const resumo = () => {
+        const d = +n.prazo_dias || 3, fim = prazoFinalUteis(X.hojeISO(), d);
+        const itens = (n.itens || []).map((t) => t.trim()).filter(Boolean);
+        const li = (ok, t) => h('div', { class: nc('check') }, h('span', { class: nc('ic ' + (ok ? 'ok' : 'al')) }, ico(ok ? 'ok' : 'alerta')), h('div', { class: nc('c') }, t));
+        return h('div', { class: 'card' }, h('h2', {}, 'Revisão antes de emitir'),
+          h('div', { class: nc('lista'), style: { boxShadow: 'none' } },
+            li(!!(n.data && n.data_vistoria), 'Notificação de ' + (X.dataBR(n.data) || '—') + ' · vistoria em ' + (X.dataBR(n.data_vistoria) || '—')),
+            li(itens.length > 0, plural(itens.length, 'item', 'itens') + ' na lista de irregularidades'),
+            li((n.fotos || []).length > 0, plural((n.fotos || []).length, 'foto anexa', 'fotos anexas')),
+            li(true, 'Prazo de ' + d + (d === 1 ? ' dia útil' : ' dias úteis') + ' · se enviada hoje, vence em ' + X.dataBR(fim)),
+            li(!!(edFiscais.length || (n.fiscais || []).length), 'Assinam: ' + (snapshotAssinantes(edFiscais, pessoas, true).map((f) => f.nome).join(', ') || '—'))),
+          h('div', { class: 'dica' }, 'Baixe o Word para conferir o documento. Ao emitir, o número é reservado e o conteúdo fica bloqueado.'));
+      };
+      const resumoCard = h('div');
+      const ps = passosNotificacao([[secCab], [secFatos, secProv], [secFotos], [resumoCard, secAss, acoes]], { id, resumo, resumoBox: resumoCard, redesenhar: async () => { if (sujo) await salvar(true); telaNotificacao(id); } });
       document.body.dataset.foco = '1';
-      rcT(tk, ps.barra, secCab, secFatos, secProv, secFotos, secAss, acoes, ps.pe);
+      rcT(tk, ps.barra, secCab, secFatos, secProv, secFotos, resumoCard, secAss, acoes, ps.pe);
+      ps.mostrar();
     } else rcT(tk, emitida ? cartaoEnvio(original, r, () => telaNotificacao(id)) : null, secCab, secFatos, secProv, secAss, secFotos, acoes);
     // salvamento automatico do rascunho ao sair da tela
     App._sairNotif = async () => { if (sujo && !ro) await salvar(true); };
@@ -5156,7 +5247,7 @@
       for (const f of fotosSemDrive) if (!(await DB.blobGet(f.id))) semArquivo++;
       const log = Sync.lerLog().slice().reverse();
       const resumo = {
-        app: '3.16.0', servidor: Sync.versaoServidor || '?', usuario: (u || {}).email, perfil: perfil(), estado: Sync.estado, erro: Sync.erro || '',
+        app: '3.16.1', servidor: Sync.versaoServidor || '?', usuario: (u || {}).email, perfil: perfil(), estado: Sync.estado, erro: Sync.erro || '',
         online: navigator.onLine, ultimaSync: await DB.kvGet('ultimaSync', null), cursor: await DB.kvGet('servidorDesde', 0),
         pendentes: pendPor, fotosAguardandoEnvio: fotosSemDrive.length - semArquivo, fotosDeOutroAparelhoSemEnvio: semArquivo,
         aparelho: navigator.userAgent, log,
@@ -5411,7 +5502,7 @@
     // a partir de "Aparência e câmera", cada seção vira uma lista suspensa (fechada; lembra as abertas)
     const iniSecoes = cards.findIndex((c) => c.querySelector && (c.querySelector(':scope > h2') || {}).textContent === 'Aparência e câmera');
     if (iniSecoes >= 0) for (let i = iniSecoes; i < cards.length; i++) cards[i] = secaoRecolhivel(cards[i]);
-    cards.push(h('p', { class: 'dica', style: { textAlign: 'center' } }, 'Fiscalização de Obras · v3.16.0 · dados salvos no aparelho' + (Sync.habilitado() ? ' e no Google Drive do administrador' : '') + ' · ', h('a', { href: 'privacidade.html' }, 'Política de privacidade')));
+    cards.push(h('p', { class: 'dica', style: { textAlign: 'center' } }, 'Fiscalização de Obras · v3.16.1 · dados salvos no aparelho' + (Sync.habilitado() ? ' e no Google Drive do administrador' : '') + ' · ', h('a', { href: 'privacidade.html' }, 'Política de privacidade')));
     rcT(tk, ...cards);
   }
 

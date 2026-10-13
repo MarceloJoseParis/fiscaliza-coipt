@@ -644,3 +644,20 @@ a.n-lk, .n-lk { text-decoration: none; color: var(--acc); font-weight: 600; font
 .n-com-box textarea { min-height: 44px !important; height: 44px; line-height: 1.4; }
 body:has(.n-seq-card) .fixo-visita { display: none; }
 :root[data-theme="dark"] .n-seq-bt-irr { background: var(--er-bg); color: var(--er); }
+/* busca da lista de obras: a lupa já está fora do campo (no escuro a lupa do campo se repetia) */
+.n-busca input[type=search], :root[data-theme="dark"] .n-busca input[type=search] { background: none !important; background-image: none !important; box-shadow: none !important; padding-left: 0 !important; border-radius: 0; }
+/* busca: sem a lupa de fundo dos campos antigos (no tema escuro ela se repetia) */
+.n-busca input[type=search], :root[data-theme="dark"] .n-busca input[type=search] { background: none !important; background-image: none !important; padding-left: 0 !important; box-shadow: none !important; }
+/* notificação em passos */
+.n-passos-n { display: block !important; }
+.n-passos-n .n-passos-bts { display: flex; gap: 6px; }
+.n-passos-n .n-passos-bts button { flex: 1; border: 0; background: none; padding: 0; text-align: left; color: var(--txt2); font-size: 11.5px; font-weight: 600; cursor: pointer; }
+.n-passos-n .n-passos-bts button i { display: block; height: 4px; border-radius: 9px; background: var(--sup2); margin-bottom: 6px; }
+.n-passos-n .n-passos-bts button.n-on { color: var(--txt); }
+.n-passos-n .n-passos-bts button.n-on i, .n-passos-n .n-passos-bts button.n-feito i { background: var(--acc); }
+.n-passos-n .passos-modo { display: block; margin: 6px 0 0 auto; font-size: 12px; }
+@media (min-width: 1024px) {
+  body[data-tela="notificacao"] main > .pe-notif { display: flex; column-span: all; }
+  body[data-tela="notificacao"] main > .pe-notif.pe-tudo { display: none; }
+  body[data-tela="notificacao"][data-foco] main { columns: 1; max-width: 900px; }
+}
