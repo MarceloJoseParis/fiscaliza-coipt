@@ -66,7 +66,11 @@
     async kvGet(k, def) { const r = await DB.get('kv', k); return r ? r.v : def; },
     kvSet: (k, v) => DB.put('kv', { k, v }),
     async blobGet(id) { const r = await DB.get('blobs', id); return r ? r.blob : null; },
-    blobSet: (id, blob) => DB.put('blobs', { k: id, blob }),
+    blobSet: (id, blob) => DB.put('blobs', { k: id, blob, em: Date.now() }),
+    // chaves de um store sem ler os registros (rápido mesmo com milhares de fotos)
+    chaves: (store) => tx(store, 'readonly', (os) => req(os.getAllKeys())),
+    // tamanho de cada foto guardada (só lê o Blob, que o navegador não carrega na memória)
+    async blobInfo(id) { const r = await DB.get('blobs', id); return r && r.blob ? { tam: r.blob.size || 0, em: r.em || 0 } : null; },
     async arquivoGet(k) { return DB.get('arquivos', k); },
     arquivoSet: (k, blob, info) => DB.put('arquivos', Object.assign({ k, blob }, info || {})),
   };

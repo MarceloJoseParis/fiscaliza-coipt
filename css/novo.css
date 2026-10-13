@@ -661,3 +661,14 @@ body:has(.n-seq-card) .fixo-visita { display: none; }
   body[data-tela="notificacao"] main > .pe-notif.pe-tudo { display: none; }
   body[data-tela="notificacao"][data-foco] main { columns: 1; max-width: 900px; }
 }
+/* uso sem internet (fotos das pendências no aparelho) */
+.n-offline:empty { display: none; }
+.n-offline { margin-top: 10px; }
+.n-offline button { display: flex; align-items: center; gap: 10px; width: 100%; text-align: left; border: 0; border-radius: var(--r-mid); padding: 11px 14px; font: inherit; font-size: 13.5px; cursor: pointer; line-height: 1.35; }
+.n-offline button svg { flex: none; }
+.n-offline small { color: var(--txt2); font-size: 12px; }
+.n-off-bt { background: var(--sup); color: var(--txt); box-shadow: var(--sombra); border: 1.5px dashed var(--linha) !important; }
+.n-off-bt svg { color: var(--acc); }
+.n-off-ok { background: var(--ok-bg); color: var(--ok); }
+.n-fotos-ap .n-barra { height: 8px; margin: 10px 0 6px; }
+.visor-aviso-mini { position: absolute; left: 50%; top: 14px; transform: translateX(-50%); background: rgba(0,0,0,.66); color: #fff; font-size: 12px; padding: 6px 12px; border-radius: 99px; z-index: 3; pointer-events: none; max-width: calc(100% - 24px); text-align: center; }

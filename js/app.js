@@ -1288,7 +1288,21 @@
     } else {
       ap(conteudo, dadosObra(r));
     }
-    const corpo = h('div', { class: nc('md-r') }, heroObra(r, !!aberta), acoes, boxFila, abas, conteudo);
+    // uso sem internet: fotos em tamanho real das pendências e das visitas recentes
+    const boxOffline = h('div', { class: nc('offline') });
+    const pintarOffline = async () => {
+      if (!Sync.habilitado() || !pode.coletar()) return;
+      const x = await fotosParaPreparar(id).catch(() => null);
+      if (!x || !x.ids.length) { rc(boxOffline); return; }
+      if (!x.baixar.length) {
+        rc(boxOffline, h('button', { class: nc('off-ok'), onclick: () => prepararSemInternet(r, pintarOffline) }, ico('ok'), h('span', {}, h('b', {}, 'Disponível sem internet'), ' · ' + plural(x.prontas, 'foto', 'fotos') + ' no aparelho' + (x.semDrive.length ? ' · ' + x.semDrive.length + ' ainda não enviada(s) por outro aparelho' : ''))));
+      } else {
+        rc(boxOffline, h('button', { class: nc('off-bt'), onclick: () => prepararSemInternet(r, pintarOffline) }, ico('baixar'),
+          h('span', {}, h('b', {}, 'Preparar para usar sem internet'), h('br'), h('small', {}, plural(x.baixar.length, 'foto', 'fotos') + ' · cerca de ' + mb(x.estimativa) + (x.pend ? ' · ' + plural(x.pend, 'pendência', 'pendências') : '')))));
+      }
+    };
+    pintarOffline();
+    const corpo = h('div', { class: nc('md-r') }, heroObra(r, !!aberta), boxOffline, acoes, boxFila, abas, conteudo);
     // computador: a lista de obras fica à esquerda
     let esquerda = null;
     if (matchMedia('(min-width: 1024px)').matches) {
@@ -1378,6 +1392,169 @@
     if (r.tipo !== 'contrato') a.execucao = '';
     a.em = new Date().toISOString(); a.por = email();
     return a;
+  }
+
+
+  /* ================================================================== */
+  /* Fotos no aparelho (3.17): o que fica guardado em tamanho real       */
+  /* ================================================================== */
+  /* Ficam em tamanho real: as fotos das irregularidades pendentes (a constatação e a última verificação
+     "não sanada", e a foto do projeto), as da visita em andamento e das visitas dos últimos 7 dias, e as
+     anexadas a rascunhos de notificação e de medição. Foto ainda não enviada ao Drive nunca sai.
+     As demais saem do aparelho sozinhas (a miniatura e os dados continuam; com internet, a foto é
+     baixada de novo ao abrir). */
+  const LIMITE_FOTOS = 300 * 1024 * 1024;
+  const DIAS_GUARDA = 7;
+  const mb = (b) => (b >= 1024 * 1024 * 1024 ? (b / 1024 / 1024 / 1024).toFixed(1).replace('.', ',') + ' GB' : Math.max(b > 0 ? 1 : 0, Math.round(b / 1024 / 1024)) + ' MB');
+  async function fotosNecessarias(registroId) {
+    // de uma obra só (página da obra) ou de todas (limpeza, Ajustes)
+    const [regs, fotos, visitas, notifs, meds] = registroId
+      ? await Promise.all([DB.get('registros', registroId).then((r) => (r ? [r] : [])), DB.byIndex('fotos', 'registroId', registroId), DB.byIndex('visitas', 'registroId', registroId), DB.byIndex('notificacoes', 'registroId', registroId), DB.byIndex('medicoes', 'registroId', registroId)])
+      : await Promise.all([DB.all('registros'), DB.all('fotos'), DB.all('visitas'), DB.all('notificacoes'), DB.all('medicoes')]);
+    const porReg = new Map(regs.map((r) => [r.id, r]));
+    const mapa = new Map(fotos.map((f) => [f.id, f]));
+    const fechada = (id) => { const r = porReg.get(id); return !r || r.excluido || encerrada(r); };
+    const desde = isoDe(new Date(Date.now() - DIAS_GUARDA * 864e5));
+    const fixas = new Set(), recentes = new Set(), porObra = new Map(), pendAtual = new Map();
+    const add = (set, id, regId) => {
+      if (!id) return;
+      set.add(id);
+      if (regId) { if (!porObra.has(regId)) porObra.set(regId, new Set()); porObra.get(regId).add(id); }
+    };
+    const visPor = new Map(visitas.filter((v) => !v.excluido).map((v) => [v.id, v]));
+    for (const f of fotos) {
+      if (f.excluido) continue;
+      if (f.irregular && situacao(f) === 'pendente' && !fechada(f.registroId)) {
+        add(fixas, f.id, f.registroId);
+        const vs = (f.verificacoes || []).filter((x) => x.status === 'nao_sanada' && x.fotoId);
+        const ult = vs[vs.length - 1];
+        if (ult) add(fixas, ult.fotoId, f.registroId);
+        if (f.projeto && f.projeto.fotoId) add(fixas, f.projeto.fotoId, f.registroId);
+        pendAtual.set(f.id, ult ? ult.fotoId : f.id);
+      }
+      const v = f.visitaId && visPor.get(f.visitaId);
+      if (v && v.status !== 'concluida') add(fixas, f.id, f.registroId);
+      else if (v && String(v.data) >= desde && !fechada(f.registroId)) add(recentes, f.id, f.registroId);
+    }
+    for (const n of notifs) if (!n.excluido && n.status !== 'emitida') for (const x of n.fotos || []) add(fixas, x.fotoId, n.registroId);
+    for (const m of meds) if (!m.excluido && m.status !== 'concluida') for (const it of ((m.relFoto || {}).itens || [])) add(fixas, it.fotoId, m.registroId);
+    return { mapa, fixas, recentes, porObra, pendAtual, visPor };
+  }
+  // espaço do navegador para o app (o celular quase cheio pausa os downloads automáticos)
+  async function espacoAparelho() {
+    try {
+      if (!navigator.storage || !navigator.storage.estimate) return null;
+      const e = await navigator.storage.estimate();
+      const livre = Math.max(0, (e.quota || 0) - (e.usage || 0));
+      return { usado: e.usage || 0, quota: e.quota || 0, livre, pouco: !!e.quota && (livre < 250 * 1024 * 1024 || e.usage / e.quota > 0.92) };
+    } catch (e) { return null; }
+  }
+  App.espacoAparelho = espacoAparelho;
+  // pede ao navegador para não apagar os dados do app quando o aparelho fica sem espaço (fotos para uso sem internet)
+  try { if (navigator.storage && navigator.storage.persist) navigator.storage.persisted().then((ja) => { if (!ja) navigator.storage.persist().catch(() => {}); }).catch(() => {}); } catch (e) { /* */ }
+
+  let limpezaEmAndamento = null;
+  /* Limpeza aos poucos (lotes pequenos com pausa entre eles: o app não trava).
+     opc.forcar: também ao abrir Ajustes > Liberar espaço agora. Devolve { removidas, liberado, total, guardadas }. */
+  function limparFotosAparelho(opc) {
+    if (limpezaEmAndamento) return limpezaEmAndamento;
+    limpezaEmAndamento = (async () => {
+      const nec = await fotosNecessarias();
+      const chaves = await DB.chaves('blobs');
+      const ficam = [];
+      let removidas = 0, liberado = 0, total = 0;
+      const pausa = () => new Promise((ok) => setTimeout(ok, 40));
+      for (let i = 0; i < chaves.length; i++) {
+        const k = chaves[i];
+        const f = nec.mapa.get(k);
+        const info = await DB.blobInfo(k).catch(() => null);
+        if (!info) continue;
+        // foto sem registro (acabou de ser tirada e ainda está sendo gravada) ou não enviada ao Drive: nunca sai
+        const podeSair = f && f.driveId && !nec.fixas.has(k) && !nec.recentes.has(k);
+        if (podeSair) { await DB.del('blobs', k); removidas++; liberado += info.tam; if (cacheUrls.has(k)) { URL.revokeObjectURL(cacheUrls.get(k)); cacheUrls.delete(k); } }
+        else { total += info.tam; ficam.push({ k, f, info }); }
+        if (i % 12 === 11) await pausa();
+      }
+      // acima do limite: saem primeiro as fotos das visitas recentes já concluídas (as mais antigas antes);
+      // pendências, visita aberta, rascunhos e fotos não enviadas continuam
+      if (total > LIMITE_FOTOS) {
+        const cand = ficam.filter((x) => x.f && x.f.driveId && nec.recentes.has(x.k) && !nec.fixas.has(x.k))
+          .sort((a, b) => String(a.f.dataHora).localeCompare(b.f.dataHora));
+        for (const x of cand) {
+          if (total <= LIMITE_FOTOS) break;
+          await DB.del('blobs', x.k); removidas++; liberado += x.info.tam; total -= x.info.tam;
+        }
+      }
+      if (removidas) Sync.log('fotos', removidas + ' foto(s) saíram do aparelho (' + mb(liberado) + '); continuam no Drive');
+      try { await DB.kvSet('ultimaLimpezaFotos', Date.now()); } catch (e) { /* */ }
+      return { removidas, liberado, total };
+    })().finally(() => { limpezaEmAndamento = null; });
+    return limpezaEmAndamento;
+  }
+  App.limparFotosAparelho = limparFotosAparelho;
+  // com o app aberto: 1 minuto depois de abrir e a cada 30 minutos
+  setTimeout(async () => {
+    limparFotosAparelho().catch((e) => console.warn('limpeza', e));
+    // celular quase sem memória: avisa (uma vez por dia)
+    const esp = await espacoAparelho();
+    if (esp && esp.pouco) {
+      const hoje = X.hojeISO();
+      if ((await DB.kvGet('avisoEspaco', '')) !== hoje) { await DB.kvSet('avisoEspaco', hoje); toast('⚠️ O aparelho está quase sem espaço (' + mb(esp.livre) + ' livres para o app). Os downloads automáticos de fotos foram pausados. Veja Ajustes › Fotos no aparelho.', true); }
+    }
+  }, 60000);
+  setInterval(() => { if (document.visibilityState === 'visible') limparFotosAparelho().catch(() => {}); }, 30 * 60000);
+
+  async function resumoFotosAparelho() {
+    const nec = await fotosNecessarias();
+    const chaves = new Set(await DB.chaves('blobs'));
+    let total = 0;
+    for (const k of chaves) { const i = await DB.blobInfo(k).catch(() => null); if (i) total += i.tam; }
+    const pend = [...nec.pendAtual.values()];
+    const guardadas = pend.filter((id) => chaves.has(id)).length;
+    const naoEnviadas = [...nec.mapa.values()].filter((f) => !f.excluido && !f.driveId && chaves.has(f.id)).length;
+    return { total, n: chaves.size, pendencias: pend.length, guardadas, naoEnviadas };
+  }
+
+  // fotos de uma obra que precisam estar no aparelho para uso sem internet e ainda não estão
+  async function fotosParaPreparar(registroId) {
+    const nec = await fotosNecessarias(registroId);
+    const ids = [...(nec.porObra.get(registroId) || [])];
+    const chaves = new Set(await DB.chaves('blobs'));
+    const faltam = ids.map((id) => nec.mapa.get(id)).filter((f) => f && !f.excluido && !chaves.has(f.id));
+    const semDrive = faltam.filter((f) => !f.driveId);
+    const baixar = faltam.filter((f) => f.driveId);
+    // estimativa do tamanho: ~0,2 byte por pixel (JPEG do app); sem as medidas, 600 KB
+    const estimativa = baixar.reduce((t, f) => t + (f.largura && f.altura ? f.largura * f.altura * 0.2 : 600 * 1024), 0);
+    const pend = [...nec.pendAtual.entries()].filter(([irr]) => (nec.mapa.get(irr) || {}).registroId === registroId).length;
+    return { ids, baixar, semDrive, estimativa, pend, prontas: ids.length - faltam.length };
+  }
+  async function prepararSemInternet(r, aoTerminar) {
+    const x = await fotosParaPreparar(r.id);
+    if (!x.baixar.length) {
+      await modal('Pronto para usar sem internet', h('p', {}, x.ids.length
+        ? 'As ' + plural(x.ids.length, 'foto', 'fotos') + ' desta obra que você pode precisar na visita (' + plural(x.pend, 'irregularidade pendente', 'irregularidades pendentes') + ', visitas dos últimos ' + DIAS_GUARDA + ' dias) já estão neste aparelho em tamanho real.' + (x.semDrive.length ? ' ' + plural(x.semDrive.length, 'foto ainda não foi enviada', 'fotos ainda não foram enviadas') + ' pelo aparelho que a(s) tirou.' : '')
+        : 'Esta obra não tem irregularidades pendentes nem visitas recentes com fotos. As miniaturas de todas as fotos já ficam no aparelho.'));
+      return;
+    }
+    if (!navigator.onLine || !Sync.habilitado()) { toast('Precisa de internet para baixar as fotos. Faça isso antes de ir para a obra.', true); return; }
+    const esp = await espacoAparelho();
+    const corpo = h('div', {},
+      h('p', { style: { marginTop: 0 } }, 'Baixar para este aparelho, em tamanho real, as fotos que você pode precisar na obra sem internet: ' + plural(x.pend, 'irregularidade pendente', 'irregularidades pendentes') + ' (constatação e última verificação) e as visitas dos últimos ' + DIAS_GUARDA + ' dias.'),
+      h('div', { class: nc('card'), style: { background: 'var(--sup2)', boxShadow: 'none', textAlign: 'center', padding: '14px' } }, h('b', { style: { fontSize: '17px' } }, plural(x.baixar.length, 'foto', 'fotos') + ' · cerca de ' + mb(x.estimativa))),
+      x.prontas ? h('p', { class: 'sub' }, plural(x.prontas, 'foto já está', 'fotos já estão') + ' no aparelho.') : null,
+      esp && esp.pouco ? h('div', { class: 'aviso', style: { marginTop: '10px' } }, '⚠️ O aparelho está quase sem espaço para o app (' + mb(esp.livre) + ' livres). Libere espaço no celular ou em Ajustes › Fotos no aparelho.') : null,
+      h('p', { class: 'dica' }, 'Elas saem do aparelho sozinhas quando a irregularidade for sanada ou a visita ficar antiga (continuam no Drive).'));
+    const ok = await modal('Preparar para usar sem internet', corpo, [{ txt: 'Cancelar', valor: false }, { txt: 'Baixar', cls: 'pri', valor: true }]);
+    if (!ok) return;
+    const jp = janelaProgresso('Baixando 0 de ' + x.baixar.length + '…', 'Preparando para usar sem internet');
+    jp.set(null, 0);
+    try {
+      const res = await obterFotos(x.baixar, (feitas, tot) => jp.set('Baixando ' + feitas + ' de ' + tot + '…', feitas / tot), 4);
+      jp.fechar();
+      if (res.faltando.length) toast(res.faltando.length + ' foto(s) não puderam ser baixadas agora (conexão). Tente de novo.', true);
+      else toast('Pronto: ' + plural(x.baixar.length, 'foto baixada', 'fotos baixadas') + ' para usar sem internet.');
+    } catch (e) { jp.fechar(); toast('Falha ao baixar: ' + e.message, true); }
+    if (aoTerminar) aoTerminar();
   }
 
   /* ---------------- fotos ---------------- */
@@ -1815,13 +1992,21 @@
     document.body.appendChild(fundo);
     document.body.classList.add('com-visor');
 
+    const avisoMini = h('div', { class: 'visor-aviso-mini', style: { display: 'none' } }, 'Miniatura · a foto em tamanho real é baixada do Drive quando houver internet');
     const api = {
       lado, get idx() { return idx; }, get total() { return total; },
       // imagem: mostra a miniatura na hora e troca pela grande quando carregar
       imagem(mini, grandeP, legenda) {
         z.s = 1; z.x = 0; z.y = 0; aplicar();
         const k = idx; imgEl.src = mini || '';
-        if (grandeP) grandeP.then((u) => { if (k === idx && u) imgEl.src = u; });
+        if (!avisoMini.isConnected && imgEl.parentNode) imgEl.parentNode.appendChild(avisoMini);
+        avisoMini.style.display = 'none';
+        if (grandeP) grandeP.then((u) => {
+          if (k !== idx) return;
+          if (u) imgEl.src = u;
+          // sem a foto em tamanho real no aparelho e sem internet: avisa que é só a miniatura
+          avisoMini.style.display = (!u || u === mini) && mini ? '' : 'none';
+        });
         rc(legendaImg, legenda || ''); legendaImg.style.display = legenda ? '' : 'none';
       },
       topo(info) { rc(infoTopo, info || ''); },
@@ -2727,6 +2912,8 @@
     if (Sync.dispositivo === 'computador' && Sync.habilitado() && navigator.onLine) {
       setTimeout(async () => {
         if (tk !== rotaSeq) return;
+        const esp = await espacoAparelho();
+        if (esp && esp.pouco) { Sync.log('fotos', 'aparelho quase sem espaço: download automático das fotos pausado'); return; }
         const fs = (await DB.byIndex('fotos', 'visitaId', id)).filter((f) => !f.excluido && f.driveId && !f.fora_relatorio);
         const tem = await Promise.all(fs.map((f) => DB.blobGet(f.id).then((b) => !!b)));
         const faltam = fs.filter((f, k) => !tem[k]);
@@ -5247,7 +5434,7 @@
       for (const f of fotosSemDrive) if (!(await DB.blobGet(f.id))) semArquivo++;
       const log = Sync.lerLog().slice().reverse();
       const resumo = {
-        app: '3.16.1', servidor: Sync.versaoServidor || '?', usuario: (u || {}).email, perfil: perfil(), estado: Sync.estado, erro: Sync.erro || '',
+        app: '3.17.0', servidor: Sync.versaoServidor || '?', usuario: (u || {}).email, perfil: perfil(), estado: Sync.estado, erro: Sync.erro || '',
         online: navigator.onLine, ultimaSync: await DB.kvGet('ultimaSync', null), cursor: await DB.kvGet('servidorDesde', 0),
         pendentes: pendPor, fotosAguardandoEnvio: fotosSemDrive.length - semArquivo, fotosDeOutroAparelhoSemEnvio: semArquivo,
         aparelho: navigator.userAgent, log,
@@ -5280,6 +5467,29 @@
     };
     let temaAtual = 'auto'; try { temaAtual = localStorage.getItem('tema') || 'auto'; } catch (e) { /* */ }
     let rapida = false; try { rapida = localStorage.getItem('cam_rapida') === '1'; } catch (e) { /* */ }
+    // fotos guardadas no aparelho (uso sem internet) e espaço
+    const boxFotosAp = h('div', { class: nc('fotos-ap') }, h('span', { class: 'carregando' }), ' Calculando…');
+    const pintarFotosAp = async () => {
+      const [x, esp] = await Promise.all([resumoFotosAparelho(), espacoAparelho()]);
+      const pc = Math.min(100, Math.round(100 * x.total / LIMITE_FOTOS));
+      rc(boxFotosAp,
+        h('div', {}, h('b', {}, 'Fotos no aparelho: ' + mb(x.total) + ' de ' + mb(LIMITE_FOTOS)), ' · ' + plural(x.guardadas, 'pendência guardada', 'pendências guardadas') + ' para uso sem internet' + (x.pendencias > x.guardadas ? ' (de ' + x.pendencias + ')' : '')),
+        h('div', { class: nc('barra ' + (x.total > LIMITE_FOTOS ? 'er' : x.total > LIMITE_FOTOS * 0.8 ? 'al' : 'acc')) }, h('i', { style: { width: Math.max(2, pc) + '%' } })),
+        x.naoEnviadas ? h('div', { class: 'sub' }, plural(x.naoEnviadas, 'foto ainda não enviada', 'fotos ainda não enviadas') + ' ao Drive (nunca saem do aparelho antes do envio).') : null,
+        esp ? h('div', { class: 'sub' }, 'Espaço livre para o app neste aparelho: ' + mb(esp.livre)) : null,
+        esp && esp.pouco ? h('div', { class: 'aviso', style: { marginTop: '8px' } }, '⚠️ O aparelho está quase sem espaço. Os downloads automáticos de fotos estão pausados; libere espaço aqui ou no celular.') : null,
+        h('div', { class: 'dica' }, 'Ficam em tamanho real: as fotos das irregularidades pendentes (constatação e última verificação), da visita em andamento, das visitas dos últimos ' + DIAS_GUARDA + ' dias e dos rascunhos. As demais saem do aparelho sozinhas quando já estão no Drive (a miniatura continua; com internet, a foto é baixada de novo ao abrir). Na página da obra, “Preparar para usar sem internet” baixa as que faltam.'),
+        h('div', { class: 'acoes' }, h('button', { class: 'btn', onclick: async (e) => {
+          const bt = e.currentTarget; bt.disabled = true; rc(bt, h('span', { class: 'carregando' }), ' Liberando…');
+          try {
+            const r = await limparFotosAparelho({ forcar: true });
+            toast(r.removidas ? plural(r.removidas, 'foto saiu', 'fotos saíram') + ' do aparelho · ' + mb(r.liberado) + ' liberados (continuam no Drive).' : 'Nada para liberar: só ficaram as fotos das pendências, das visitas recentes, dos rascunhos e as ainda não enviadas.');
+          } catch (er) { toast('Não foi possível liberar: ' + er.message, true); }
+          pintarFotosAp();
+        } }, '🧹 Liberar espaço agora')));
+    };
+    pintarFotosAp().catch((e) => rc(boxFotosAp, 'Não foi possível calcular: ' + e.message));
+    cards.push(h('div', { class: 'card' }, h('h2', {}, 'Fotos no aparelho'), boxFotosAp));
     cards.push(h('div', { class: 'card' }, h('h2', {}, 'Aparência e câmera'),
       campoBloco('Tema', seg([['auto', 'Automático'], ['claro', 'Claro'], ['escuro', 'Escuro']], temaAtual, aplicarTema)),
       campoBloco('Câmera nas visitas', seg([['app', 'Câmera do app'], ['aparelho', 'Câmera do celular']], prefCamera(), (v) => { try { localStorage.setItem('camera_pref', v); } catch (e) { /* */ } atualizarNavCam(); }),
@@ -5502,7 +5712,7 @@
     // a partir de "Aparência e câmera", cada seção vira uma lista suspensa (fechada; lembra as abertas)
     const iniSecoes = cards.findIndex((c) => c.querySelector && (c.querySelector(':scope > h2') || {}).textContent === 'Aparência e câmera');
     if (iniSecoes >= 0) for (let i = iniSecoes; i < cards.length; i++) cards[i] = secaoRecolhivel(cards[i]);
-    cards.push(h('p', { class: 'dica', style: { textAlign: 'center' } }, 'Fiscalização de Obras · v3.16.1 · dados salvos no aparelho' + (Sync.habilitado() ? ' e no Google Drive do administrador' : '') + ' · ', h('a', { href: 'privacidade.html' }, 'Política de privacidade')));
+    cards.push(h('p', { class: 'dica', style: { textAlign: 'center' } }, 'Fiscalização de Obras · v3.17.0 · dados salvos no aparelho' + (Sync.habilitado() ? ' e no Google Drive do administrador' : '') + ' · ', h('a', { href: 'privacidade.html' }, 'Política de privacidade')));
     rcT(tk, ...cards);
   }
 
