@@ -257,10 +257,13 @@ details.card[open] > summary::before { content: '▾ '; }
   .cv-topo { flex-direction: column; height: auto; width: calc(64px + env(safe-area-inset-left)); padding: 12px 0 12px env(safe-area-inset-left); justify-content: space-between; }
   .cv-topo-dir { flex-direction: column-reverse; gap: 10px; }
   .cv-cont { display: none; }
-  .cv-visor { height: 100%; max-height: none; width: auto; aspect-ratio: 4 / 3; max-width: calc(100vw - 64px - 150px - env(safe-area-inset-left) - env(safe-area-inset-right)); margin: 0; }
+  /* 3.17.2: o visor ocupa toda a altura e o espaço entre os controles (antes, no iPhone, a altura em % falhava
+     e o visor ficava pequeno no canto de cima); a imagem aparece inteira, como a foto sai */
+  .cv-visor { flex: 1 1 auto; align-self: stretch; height: auto; max-height: none; width: auto; min-width: 0; aspect-ratio: auto; max-width: none; margin: 0; }
+  .cv-visor .cv-video { object-fit: contain; }
   .cv-zoom { left: auto; right: 12px; top: 50%; bottom: auto; transform: translateY(-50%); flex-direction: column-reverse; }
   .cv-modos { writing-mode: vertical-rl; transform: rotate(180deg); padding: 0 10px; align-items: center; }
-  .cv-base { flex: 1; min-height: 0; flex-direction: column-reverse; justify-content: space-around; padding: 16px calc(12px + env(safe-area-inset-right)) 16px 6px; }
+  .cv-base { flex: none; width: calc(118px + env(safe-area-inset-right)); min-height: 0; flex-direction: column-reverse; justify-content: space-around; align-items: center; padding: 16px env(safe-area-inset-right) 16px 0; }
   .cv-msg { top: 14px; }
 }
 
@@ -842,6 +845,8 @@ body { overflow-wrap: break-word; }
 /* Safari fora do app instalado: a barra de endereço come parte da tela (100vh > altura visível) */
 @supports (height: 100dvh) {
   .cv-visor { max-height: calc(100dvh - 56px - 170px - env(safe-area-inset-top) - env(safe-area-inset-bottom)); }
+  /* 3.17.2: deitado, esta regra (feita para o celular em pé) deixava o visor com ~160 px de altura no iPhone */
+  @media (orientation: landscape) and (max-height: 600px) { .cv-visor { max-height: none; } }
 }
 @supports (height: 100dvh) { @media (min-width: 1024px) { .rf-dir { max-height: calc(100dvh - 24px); } } }
 /* telas de toque: campos com 16 px (o iPhone não dá zoom ao tocar) e alvos de toque maiores */

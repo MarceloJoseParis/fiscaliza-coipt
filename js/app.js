@@ -30,7 +30,9 @@
   const rc = (el, ...k) => el.replaceChildren(...limpar(k));
   const ap = (el, ...k) => el.append(...limpar(k));
 
-  const prefCamera = () => { try { return localStorage.getItem('camera_pref') || 'app'; } catch (e) { return 'app'; } };
+  // 3.17.2: a câmera é sempre a do app (o botão "Câmera do celular" da visita abre a do aparelho).
+  // A escolha em Ajustes saiu; o valor antigo guardado no aparelho é ignorado.
+  const prefCamera = () => { try { return localStorage.getItem('camera_forcar_aparelho') === '1' ? 'aparelho' : 'app'; } catch (e) { return 'app'; } };
   function aplicarTema(t) {
     try { localStorage.setItem('tema', t); } catch (e) { /* */ }
     const escuro = t === 'escuro' || (t === 'auto' && window.matchMedia && matchMedia('(prefers-color-scheme: dark)').matches);
@@ -1414,7 +1416,7 @@
     const mapa = new Map(fotos.map((f) => [f.id, f]));
     const fechada = (id) => { const r = porReg.get(id); return !r || r.excluido || encerrada(r); };
     const desde = isoDe(new Date(Date.now() - DIAS_GUARDA * 864e5));
-    const fixas = new Set(), recentes = new Set(), porObra = new Map(), pendAtual = new Map();
+    const fixas = new Set(), recentes = new Set(), porObra = new Map(), pendAtual = new Map(), irr = new Set();
     const add = (set, id, regId) => {
       if (!id) return;
       set.add(id);
@@ -1424,11 +1426,11 @@
     for (const f of fotos) {
       if (f.excluido) continue;
       if (f.irregular && situacao(f) === 'pendente' && !fechada(f.registroId)) {
-        add(fixas, f.id, f.registroId);
+        add(fixas, f.id, f.registroId); irr.add(f.id);
         const vs = (f.verificacoes || []).filter((x) => x.status === 'nao_sanada' && x.fotoId);
         const ult = vs[vs.length - 1];
-        if (ult) add(fixas, ult.fotoId, f.registroId);
-        if (f.projeto && f.projeto.fotoId) add(fixas, f.projeto.fotoId, f.registroId);
+        if (ult) { add(fixas, ult.fotoId, f.registroId); irr.add(ult.fotoId); }
+        if (f.projeto && f.projeto.fotoId) { add(fixas, f.projeto.fotoId, f.registroId); irr.add(f.projeto.fotoId); }
         pendAtual.set(f.id, ult ? ult.fotoId : f.id);
       }
       const v = f.visitaId && visPor.get(f.visitaId);
@@ -1437,7 +1439,17 @@
     }
     for (const n of notifs) if (!n.excluido && n.status !== 'emitida') for (const x of n.fotos || []) add(fixas, x.fotoId, n.registroId);
     for (const m of meds) if (!m.excluido && m.status !== 'concluida') for (const it of ((m.relFoto || {}).itens || [])) add(fixas, it.fotoId, m.registroId);
-    return { mapa, fixas, recentes, porObra, pendAtual, visPor };
+    // última visita de cada obra (para "Preparar para usar sem internet" › fotos da última visita)
+    const ultimaVisita = new Map();
+    for (const v of visPor.values()) { const u = ultimaVisita.get(v.registroId); if (!u || String(v.data) > String(u.data) || (v.data === u.data && (+v.numero || 0) > (+u.numero || 0))) ultimaVisita.set(v.registroId, v); }
+    // fotos da última visita baixadas de propósito ficam enquanto ela continuar sendo a última visita da obra
+    let prep = {};
+    try { prep = (await DB.kvGet('fotosPreparadas', {})) || {}; } catch (e) { /* */ }
+    for (const [id, vid] of Object.entries(prep)) {
+      const f = mapa.get(id); const u = f && ultimaVisita.get(f.registroId);
+      if (f && !f.excluido && u && u.id === vid && !fechada(f.registroId)) fixas.add(id);
+    }
+    return { mapa, fixas, recentes, porObra, pendAtual, visPor, irr, ultimaVisita };
   }
   // espaço do navegador para o app (o celular quase cheio pausa os downloads automáticos)
   async function espacoAparelho() {
@@ -1506,44 +1518,78 @@
   // fotos de uma obra que precisam estar no aparelho para uso sem internet e ainda não estão
   async function fotosParaPreparar(registroId) {
     const nec = await fotosNecessarias(registroId);
-    const ids = [...(nec.porObra.get(registroId) || [])];
     const chaves = new Set(await DB.chaves('blobs'));
-    const faltam = ids.map((id) => nec.mapa.get(id)).filter((f) => f && !f.excluido && !chaves.has(f.id));
-    const semDrive = faltam.filter((f) => !f.driveId);
-    const baixar = faltam.filter((f) => f.driveId);
-    // estimativa do tamanho: ~0,2 byte por pixel (JPEG do app); sem as medidas, 600 KB
-    const estimativa = baixar.reduce((t, f) => t + (f.largura && f.altura ? f.largura * f.altura * 0.2 : 600 * 1024), 0);
-    const pend = [...nec.pendAtual.entries()].filter(([irr]) => (nec.mapa.get(irr) || {}).registroId === registroId).length;
-    return { ids, baixar, semDrive, estimativa, pend, prontas: ids.length - faltam.length };
+    const uv = nec.ultimaVisita.get(registroId);
+    const fotosDe = (ids) => [...ids].map((id) => nec.mapa.get(id)).filter((f) => f && !f.excluido);
+    const grupo = (ids) => {
+      const fs = fotosDe(new Set(ids));
+      const faltam = fs.filter((f) => !chaves.has(f.id));
+      const baixar = faltam.filter((f) => f.driveId);
+      // estimativa do tamanho: ~0,2 byte por pixel (JPEG do app); sem as medidas, 600 KB
+      const estimativa = baixar.reduce((t, f) => t + (f.largura && f.altura ? f.largura * f.altura * 0.2 : 600 * 1024), 0);
+      return { ids: fs.map((f) => f.id), baixar, semDrive: faltam.filter((f) => !f.driveId), estimativa, prontas: fs.length - faltam.length };
+    };
+    const daObra = [...nec.irr].filter((id) => (nec.mapa.get(id) || {}).registroId === registroId);
+    const daUltima = uv ? [...nec.mapa.values()].filter((f) => f.visitaId === uv.id && !f.excluido).map((f) => f.id) : [];
+    const necessarias = [...(nec.porObra.get(registroId) || [])];
+    const irr = grupo(daObra), visita = grupo(daUltima), ambos = grupo(necessarias.concat(daUltima)), base = grupo(necessarias);
+    const pend = [...nec.pendAtual.keys()].filter((id) => (nec.mapa.get(id) || {}).registroId === registroId).length;
+    // o resumo da página da obra: o que o app guarda sozinho (pendências, visitas recentes, rascunhos)
+    return Object.assign({}, necessarias.length ? base : ambos, { pend, grupos: { irr, visita, ambos }, ultimaVisita: uv || null });
   }
   async function prepararSemInternet(r, aoTerminar) {
     const x = await fotosParaPreparar(r.id);
-    if (!x.baixar.length) {
-      await modal('Pronto para usar sem internet', h('p', {}, x.ids.length
-        ? 'As ' + plural(x.ids.length, 'foto', 'fotos') + ' desta obra que você pode precisar na visita (' + plural(x.pend, 'irregularidade pendente', 'irregularidades pendentes') + ', visitas dos últimos ' + DIAS_GUARDA + ' dias) já estão neste aparelho em tamanho real.' + (x.semDrive.length ? ' ' + plural(x.semDrive.length, 'foto ainda não foi enviada', 'fotos ainda não foram enviadas') + ' pelo aparelho que a(s) tirou.' : '')
-        : 'Esta obra não tem irregularidades pendentes nem visitas recentes com fotos. As miniaturas de todas as fotos já ficam no aparelho.'));
+    const g = x.grupos, uv = x.ultimaVisita;
+    if (!x.ids.length) {
+      await modal('Preparar para usar sem internet', h('p', {}, 'Esta obra ainda não tem fotos de irregularidades pendentes nem de visitas. As miniaturas de todas as fotos já ficam no aparelho.'));
       return;
     }
-    if (!navigator.onLine || !Sync.habilitado()) { toast('Precisa de internet para baixar as fotos. Faça isso antes de ir para a obra.', true); return; }
+    // escolha: só as irregularidades, só a última visita ou ambos
+    const ops = [
+      ['irr', 'Só as irregularidades pendentes', plural(x.pend, 'pendência', 'pendências') + ' · constatação, última verificação e projeto', g.irr],
+      ['visita', 'Só as fotos da última visita', uv ? 'Visita nº ' + uv.numero + ' · ' + X.dataBR(uv.data) : 'nenhuma visita', g.visita],
+      ['ambos', 'Ambos', 'Irregularidades, última visita, visitas dos últimos ' + DIAS_GUARDA + ' dias e rascunhos', g.ambos],
+    ];
+    let esc = g.ambos.baixar.length ? 'ambos' : g.irr.baixar.length ? 'irr' : 'visita';
     const esp = await espacoAparelho();
+    const caixa = h('div', { class: nc('st-opc') + ' prep-opc' });
+    const resumo = h('p', { class: 'sub', style: { margin: '10px 2px 0' } });
+    const pintar = () => {
+      rc(caixa, ops.map(([k, t, d, q]) => h('button', { type: 'button', 'data-op': k, class: esc === k ? nc('on') : null, disabled: !q.ids.length ? true : null, onclick: () => { esc = k; pintar(); } },
+        h('span', { class: nc('st-bola ' + (k === 'irr' ? 'er' : k === 'visita' ? 'in' : 'ok')) }),
+        h('span', { class: nc('c') }, h('b', {}, t), h('span', {}, d),
+          h('span', { style: { color: 'var(--txt)', fontWeight: 600, marginTop: '3px' } }, !q.ids.length ? 'nada para baixar' : q.baixar.length ? plural(q.baixar.length, 'foto', 'fotos') + ' · cerca de ' + mb(q.estimativa) : 'já está no aparelho')),
+        esc === k ? ico('ok') : null)));
+      const q = g[esc];
+      rc(resumo, q.prontas ? plural(q.prontas, 'foto desta escolha já está', 'fotos desta escolha já estão') + ' no aparelho.' : '', q.semDrive.length ? ' ' + plural(q.semDrive.length, 'foto ainda não foi enviada', 'fotos ainda não foram enviadas') + ' pelo aparelho que a(s) tirou.' : '');
+    };
+    pintar();
     const corpo = h('div', {},
-      h('p', { style: { marginTop: 0 } }, 'Baixar para este aparelho, em tamanho real, as fotos que você pode precisar na obra sem internet: ' + plural(x.pend, 'irregularidade pendente', 'irregularidades pendentes') + ' (constatação e última verificação) e as visitas dos últimos ' + DIAS_GUARDA + ' dias.'),
-      h('div', { class: nc('card'), style: { background: 'var(--sup2)', boxShadow: 'none', textAlign: 'center', padding: '14px' } }, h('b', { style: { fontSize: '17px' } }, plural(x.baixar.length, 'foto', 'fotos') + ' · cerca de ' + mb(x.estimativa))),
-      x.prontas ? h('p', { class: 'sub' }, plural(x.prontas, 'foto já está', 'fotos já estão') + ' no aparelho.') : null,
+      h('p', { style: { marginTop: 0 } }, 'O que baixar para este aparelho, em tamanho real, para ver na obra sem internet?'),
+      caixa, resumo,
       esp && esp.pouco ? h('div', { class: 'aviso', style: { marginTop: '10px' } }, '⚠️ O aparelho está quase sem espaço para o app (' + mb(esp.livre) + ' livres). Libere espaço no celular ou em Ajustes › Fotos no aparelho.') : null,
-      h('p', { class: 'dica' }, 'Elas saem do aparelho sozinhas quando a irregularidade for sanada ou a visita ficar antiga (continuam no Drive).'));
-    const ok = await modal('Preparar para usar sem internet', corpo, [{ txt: 'Cancelar', valor: false }, { txt: 'Baixar', cls: 'pri', valor: true }]);
+      h('p', { class: 'dica' }, 'Elas saem do aparelho sozinhas quando a irregularidade for sanada ou a visita deixar de ser a mais recente (continuam no Drive).'));
+    const ok = await modal('Preparar para usar sem internet', corpo, [{ txt: 'Cancelar', valor: false }, { txt: 'Baixar', cls: 'pri', valor: true, antes: () => {
+      if (!g[esc].baixar.length) { toast(g[esc].ids.length ? 'Essas fotos já estão no aparelho.' : 'Nada para baixar nessa opção.'); return false; }
+      if (!navigator.onLine || !Sync.habilitado()) { toast('Precisa de internet para baixar as fotos. Faça isso antes de ir para a obra.', true); return false; }
+    } }]);
     if (!ok) return;
-    const jp = janelaProgresso('Baixando 0 de ' + x.baixar.length + '…', 'Preparando para usar sem internet');
+    const lista = g[esc].baixar;
+    const jp = janelaProgresso('Baixando 0 de ' + lista.length + '…', 'Preparando para usar sem internet');
     jp.set(null, 0);
     try {
-      const res = await obterFotos(x.baixar, (feitas, tot) => jp.set('Baixando ' + feitas + ' de ' + tot + '…', feitas / tot), 4);
+      const res = await obterFotos(lista, (feitas, tot) => jp.set('Baixando ' + feitas + ' de ' + tot + '…', feitas / tot), 4);
+      // as fotos da última visita ficam guardadas enquanto ela for a última visita da obra
+      if (uv && esc !== 'irr') {
+        try { const prep = (await DB.kvGet('fotosPreparadas', {})) || {}; for (const f of lista) if (f.visitaId === uv.id) prep[f.id] = uv.id; await DB.kvSet('fotosPreparadas', prep); } catch (e) { /* */ }
+      }
       jp.fechar();
       if (res.faltando.length) toast(res.faltando.length + ' foto(s) não puderam ser baixadas agora (conexão). Tente de novo.', true);
-      else toast('Pronto: ' + plural(x.baixar.length, 'foto baixada', 'fotos baixadas') + ' para usar sem internet.');
+      else toast('Pronto: ' + plural(lista.length, 'foto baixada', 'fotos baixadas') + ' para usar sem internet.');
     } catch (e) { jp.fechar(); toast('Falha ao baixar: ' + e.message, true); }
     if (aoTerminar) aoTerminar();
   }
+
 
   /* ---------------- fotos ---------------- */
   const cacheUrls = new Map();
@@ -5429,7 +5475,7 @@
       for (const f of fotosSemDrive) if (!(await DB.blobGet(f.id))) semArquivo++;
       const log = Sync.lerLog().slice().reverse();
       const resumo = {
-        app: '3.17.1', servidor: Sync.versaoServidor || '?', usuario: (u || {}).email, perfil: perfil(), estado: Sync.estado, erro: Sync.erro || '',
+        app: '3.17.2', servidor: Sync.versaoServidor || '?', usuario: (u || {}).email, perfil: perfil(), estado: Sync.estado, erro: Sync.erro || '',
         online: navigator.onLine, ultimaSync: await DB.kvGet('ultimaSync', null), cursor: await DB.kvGet('servidorDesde', 0),
         pendentes: pendPor, fotosAguardandoEnvio: fotosSemDrive.length - semArquivo, fotosDeOutroAparelhoSemEnvio: semArquivo,
         aparelho: navigator.userAgent, log,
@@ -5485,8 +5531,6 @@
     cards.push(h('div', { class: 'card' }, h('h2', {}, 'Fotos no aparelho'), boxFotosAp));
     cards.push(h('div', { class: 'card' }, h('h2', {}, 'Aparência e câmera'),
       campoBloco('Tema', seg([['auto', 'Automático'], ['claro', 'Claro'], ['escuro', 'Escuro']], temaAtual, aplicarTema)),
-      campoBloco('Câmera nas visitas', seg([['app', 'Câmera do app'], ['aparelho', 'Câmera do celular']], prefCamera(), (v) => { try { localStorage.setItem('camera_pref', v); } catch (e) { /* */ } atualizarNavCam(); }),
-        'Câmera do app: fica aberta para várias fotos seguidas, com troca de lente (grande angular quando o celular permite), zoom, toque para focar e flash. Câmera do celular: todos os recursos do aparelho; depois de cada foto aparece o botão “Próxima foto” no pé da tela. Com uma visita aberta, o botão da câmera no meio da barra de baixo abre a câmera escolhida aqui, de qualquer tela.'),
       campoBloco('Qualidade das fotos', seg([['normal', 'Normal'], ['alta', 'Alta'], ['maxima', 'Máxima']], Foto.qualidadeAtual(), (v) => { try { localStorage.setItem('foto_qualidade', v); } catch (e) { /* */ } }),
         'Normal: até 2000 px (cerca de 0,4 a 1 MB por foto). Alta (padrão): até 3000 px e menos compressão (2 a 3 vezes maior). Máxima: a foto fica no tamanho original da câmera (até 16 megapixels), com o mínimo de compressão e as cores originais (cerca de 3 a 6 MB por foto) — o envio ao Drive demora mais. O relatório continua leve: as fotos são ajustadas ao tamanho da página. Vale para as próximas fotos deste aparelho.'),
       h('label', { class: 'linha sub' }, h('input', { type: 'checkbox', checked: rapida ? 'checked' : null, onchange: (e) => { try { localStorage.setItem('cam_rapida', e.target.checked ? '1' : '0'); } catch (er) { /* */ } } }),
@@ -5705,7 +5749,7 @@
     // a partir de "Aparência e câmera", cada seção vira uma lista suspensa (fechada; lembra as abertas)
     const iniSecoes = cards.findIndex((c) => c.querySelector && (c.querySelector(':scope > h2') || {}).textContent === 'Aparência e câmera');
     if (iniSecoes >= 0) for (let i = iniSecoes; i < cards.length; i++) cards[i] = secaoRecolhivel(cards[i]);
-    cards.push(h('p', { class: 'dica', style: { textAlign: 'center' } }, 'Fiscalização de Obras · v3.17.1 · dados salvos no aparelho' + (Sync.habilitado() ? ' e no Google Drive do administrador' : '') + ' · ', h('a', { href: 'privacidade.html' }, 'Política de privacidade')));
+    cards.push(h('p', { class: 'dica', style: { textAlign: 'center' } }, 'Fiscalização de Obras · v3.17.2 · dados salvos no aparelho' + (Sync.habilitado() ? ' e no Google Drive do administrador' : '') + ' · ', h('a', { href: 'privacidade.html' }, 'Política de privacidade')));
     rcT(tk, ...cards);
   }
 
