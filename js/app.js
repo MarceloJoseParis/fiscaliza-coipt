@@ -173,18 +173,76 @@
 
   /* ---------- Prazo das notificações (dias úteis, a partir do dia seguinte ao envio) ---------- */
   const isoDe = (d) => d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
-  function feriados() {
-    const set = new Set();
-    String((CONFIG && CONFIG.feriados) || '').split(/[\n,;]+/).forEach((t) => {
-      t = t.trim();
-      let m = /(\d{1,2})\/(\d{1,2})\/(\d{4})/.exec(t);
-      if (m) set.add(m[3] + '-' + m[2].padStart(2, '0') + '-' + m[1].padStart(2, '0'));
-      else if ((m = /\d{4}-\d{2}-\d{2}/.exec(t))) set.add(m[0]);
-      else if ((m = /(\d{1,2})\/(\d{1,2})\/(\d{2})\b/.exec(t))) set.add('20' + m[3] + '-' + m[2].padStart(2, '0') + '-' + m[1].padStart(2, '0'));
-      else if ((m = /(\d{1,2})\/(\d{1,2})(?!\/?\d)/.exec(t))) set.add(m[2].padStart(2, '0') + '-' + m[1].padStart(2, '0')); // "25/12": todo ano
-    });
-    return set;
+  /* Feriados (3.18): os nacionais (e os de Mato Grosso) entram sozinhos, calculados para cada ano — inclusive
+     a Sexta-feira Santa, que muda com a Páscoa. Em Ajustes dá para desligar algum, ligar os pontos
+     facultativos do Governo de MT e acrescentar outros (municipais, emendas). */
+  function pascoa(ano) { // algoritmo de Meeus/Jones/Butcher
+    const a = ano % 19, b = Math.floor(ano / 100), c = ano % 100, d = Math.floor(b / 4), e = b % 4, f = Math.floor((b + 8) / 25), g = Math.floor((b - f + 1) / 3),
+      hh = (19 * a + b - d - g + 15) % 30, i = Math.floor(c / 4), k = c % 4, l = (32 + 2 * e + 2 * i - hh - k) % 7, m = Math.floor((a + 11 * hh + 22 * l) / 451),
+      mes = Math.floor((hh + l - 7 * m + 114) / 31), dia = ((hh + l - 7 * m + 114) % 31) + 1;
+    return new Date(ano, mes - 1, dia, 12);
   }
+  // { iso: { nome, tipo: 'nacional' | 'facultativo' } } de um ano
+  function feriadosDoAno(ano) {
+    const out = {};
+    const fx = (mm, dd, nome, tipo) => { out[ano + '-' + mm + '-' + dd] = { nome, tipo: tipo || 'nacional' }; };
+    const px = (dias, nome, tipo) => { const d = pascoa(ano); d.setDate(d.getDate() + dias); out[isoDe(d)] = { nome, tipo: tipo || 'nacional' }; };
+    fx('01', '01', 'Confraternização Universal');
+    px(-2, 'Paixão de Cristo (Sexta-feira Santa)');
+    fx('04', '21', 'Tiradentes');
+    fx('05', '01', 'Dia do Trabalho');
+    fx('09', '07', 'Independência do Brasil');
+    fx('10', '12', 'Nossa Senhora Aparecida');
+    fx('11', '02', 'Finados');
+    fx('11', '15', 'Proclamação da República');
+    if (ano >= 2024) fx('11', '20', 'Dia Nacional de Zumbi e da Consciência Negra'); // nacional pela Lei 14.759/2023 (antes, feriado estadual em MT)
+    fx('12', '25', 'Natal');
+    // pontos facultativos do Governo de Mato Grosso (só contam se ligados em Ajustes)
+    px(-48, 'Carnaval', 'facultativo'); px(-47, 'Carnaval', 'facultativo'); px(-46, 'Quarta-feira de Cinzas', 'facultativo');
+    px(60, 'Corpus Christi', 'facultativo');
+    fx('10', '28', 'Dia do Servidor Público', 'facultativo'); fx('12', '24', 'Véspera de Natal', 'facultativo'); fx('12', '31', 'Véspera de Ano-Novo', 'facultativo');
+    return out;
+  }
+  // feriados digitados (um por linha: dd/mm/aaaa Nome, ou dd/mm Nome para os que se repetem todo ano)
+  function feriadosManuais() {
+    const out = {};
+    String((CONFIG && CONFIG.feriados) || '').split(/[\n;]+/).forEach((t) => {
+      t = t.trim(); if (!t) return;
+      let m, chave = null;
+      if ((m = /(\d{1,2})\/(\d{1,2})\/(\d{4})/.exec(t))) chave = m[3] + '-' + m[2].padStart(2, '0') + '-' + m[1].padStart(2, '0');
+      else if ((m = /\d{4}-\d{2}-\d{2}/.exec(t))) chave = m[0];
+      else if ((m = /(\d{1,2})\/(\d{1,2})\/(\d{2})\b/.exec(t))) chave = '20' + m[3] + '-' + m[2].padStart(2, '0') + '-' + m[1].padStart(2, '0');
+      else if ((m = /(\d{1,2})\/(\d{1,2})(?!\/?\d)/.exec(t))) chave = m[2].padStart(2, '0') + '-' + m[1].padStart(2, '0'); // "25/12": todo ano
+      if (!chave) return;
+      const nome = t.slice(m.index + m[0].length).replace(/^[\s\-–—:·,]+/, '').trim();
+      out[chave] = { nome: nome || 'Feriado', tipo: 'manual' };
+    });
+    return out;
+  }
+  let cacheFer = null;
+  // todos os dias que não contam (iso ou mm-dd) → { nome, tipo }
+  function mapaFeriados() {
+    const auto = !CONFIG || CONFIG.feriados_auto !== false;
+    const fac = !!(CONFIG && CONFIG.feriados_facultativos);
+    const desl = (CONFIG && CONFIG.feriados_desligados) || [];
+    const chave = [auto, fac, desl.join(','), (CONFIG && CONFIG.feriados) || '', new Date().getFullYear()].join('|');
+    if (cacheFer && cacheFer.chave === chave) return cacheFer.mapa;
+    const mapa = new Map();
+    if (auto) {
+      const ano = new Date().getFullYear();
+      for (let y = ano - 2; y <= ano + 3; y++) {
+        const f = feriadosDoAno(y);
+        for (const [k, v] of Object.entries(f)) if ((v.tipo !== 'facultativo' || fac) && !desl.includes(k)) mapa.set(k, v);
+      }
+    }
+    for (const [k, v] of Object.entries(feriadosManuais())) mapa.set(k, v);
+    cacheFer = { chave, mapa };
+    return mapa;
+  }
+  function feriados() { return new Set(mapaFeriados().keys()); }
+  App.feriadosDoAno = (ano) => feriadosDoAno(ano);
+  App.diasUteisAte = (ini, n) => prazoFinalUteis(ini, n);
+  const nomeFeriado = (iso) => { const m = mapaFeriados(); const v = m.get(iso) || m.get(String(iso).slice(5)); return v ? v.nome : ''; };
   function ehDiaUtil(d, fer) { const w = d.getDay(), iso = isoDe(d); return w !== 0 && w !== 6 && !fer.has(iso) && !fer.has(iso.slice(5)); }
   /* prazo final sempre recalculado (um feriado cadastrado depois do envio passa a contar) */
   const prazoDe = (n) => (n.enviadaEm ? prazoFinalUteis(n.enviadaEm, n.prazoDiasEnvio || n.prazo_dias) : n.prazoFinal);
@@ -252,6 +310,8 @@
     modelos: {},
     pasta_fotos: '{tipo}-{numero}/{data}',
     feriados: '',
+    feriados_auto: true, // nacionais e de MT calculados pelo app (3.18)
+    feriados_facultativos: false,
     status_obra: { contrato: statusPadrao('contrato'), convenio: statusPadrao('convenio') },
     fila_atendidos: 'ENCAMINHADO - CCP', // STATUS da planilha da fila que significam "já atendido pela Fiscalização" (um por linha)
   };
@@ -699,7 +759,7 @@
       if (an && an.iso === di) ev.push({ ic: 'cal', c: 'acc', t: 'Aniversário do contrato · ' + r.apelido, d: an.anos + 'º ano · pode haver reajuste' + (r.aniv_indice ? ' (' + r.aniv_indice + ')' : ''), n: '', href: '#/registro/' + r.id });
     }
     const fer = feriados();
-    if (fer.has(di) || fer.has(di.slice(5))) ev.push({ ic: 'cal', c: 'in', t: 'Feriado', d: 'Não conta nos prazos em dias úteis', n: '', href: pode.admin() ? '#/config' : null });
+    if (fer.has(di) || fer.has(di.slice(5))) ev.push({ ic: 'cal', c: 'in', t: nomeFeriado(di) || 'Feriado', d: 'Feriado · não conta nos prazos em dias úteis', n: '', href: pode.admin() ? '#/config' : null });
     for (const v of d.visitas) {
       if (v.data !== di) continue;
       const r = d.porId.get(v.registroId);
@@ -5505,7 +5565,7 @@
       for (const f of fotosSemDrive) if (!(await DB.blobGet(f.id))) semArquivo++;
       const log = Sync.lerLog().slice().reverse();
       const resumo = {
-        app: '3.17.3', servidor: Sync.versaoServidor || '?', usuario: (u || {}).email, perfil: perfil(), estado: Sync.estado, erro: Sync.erro || '',
+        app: '3.18.0', servidor: Sync.versaoServidor || '?', usuario: (u || {}).email, perfil: perfil(), estado: Sync.estado, erro: Sync.erro || '',
         online: navigator.onLine, ultimaSync: await DB.kvGet('ultimaSync', null), cursor: await DB.kvGet('servidorDesde', 0),
         pendentes: pendPor, fotosAguardandoEnvio: fotosSemDrive.length - semArquivo, fotosDeOutroAparelhoSemEnvio: semArquivo,
         aparelho: navigator.userAgent, log,
@@ -5604,7 +5664,7 @@
         campo('Providências padrão — Convênio', inputArea(c.providencias_padrao, 'convenio'), '{nome_texto} é trocado pelo nome da notificada. **texto** = negrito.'),
         campo('Providências complementares padrão — Contrato', inputArea(c.providencias_padrao, 'contrato')),
         campo('Prazo padrão (dias úteis)', inputTxt(c, 'prazo_padrao', { type: 'number', min: '1' })),
-        campo('Feriados (não contam no prazo das notificações)', inputArea(c, 'feriados', { placeholder: '01/01/2026\n20/11/2026\n25/12/2026' }), 'Um por linha: dd/mm/aaaa, ou só dd/mm para os que se repetem todo ano (ex.: 25/12). Nacionais, estaduais e municipais. Sábados e domingos já não contam.'),
+        editorFeriados(c),
         h('h3', {}, 'Fotos no Google Drive'),
         campo('Pastas das fotos', inputTxt(c, 'pasta_fotos', { placeholder: '{tipo}-{numero}/{data}' }),
           'Dentro da pasta Fotos. Use / para criar subpastas. {tipo} = Conv ou Contr · {numero} = nº do contrato/convênio · {apelido} = nome curto · {data} = data da visita (29.09.2026) · {ano} · {visita} = “Visita 3”. Ex.: {tipo}-{numero}/{data} → Conv-013-2023/29.09.2026. Vale para as próximas fotos enviadas.'),
@@ -5779,7 +5839,7 @@
     // a partir de "Aparência e câmera", cada seção vira uma lista suspensa (fechada; lembra as abertas)
     const iniSecoes = cards.findIndex((c) => c.querySelector && (c.querySelector(':scope > h2') || {}).textContent === 'Aparência e câmera');
     if (iniSecoes >= 0) for (let i = iniSecoes; i < cards.length; i++) cards[i] = secaoRecolhivel(cards[i]);
-    cards.push(h('p', { class: 'dica', style: { textAlign: 'center' } }, 'Fiscalização de Obras · v3.17.3 · dados salvos no aparelho' + (Sync.habilitado() ? ' e no Google Drive do administrador' : '') + ' · ', h('a', { href: 'privacidade.html' }, 'Política de privacidade')));
+    cards.push(h('p', { class: 'dica', style: { textAlign: 'center' } }, 'Fiscalização de Obras · v3.18.0 · dados salvos no aparelho' + (Sync.habilitado() ? ' e no Google Drive do administrador' : '') + ' · ', h('a', { href: 'privacidade.html' }, 'Política de privacidade')));
     rcT(tk, ...cards);
   }
 
@@ -5808,6 +5868,45 @@
     d.appendChild(h('summary', {}, h2));
     while (card.firstChild) d.appendChild(card.firstChild);
     return d;
+  }
+
+  /* Ajustes › Padrões › Feriados: nacionais (Brasil) e de Mato Grosso automáticos, cada um pode ser desligado;
+     pontos facultativos do Governo de MT opcionais; outros feriados digitados (municipais, emendas). */
+  function editorFeriados(c) {
+    if (c.feriados_auto === undefined) c.feriados_auto = true;
+    c.feriados_desligados = (c.feriados_desligados || []).slice();
+    let ano = new Date().getFullYear();
+    const lista = h('div', { class: 'lista-feriados' });
+    const tituloAno = h('b', {});
+    const pintar = () => {
+      rc(tituloAno, String(ano));
+      const f = feriadosDoAno(ano);
+      const itens = Object.entries(f).filter(([, v]) => v.tipo === 'nacional' || c.feriados_facultativos).sort((a, b) => a[0].localeCompare(b[0]));
+      rc(lista, !c.feriados_auto ? h('div', { class: 'sub' }, 'Automáticos desligados: só contam os feriados digitados abaixo.') : itens.map(([iso, v]) => {
+        const ligado = !c.feriados_desligados.includes(iso);
+        const d = dataD(iso);
+        return h('label', { class: 'linha fer-item' + (ligado ? '' : ' fer-off') },
+          h('input', { type: 'checkbox', checked: ligado ? 'checked' : null, onchange: (e) => {
+            c.feriados_desligados = c.feriados_desligados.filter((x) => x !== iso);
+            if (!e.target.checked) c.feriados_desligados.push(iso);
+            pintar();
+          } }),
+          h('span', { class: 'fer-data' }, X.dataBR(iso).slice(0, 5) + ' · ' + DIAS_C[d.getDay()]),
+          h('span', { class: 'fer-nome' }, v.nome, v.tipo === 'facultativo' ? h('small', {}, ' · ponto facultativo MT') : null));
+      }));
+    };
+    pintar();
+    const navAno = (dlt) => h('button', { type: 'button', class: 'btn peq', 'aria-label': dlt < 0 ? 'Ano anterior' : 'Próximo ano', onclick: () => { ano += dlt; pintar(); } }, dlt < 0 ? '‹' : '›');
+    return h('div', { class: 'campo-bloco editor-feriados' }, h('span', {}, 'Feriados (não contam no prazo das notificações)'),
+      h('label', { class: 'linha' }, h('input', { type: 'checkbox', checked: c.feriados_auto ? 'checked' : null, onchange: (e) => { c.feriados_auto = e.target.checked; pintar(); } }),
+        h('b', {}, 'Feriados nacionais e de Mato Grosso automáticos')),
+      h('label', { class: 'linha sub' }, h('input', { type: 'checkbox', checked: c.feriados_facultativos ? 'checked' : null, onchange: (e) => { c.feriados_facultativos = e.target.checked; pintar(); } }),
+        'Contar também os pontos facultativos do Governo de MT (Carnaval, Quarta-feira de Cinzas, Corpus Christi, 28/10, 24/12 e 31/12)'),
+      h('div', { class: 'linha', style: { margin: '8px 0 4px' } }, navAno(-1), tituloAno, navAno(1), h('span', { class: 'sub' }, '· desmarque para não contar como feriado')),
+      lista,
+      campo('Outros feriados (municipais, emendas, mudanças)', inputArea(c, 'feriados', { placeholder: 'dd/mm Feriado municipal\n05/06/2026 Emenda de Corpus Christi' }),
+        'Um por linha: dd/mm/aaaa (ou só dd/mm, para os que se repetem todo ano) e o nome. Sábados e domingos já não contam.'),
+      h('div', { class: 'dica' }, 'Os automáticos seguem a lei federal (Lei 662/1949, Lei 6.802/1980 e Lei 14.759/2023) e são calculados para cada ano, inclusive a Sexta-feira Santa. Mato Grosso não tem feriado estadual próprio além dos nacionais (Decreto estadual nº 1.787/2025, feriados de 2026); o 20 de novembro, antes estadual, é nacional desde 2024. Salve em “Salvar padrões”.'));
   }
 
   /* Lista as câmeras que o navegador libera, com o zoom de cada uma, e permite escolher a do botão 0,5 */
