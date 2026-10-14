@@ -1940,6 +1940,31 @@
   /* zoom (roda do mouse / pinça / duplo clique), arrastar a imagem       */
   /* ampliada, setas/teclado/deslizar para passar e tira de miniaturas.  */
   /* ------------------------------------------------------------------ */
+  /* Salva a foto em tamanho real no aparelho. iPhone/iPad: abre o menu de compartilhar (opção "Salvar Imagem"
+     vai para o app Fotos). Android: o arquivo vai para Downloads e aparece na galeria (Google Fotos › Downloads).
+     Computador: baixa o arquivo. Se a foto não está no aparelho, busca no Drive (precisa de internet). */
+  const ehApple = () => /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  async function salvarNaGaleria(f, bt) {
+    if (bt) bt.disabled = true;
+    try {
+      let blob = await DB.blobGet(f.id);
+      if (!blob && f.driveId && Sync.habilitado() && navigator.onLine) { try { blob = await Sync.baixarFoto(f); } catch (e) { blob = null; } }
+      if (!blob) { toast(navigator.onLine ? 'A foto ainda não está disponível (não foi enviada pelo aparelho que a tirou).' : 'Sem internet: a foto em tamanho real não está neste aparelho. Tente quando houver conexão.', true); return; }
+      const r = f.registroId ? await DB.get('registros', f.registroId) : null;
+      const d = new Date(f.dataHora || Date.now());
+      const carimbo = isNaN(d) ? '' : isoDe(d) + '_' + String(d.getHours()).padStart(2, '0') + String(d.getMinutes()).padStart(2, '0') + String(d.getSeconds()).padStart(2, '0');
+      const nome = nomeArquivo([r ? r.apelido : 'foto', carimbo, f.irregular ? 'irregularidade' : ''].filter(Boolean).join('_')).replace(/\s+/g, '_').slice(0, 90) + '.jpg';
+      const arq = blob.type === 'image/jpeg' ? blob : new Blob([blob], { type: 'image/jpeg' });
+      if (ehApple()) {
+        const file = new File([arq], nome, { type: 'image/jpeg' });
+        if (navigator.canShare && navigator.canShare({ files: [file] })) {
+          try { await navigator.share({ files: [file] }); return; } catch (e) { if (e.name === 'AbortError') return; }
+        }
+      }
+      baixarBlob(arq, nome);
+      toast(/Android/i.test(navigator.userAgent) ? 'Foto salva em Downloads (aparece na galeria).' : 'Foto baixada: ' + nome);
+    } finally { if (bt) bt.disabled = false; }
+  }
   function visorBase(cfg) {
     // cfg: { total, idx, rotulo, miniatura(k)→Promise<url>, classeMini(k), mostrar(k, api), salvar()→Promise<bool>, aoFechar(), dica }
     let idx = cfg.idx || 0, total = cfg.total, fechado = false;
@@ -2012,6 +2037,10 @@
       h('button', { title: 'Ampliar (+)', onclick: () => zoomEm(z.s * 1.5, null, null, true) }, '+'),
       h('button', { title: 'Ajustar à tela (0)', onclick: ajustar }, '⤢'));
     const lado = h('div', { class: 'visor-lado' });
+    // baixar a foto em tamanho real para a galeria do celular (ou para Downloads, no computador)
+    let fotoNoVisor = null;
+    const btGaleria = h('button', { class: 'visor-galeria', title: 'Salvar na galeria', 'aria-label': 'Salvar a foto na galeria', style: { display: 'none' }, onclick: () => { if (fotoNoVisor) salvarNaGaleria(fotoNoVisor, btGaleria); } },
+      h('span', { html: '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4v11M7 10l5 5 5-5M5 20h14"/></svg>' }), h('span', { class: 'visor-galeria-t' }, 'Baixar foto'));
     const tira = h('div', { class: 'visor-tira' });
     const novaMini = (k) => {
       const m = h('img', { alt: '', loading: 'lazy', draggable: 'false' }); cfg.miniatura(k).then((u) => { if (u) m.src = u; });
@@ -2020,7 +2049,7 @@
     };
     for (let k = 0; k < total; k++) tira.appendChild(novaMini(k));
     const fundo = h('div', { class: 'visor-fundo' + (cfg.classe ? ' ' + cfg.classe : '') }, h('div', { class: 'visor' },
-      h('div', { class: 'visor-topo' }, contador, infoTopo, barraZoom, h('button', { class: 'visor-fechar', title: 'Fechar (Esc)', onclick: () => fechar() }, '✕')),
+      h('div', { class: 'visor-topo' }, contador, infoTopo, barraZoom, btGaleria, h('button', { class: 'visor-fechar', title: 'Fechar (Esc)', onclick: () => fechar() }, '✕')),
       h('div', { class: 'visor-corpo' }, palco, lado),
       total > 1 ? tira : null));
     document.body.appendChild(fundo);
@@ -2030,7 +2059,8 @@
     const api = {
       lado, get idx() { return idx; }, get total() { return total; },
       // imagem: mostra a miniatura na hora e troca pela grande quando carregar
-      imagem(mini, grandeP, legenda) {
+      imagem(mini, grandeP, legenda, foto) {
+        fotoNoVisor = foto || null; btGaleria.style.display = foto ? '' : 'none';
         z.s = 1; z.x = 0; z.y = 0; aplicar();
         const k = idx; imgEl.src = mini || '';
         if (!avisoMini.isConnected && imgEl.parentNode) imgEl.parentNode.appendChild(avisoMini);
@@ -2137,7 +2167,7 @@
       async mostrar(k, api) {
         const f = (await DB.get('fotos', lista[k].id)) || lista[k];
         if (k !== api.idx) return;
-        api.imagem(f.miniatura, urlFoto(f, true));
+        api.imagem(f.miniatura, urlFoto(f, true), null, f);
         for (const n of [lista[k + 1], lista[k - 1]]) if (n) urlFoto(n, true);
         api.topo(dataHoraBR(f.dataHora));
         const edit = { descricao: f.descricao || '', irregular: !!f.irregular, incluir: !f.fora_relatorio };
@@ -2219,7 +2249,7 @@
         const chips = h('div', { class: 'irr-chips' });
         const verFoto = (i) => {
           sel = i;
-          api.imagem(fotos[i].f.miniatura, urlFoto(fotos[i].f, true), fotos[i].rot);
+          api.imagem(fotos[i].f.miniatura, urlFoto(fotos[i].f, true), fotos[i].rot, fotos[i].f);
           [...chips.children].forEach((c, j) => c.classList.toggle('ativo', j === i));
         };
         fotos.forEach((x, i) => {
@@ -5475,7 +5505,7 @@
       for (const f of fotosSemDrive) if (!(await DB.blobGet(f.id))) semArquivo++;
       const log = Sync.lerLog().slice().reverse();
       const resumo = {
-        app: '3.17.2', servidor: Sync.versaoServidor || '?', usuario: (u || {}).email, perfil: perfil(), estado: Sync.estado, erro: Sync.erro || '',
+        app: '3.17.3', servidor: Sync.versaoServidor || '?', usuario: (u || {}).email, perfil: perfil(), estado: Sync.estado, erro: Sync.erro || '',
         online: navigator.onLine, ultimaSync: await DB.kvGet('ultimaSync', null), cursor: await DB.kvGet('servidorDesde', 0),
         pendentes: pendPor, fotosAguardandoEnvio: fotosSemDrive.length - semArquivo, fotosDeOutroAparelhoSemEnvio: semArquivo,
         aparelho: navigator.userAgent, log,
@@ -5749,7 +5779,7 @@
     // a partir de "Aparência e câmera", cada seção vira uma lista suspensa (fechada; lembra as abertas)
     const iniSecoes = cards.findIndex((c) => c.querySelector && (c.querySelector(':scope > h2') || {}).textContent === 'Aparência e câmera');
     if (iniSecoes >= 0) for (let i = iniSecoes; i < cards.length; i++) cards[i] = secaoRecolhivel(cards[i]);
-    cards.push(h('p', { class: 'dica', style: { textAlign: 'center' } }, 'Fiscalização de Obras · v3.17.2 · dados salvos no aparelho' + (Sync.habilitado() ? ' e no Google Drive do administrador' : '') + ' · ', h('a', { href: 'privacidade.html' }, 'Política de privacidade')));
+    cards.push(h('p', { class: 'dica', style: { textAlign: 'center' } }, 'Fiscalização de Obras · v3.17.3 · dados salvos no aparelho' + (Sync.habilitado() ? ' e no Google Drive do administrador' : '') + ' · ', h('a', { href: 'privacidade.html' }, 'Política de privacidade')));
     rcT(tk, ...cards);
   }
 
