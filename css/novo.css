@@ -688,3 +688,49 @@ body:has(.n-seq-card) .fixo-visita { display: none; }
 .editor-feriados .fer-data { font-variant-numeric: tabular-nums; font-weight: 600; min-width: 84px; font-size: 13.5px; }
 .editor-feriados .fer-nome { font-size: 13.5px; } .editor-feriados .fer-nome small { color: var(--txt2); }
 .editor-feriados .fer-off { opacity: .55; } .editor-feriados .fer-off .fer-nome { text-decoration: line-through; }
+
+/* 3.18.1 — selecionar várias fotos da visita (compartilhar / baixar) */
+.fotos-cab { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 10px; }
+.fotos-cab h2 { margin: 0 !important; min-width: 0; }
+.fotos-bt-sel { flex: none; border: 0; background: none; color: var(--acc); font: inherit; font-weight: 700; font-size: 15px; padding: 6px 4px; cursor: pointer; }
+.fotos-faixa { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 12px; margin: 0 0 10px; padding: 8px 12px; border-radius: 12px; background: var(--acc-bg); }
+.fotos-todas { display: flex; align-items: center; gap: 9px; font-weight: 700; font-size: 14.5px; cursor: pointer; margin: 0; }
+.fotos-todas input { width: 21px; height: 21px; margin: 0; accent-color: var(--acc); flex: none; }
+.fotos-faixa .fotos-shift { display: none; }
+.fotos-sel-acoes { display: flex; gap: 8px; margin-left: auto; }
+.fotos-sel-acoes .btn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; border-radius: 999px; padding: 8px 16px; font-weight: 700; }
+.fotos-sel-acoes .btn:not(.pri) { background: var(--sup, #fff); color: var(--acc); border: 1.5px solid var(--acc); }
+.fotos-sel-acoes .btn svg { width: 19px; height: 19px; flex: none; }
+.fotos-sel-acoes .btn[disabled] { opacity: .45; }
+.fotos.marcavel { -webkit-user-select: none; user-select: none; }
+.fotos.marcavel .foto { outline: none; }
+.fotos.marcavel .foto img { transition: transform .12s ease; }
+.fotos.marcavel .foto .marca { position: absolute; top: 6px; right: 6px; width: 24px; height: 24px; border-radius: 50%; border: 2px solid #fff; background: rgba(0,0,0,.28); box-shadow: 0 1px 3px rgba(0,0,0,.45); display: grid; place-items: center; z-index: 2; }
+.fotos.marcavel .foto.marcada { background: var(--acc-bg); box-shadow: inset 0 0 0 3px var(--acc); }
+.fotos.marcavel .foto.marcada img { transform: scale(.86); border-radius: 8px; }
+.fotos.marcavel .foto.marcada .marca { background: var(--acc); }
+.fotos.marcavel .foto.marcada .marca::after { content: ''; width: 6px; height: 11px; border: solid #fff; border-width: 0 2.5px 2.5px 0; transform: translateY(-1px) rotate(45deg); }
+.fotos.marcavel .foto .alerta, .fotos.marcavel .foto .nuvem { right: auto; left: 5px; }
+@media (hover: hover) and (pointer: fine) { .fotos-faixa .fotos-shift { display: inline; } .fotos.marcavel .foto:hover .marca { border-color: var(--acc); } }
+/* celular: Compartilhar e Baixar numa barra presa embaixo, no lugar das barras da visita */
+@media (max-width: 1023px) {
+  .fotos-faixa .fotos-shift { display: none; }
+  .fotos-sel-acoes { position: fixed; left: 10px; right: 10px; bottom: calc(12px + env(safe-area-inset-bottom)); z-index: 45; margin: 0; padding: 10px; border-radius: 18px; background: var(--sup, #fff); box-shadow: 0 6px 26px rgba(0,0,0,.28); max-width: 560px; margin-inline: auto; }
+  .fotos-sel-acoes .btn { flex: 1; padding: 13px 10px; font-size: 15px; border-radius: 13px; }
+  body:has(.fotos-selecao) .n-fixo, body:has(.fotos-selecao) .nav2 { display: none !important; }
+  body:has(.fotos-selecao) { padding-bottom: 96px; }
+  body:has(.fotos-selecao) .toast { bottom: calc(104px + env(safe-area-inset-bottom)); }
+}
+
+/* 3.18.1 — aditivo de prazo de resposta da notificação */
+.n-adp-atual { display: flex; gap: 12px; align-items: flex-start; padding: 12px 14px; border-radius: 14px; background: var(--al-bg, #fff4e0); color: var(--txt); margin-bottom: 14px; }
+.n-adp-atual svg { width: 22px; height: 22px; color: var(--al); flex: none; margin-top: 2px; }
+.n-adp-novo { display: flex; flex-direction: column; align-items: center; gap: 2px; margin-top: 10px; padding-top: 10px; border-top: 1px dashed var(--linha); text-align: center; }
+.n-adp-novo b { font-size: 19px; color: var(--acc); }
+.n-adp .campo-bloco > span, .n-adp label > span { font-weight: 600; }
+.n-adp textarea { width: 100%; }
+.n-adp-lista { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; }
+.n-adp-item { padding: 10px 12px; border-radius: 12px; background: var(--acc-bg); border-left: 3px solid var(--acc); }
+.n-adp-item b { font-size: 14px; }
+.n-adp-just { margin-top: 4px; font-size: 14px; white-space: pre-wrap; }
+.etq.acc { background: var(--acc-bg); color: var(--acc); }

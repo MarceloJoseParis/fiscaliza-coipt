@@ -711,7 +711,7 @@
       const s = situacaoNotif(n), nome = r.apelido || ROTULO[r.tipo];
       const tit = (n.ordinal || '?') + 'ª notificação · ' + nome;
       if (s.k === 'vencida') out.push({ grupo: 'venc', ord: -1000 + s.restante, ic: 'sino', c: 'er', t: tit, d: 'Sem resposta ' + (r.tipo === 'convenio' ? 'da prefeitura' : 'da empresa') + ' · prazo terminou ' + dataCurta(prazoDe(n)), n: -s.restante, u: 'dias atrás', href: '#/notificacao/' + n.id });
-      else if (s.k === 'aguardando') out.push({ grupo: s.restante <= 30 ? 'prox' : 'depois', ord: s.restante, ic: 'sino', c: 'al', t: tit, d: 'Resposta até ' + dataCurta(prazoDe(n)), n: s.restante, u: s.restante === 1 ? 'dia útil' : 'dias úteis', href: '#/notificacao/' + n.id });
+      else if (s.k === 'aguardando') out.push({ grupo: s.restante <= 30 ? 'prox' : 'depois', ord: s.restante, ic: 'sino', c: 'al', t: tit, d: 'Resposta até ' + dataCurta(prazoDe(n)) + ((n.aditivosPrazo || []).length ? ' · prazo aditado' : ''), n: s.restante, u: s.restante === 1 ? 'dia útil' : 'dias úteis', href: '#/notificacao/' + n.id });
       else if (s.k === 'nao_enviada') out.push({ grupo: 'prox', ord: -1, ic: 'envio', c: 'in', t: tit, d: 'Emitida, falta registrar o envio', n: '—', u: 'enviar', href: '#/notificacao/' + n.id });
       else if (s.k === 'rascunho') out.push({ grupo: 'rasc', ord: 0, ic: 'doc', c: '', t: 'Rascunho de notificação · ' + nome, d: 'Criada ' + haQuanto(String(n.criadoEm || n.data || '').slice(0, 10)), n: '—', u: 'concluir', href: '#/notificacao/' + n.id });
     }
@@ -1171,8 +1171,8 @@
   }
   /* Atividade da obra: comentários, termos aditivos e alterações do cadastro, com data, hora e autor.
      (entidade "atividades": sincroniza com o servidor 3.16 / Code.gs versão 14) */
-  async function registrarAtividade(registroId, tipo, tituloTxt, texto) {
-    const a = { id: DB.uuid(), registroId, tipo, titulo: tituloTxt, texto: texto || '', em: new Date().toISOString(), quemNome: meuNome() };
+  async function registrarAtividade(registroId, tipo, tituloTxt, texto, extra) {
+    const a = Object.assign({ id: DB.uuid(), registroId, tipo, titulo: tituloTxt, texto: texto || '', em: new Date().toISOString(), quemNome: meuNome() }, extra || {});
     await DB.salvar('atividades', a, email());
     return a;
   }
@@ -1191,7 +1191,7 @@
       const s = situacaoNotif(n);
       ev.push({ k: 'notif', q: new Date(n.emitidaEm || n.criadoEm || 0), quem: nomeDe(n.emitidaPor || n.criadoPor), ic: 'sino', c: COR_N[s.cls] || 'acc', t: (n.ordinal || '?') + 'ª Notificação · ' + s.txt.charAt(0).toLowerCase() + s.txt.slice(1), s: (n.itens && n.itens.length ? plural(n.itens.length, 'item', 'itens') + ' · ' : '') + plural((n.fotos || []).length, 'foto', 'fotos') + (n.enviadaEm ? ' · enviada ' + X.dataBR(n.enviadaEm) : ''), href: '#/notificacao/' + n.id });
     }
-    for (const a of x.atividades) ev.push({ k: a.tipo, id: a.id, a, q: new Date(a.em || a.criadoEm || 0), quem: a.quemNome || nomeDe(a.criadoPor), ic: a.tipo === 'comentario' ? 'resp' : a.tipo === 'aditivo' ? 'doc' : 'lapis', c: a.tipo === 'aditivo' ? 'acc' : '', t: a.titulo || (a.tipo === 'comentario' ? 'Comentário' : 'Alteração'), s: a.texto, href: a.tipo === 'comentario' ? null : '#/registro/' + r.id + '/dados' });
+    for (const a of x.atividades) ev.push({ k: a.tipo, id: a.id, a, q: new Date(a.em || a.criadoEm || 0), quem: a.quemNome || nomeDe(a.criadoPor), ic: a.tipo === 'comentario' ? 'resp' : a.tipo === 'aditivo' ? 'doc' : a.tipo === 'aditivo_prazo' ? 'relogio' : 'lapis', c: a.tipo === 'aditivo' ? 'acc' : a.tipo === 'aditivo_prazo' ? 'al' : '', t: a.titulo || (a.tipo === 'comentario' ? 'Comentário' : 'Alteração'), s: a.texto, href: a.tipo === 'comentario' ? null : a.notificacaoId ? '#/notificacao/' + a.notificacaoId : '#/registro/' + r.id + '/dados' });
     return ev.sort((a, b) => b.q - a.q);
   }
   function linhaTempo(lista, aoMudar) {
@@ -1211,7 +1211,7 @@
             h('div', { class: nc('ev-meta') }, 'Comentário · ' + quandoTxt(e.q))));
       }
       const mini = e.fotos && e.fotos.length ? h('div', { class: nc('mini') }, e.fotos.map((f) => { const i = h('i'); urlFoto(f).then((u) => { if (u) i.style.backgroundImage = 'url("' + u + '")'; }); return i; })) : null;
-      const corpo = [h('div', { class: nc('t') }, e.t), e.s ? h('div', { class: nc('d') }, e.s) : null, mini, h('div', { class: nc('ev-meta') }, quandoTxt(e.q) + (e.quem ? ' · ' + e.quem : ''))];
+      const corpo = [h('div', { class: nc('t') }, e.t), e.s ? h('div', { class: nc('d') }, String(e.s).split('\n').map((l, i) => [i ? h('br') : null, l])) : null, mini, h('div', { class: nc('ev-meta') }, quandoTxt(e.q) + (e.quem ? ' · ' + e.quem : ''))];
       return h('div', { class: nc('ev') }, h('span', { class: nc('ic ' + (e.c || '')) }, ico(e.ic)),
         e.href ? h('a', { class: nc('card'), href: e.href }, corpo) : h('div', { class: nc('card') }, corpo));
     }));
@@ -1307,7 +1307,7 @@
       };
       const caixa = pode.coletar() ? h('div', { class: nc('card com-box') }, h('span', { class: nc('ic av') }, iniciais(meuNome())), txt, h('button', { class: 'btn pri peq', onclick: publicar }, 'Publicar')) : null;
       const fBt = (k, t) => h('button', { class: nc('chip' + (filtro === k ? ' on' : '')), onclick: () => { sessionStorage.setItem('filtro_ativ', k); redesenhar(); } }, t);
-      const lista = ev.filter((e) => filtro === 'tudo' || (filtro === 'comentario' && e.k === 'comentario') || (filtro === 'aditivo' && (e.k === 'aditivo' || e.k === 'edicao')));
+      const lista = ev.filter((e) => filtro === 'tudo' || (filtro === 'comentario' && e.k === 'comentario') || (filtro === 'aditivo' && (e.k === 'aditivo' || e.k === 'aditivo_prazo' || e.k === 'edicao')));
       ap(conteudo, caixa, h('div', { class: nc('chips'), style: { margin: '12px 0 0' } }, fBt('tudo', 'Tudo'), fBt('comentario', 'Comentários'), fBt('aditivo', 'Aditivos e edições')), linhaTempo(lista, redesenhar),
         Sync.habilitado() && Sync.versaoServidor && Sync.versaoServidor < 14 && atividades.some((a) => a._pendente) ? h('div', { class: 'aviso', style: { marginTop: '10px' } }, '⚠️ Comentários e histórico ficam neste aparelho até o administrador atualizar o servidor (Code.gs versão 14).') : null);
     } else if (aba === 'visitas') {
@@ -1668,13 +1668,15 @@
 
   function gradeFotos(fotos, opts) {
     opts = opts || {};
-    const g = h('div', { class: 'fotos' });
+    const g = h('div', { class: 'fotos' + (opts.marcar ? ' marcavel' : '') });
     for (const f of fotos) {
       const img = h('img', { alt: f.descricao || '', loading: 'lazy' });
       urlFoto(f).then((u) => { img.src = u; });
       const idx = opts.selecionadas ? opts.selecionadas.indexOf(f.id) : -1;
-      ap(g, h('div', { 'data-id': f.id, class: 'foto' + (idx >= 0 ? ' sel' : '') + (f.irregular ? ' irr' : '') + (f.fora_relatorio && opts.marcarRelatorio ? ' fora' : ''), onclick: () => opts.onclick && opts.onclick(f) },
+      const marcada = opts.marcar && opts.marcar.has(f.id);
+      ap(g, h('div', { 'data-id': f.id, class: 'foto' + (idx >= 0 ? ' sel' : '') + (marcada ? ' marcada' : '') + (f.irregular ? ' irr' : '') + (f.fora_relatorio && opts.marcarRelatorio ? ' fora' : ''), onclick: (ev) => opts.onclick && opts.onclick(f, ev) },
         img,
+        opts.marcar ? h('span', { class: 'marca', 'aria-hidden': 'true' }) : null,
         idx >= 0 ? h('span', { class: 'num' }, idx + 1) : null,
         f.irregular ? h('span', { class: 'alerta', title: 'Irregularidade' }, '⚠️') : null,
         !f.driveId && Sync.habilitado() ? h('span', { class: 'nuvem', title: 'Ainda não enviada' }, '⏳') : null,
@@ -2004,6 +2006,79 @@
      vai para o app Fotos). Android: o arquivo vai para Downloads e aparece na galeria (Google Fotos › Downloads).
      Computador: baixa o arquivo. Se a foto não está no aparelho, busca no Drive (precisa de internet). */
   const ehApple = () => /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  // nome do arquivo de uma foto salva/compartilhada: OBRA_AAAA-MM-DD_HHMMSS[_irregularidade] (sem a extensão)
+  function nomeFotoArq(f, r) {
+    const d = new Date(f.dataHora || Date.now());
+    const carimbo = isNaN(d) ? '' : isoDe(d) + '_' + String(d.getHours()).padStart(2, '0') + String(d.getMinutes()).padStart(2, '0') + String(d.getSeconds()).padStart(2, '0');
+    return nomeArquivo([r ? r.apelido : 'foto', carimbo, f.irregular ? 'irregularidade' : ''].filter(Boolean).join('_')).replace(/\s+/g, '_').slice(0, 90);
+  }
+  const ehAndroid = () => /Android/i.test(navigator.userAgent);
+  // o navegador deixa entregar arquivos ao menu de compartilhar do sistema? (iPhone, Android, Edge/Chrome no Windows, Safari no Mac)
+  function compartilhaArquivos() {
+    try { return !!(navigator.share && navigator.canShare && navigator.canShare({ files: [new File([new Blob(['x'], { type: 'image/jpeg' })], 'x.jpg', { type: 'image/jpeg' })] })); } catch (e) { return false; }
+  }
+  /* Várias fotos da visita de uma vez (3.18.1). modo 'compartilhar': menu do sistema. modo 'baixar': iPhone → menu do sistema
+     ("Salvar N imagens" vai para o app Fotos); Android → um arquivo por foto em Downloads (aparece na galeria);
+     computador → um .zip. Fotos que não estão no aparelho vêm do Drive. Devolve true se terminou. */
+  async function exportarFotos(lista, r, v, modo) {
+    if (!lista.length) return false;
+    const n = lista.length;
+    const viaMenu = modo === 'compartilhar' || (ehApple() && compartilhaArquivos());
+    const zip = !viaMenu && !ehAndroid() && !ehApple();
+    if (n > 40 && !(await confirmar((modo === 'compartilhar' ? 'Compartilhar ' : 'Baixar ') + n + ' fotos em tamanho real? As que não estão neste aparelho vêm da internet' + (zip ? '; o computador recebe um arquivo .zip' : '') + '.' + (viaMenu && n > 80 ? ' Com muitas fotos, o menu do celular pode demorar a abrir; se não abrir, escolha menos fotos de cada vez.' : ''), modo === 'compartilhar' ? 'Compartilhar' : 'Baixar'))) return false;
+    const jp = janelaProgresso('Preparando as fotos…', modo === 'compartilhar' ? 'Compartilhar fotos' : 'Baixar fotos');
+    jp.set(null, 0);
+    let res;
+    try { res = await obterFotos(lista, (k, t) => jp.set('Preparando as fotos: ' + k + ' de ' + t + '…', k / t * (zip ? 0.6 : 0.95)), 4); } catch (e) { jp.fechar(); toast('Não foi possível preparar as fotos: ' + e.message, true); return false; }
+    const usados = new Map();
+    const arqs = [];
+    for (const f of lista) {
+      const b = res.blobs.get(f.id); if (!b) continue;
+      let nome = nomeFotoArq(f, r); const k = (usados.get(nome) || 0) + 1; usados.set(nome, k);
+      if (k > 1) nome += '_' + k;
+      arqs.push({ nome: nome + '.jpg', blob: b.type === 'image/jpeg' ? b : new Blob([b], { type: 'image/jpeg' }) });
+    }
+    const avisoFalta = () => { if (res.faltando.length) toast(plural(res.faltando.length, 'foto ficou', 'fotos ficaram') + ' de fora: ' + (navigator.onLine ? 'ainda não foram enviadas pelo aparelho que as tirou.' : 'não estão neste aparelho e estamos sem internet.'), true); };
+    if (!arqs.length) { jp.fechar(); avisoFalta(); if (!res.faltando.length) toast('Nenhuma foto para salvar.', true); return false; }
+    if (viaMenu) {
+      jp.fechar();
+      const files = arqs.map((a) => new File([a.blob], a.nome, { type: 'image/jpeg' }));
+      const abrir = () => navigator.share({ files });
+      try { await abrir(); avisoFalta(); return true; } catch (e) {
+        if (e.name === 'AbortError') return false;
+        if (e.name !== 'NotAllowedError') { toast('Não foi possível abrir o menu: ' + e.message, true); return false; }
+      }
+      // demorou para preparar e o navegador pede um novo toque para abrir o menu
+      let erro = null;
+      const ok = await modal(plural(arqs.length, 'foto pronta', 'fotos prontas'), h('p', {}, ehApple() && modo !== 'compartilhar' ? 'Toque em "Abrir" e escolha "Salvar ' + (arqs.length === 1 ? 'Imagem' : arqs.length + ' imagens') + '" para guardar no app Fotos.' : 'Toque em "Abrir" para escolher onde enviar.'), [
+        { txt: 'Cancelar', valor: false },
+        { txt: 'Abrir', cls: 'pri', valor: true, antes: () => abrir().catch((e) => { erro = e; }) }]);
+      if (erro && erro.name !== 'AbortError') toast('Não foi possível abrir o menu: ' + erro.message, true);
+      if (ok && !erro) avisoFalta();
+      return !!ok && !erro;
+    }
+    try {
+      if (zip) {
+        const z = new JSZip();
+        for (const a of arqs) z.file(a.nome, a.blob, { binary: true, compression: 'STORE' });
+        const blob = await z.generateAsync({ type: 'blob', compression: 'STORE' }, (m) => jp.set('Juntando no arquivo .zip…', 0.6 + 0.4 * m.percent / 100));
+        const nomeZip = nomeArquivo([r ? r.apelido : 'fotos', v ? 'visita' + v.numero : '', v && v.data ? v.data : ''].filter(Boolean).join('_')).replace(/\s+/g, '_').slice(0, 90) + '.zip';
+        jp.fechar();
+        baixarBlob(blob, nomeZip);
+        toast(plural(arqs.length, 'foto baixada', 'fotos baixadas') + ' em ' + nomeZip);
+      } else {
+        for (let i = 0; i < arqs.length; i++) {
+          jp.set('Salvando ' + (i + 1) + ' de ' + arqs.length + '…', 0.95 + 0.05 * (i + 1) / arqs.length);
+          baixarBlob(arqs[i].blob, arqs[i].nome);
+          await new Promise((ok) => setTimeout(ok, 350)); // o navegador perde arquivos baixados todos no mesmo instante
+        }
+        jp.fechar();
+        toast(arqs.length === 1 ? 'Foto salva em Downloads (aparece na galeria).' : arqs.length + ' fotos salvas em Downloads (aparecem na galeria).');
+      }
+    } catch (e) { jp.fechar(); toast('Não foi possível salvar as fotos: ' + e.message, true); return false; }
+    avisoFalta();
+    return true;
+  }
   async function salvarNaGaleria(f, bt) {
     if (bt) bt.disabled = true;
     try {
@@ -2011,9 +2086,7 @@
       if (!blob && f.driveId && Sync.habilitado() && navigator.onLine) { try { blob = await Sync.baixarFoto(f); } catch (e) { blob = null; } }
       if (!blob) { toast(navigator.onLine ? 'A foto ainda não está disponível (não foi enviada pelo aparelho que a tirou).' : 'Sem internet: a foto em tamanho real não está neste aparelho. Tente quando houver conexão.', true); return; }
       const r = f.registroId ? await DB.get('registros', f.registroId) : null;
-      const d = new Date(f.dataHora || Date.now());
-      const carimbo = isNaN(d) ? '' : isoDe(d) + '_' + String(d.getHours()).padStart(2, '0') + String(d.getMinutes()).padStart(2, '0') + String(d.getSeconds()).padStart(2, '0');
-      const nome = nomeArquivo([r ? r.apelido : 'foto', carimbo, f.irregular ? 'irregularidade' : ''].filter(Boolean).join('_')).replace(/\s+/g, '_').slice(0, 90) + '.jpg';
+      const nome = nomeFotoArq(f, r) + '.jpg';
       const arq = blob.type === 'image/jpeg' ? blob : new Blob([blob], { type: 'image/jpeg' });
       if (ehApple()) {
         const file = new File([arq], nome, { type: 'image/jpeg' });
@@ -2909,18 +2982,76 @@
     const boxPend = h('div');
     const bannerPend = h('div');
     let redesenharFotosDepois = false;
+    /* 3.18.1: "Selecionar" no cartão das fotos — marca várias (toque; no computador Shift + clique marca o intervalo)
+       para compartilhar ou baixar de uma vez. Enquanto seleciona, tocar não abre a foto e arrastar não muda a ordem. */
+    let selFotos = null, ultSel = -1;
+    const sairSel = () => { selFotos = null; ultSel = -1; desenharFotos(); };
+    const escSel = (e) => {
+      if (!document.body.contains(boxFotos)) { document.removeEventListener('keydown', escSel); return; }
+      if (e.key === 'Escape' && selFotos && !document.querySelector('.modal-fundo')) sairSel();
+    };
+    document.addEventListener('keydown', escSel);
     async function desenharFotos() {
       if (arrastandoFoto) { redesenharFotosDepois = true; return; } // não desmancha a grade no meio de um arraste
       redesenharFotosDepois = false;
       const fotos = ordenarFotos((await DB.byIndex('fotos', 'visitaId', id)).filter((f) => !f.excluido));
       const irr = fotos.filter((f) => f.irregular);
-      const grade = fotos.length ? gradeFotos(fotos, { marcarRelatorio: true, onclick: (f) => abrirFoto(f, desenharFotos, fotos) }) : null;
-      const ordenar = podeEd && fotos.length > 1;
+      if (selFotos) { // fotos excluídas (aqui ou em outro aparelho) saem da seleção
+        const ids = new Set(fotos.map((f) => f.id));
+        for (const x of Array.from(selFotos)) if (!ids.has(x)) selFotos.delete(x);
+        if (!fotos.length) selFotos = null;
+      }
+      const sel = selFotos;
+      let pintarSel = () => {};
+      const alternar = (f, ev) => {
+        const i = fotos.indexOf(f), marcar = !sel.has(f.id);
+        const faixa = ev && ev.shiftKey && ultSel >= 0 && ultSel < fotos.length ? fotos.slice(Math.min(ultSel, i), Math.max(ultSel, i) + 1) : [f];
+        for (const x of faixa) { if (marcar) sel.add(x.id); else sel.delete(x.id); }
+        ultSel = i;
+        if (ev && ev.shiftKey) { try { window.getSelection().removeAllRanges(); } catch (e) { /* */ } }
+        pintarSel();
+      };
+      const grade = fotos.length ? gradeFotos(fotos, { marcarRelatorio: true, marcar: sel, onclick: (f, ev) => (sel ? alternar(f, ev) : abrirFoto(f, desenharFotos, fotos)) }) : null;
+      const ordenar = podeEd && fotos.length > 1 && !sel;
       if (ordenar) tornarOrdenavel(grade, async (fid, ids) => { if (fid) await moverFoto(fotos, ids, fid); desenharFotos(); });
-      rc(boxFotos, h('h2', {}, 'Fotos da visita (' + fotos.length + ')'),
+      const tit = h('h2', {}, 'Fotos da visita (' + fotos.length + ')');
+      const btSel = fotos.length ? h('button', { type: 'button', class: 'fotos-bt-sel', 'data-acao': 'selecionar', onclick: () => { if (selFotos) sairSel(); else { selFotos = new Set(); ultSel = -1; desenharFotos(); } } }, sel ? 'Cancelar' : 'Selecionar') : null;
+      let faixa = null;
+      if (sel) {
+        const chkTodas = h('input', { type: 'checkbox', onchange: () => { if (chkTodas.checked) fotos.forEach((f) => sel.add(f.id)); else sel.clear(); ultSel = -1; pintarSel(); } });
+        const icoComp = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"/><path d="M8 7l4-4 4 4"/><path d="M5 12v7a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-7"/></svg>';
+        const icoBaixar = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"/><path d="M7 10l5 5 5-5"/><path d="M5 21h14"/></svg>';
+        const rotBaixar = h('span');
+        const escolhidas = () => fotos.filter((f) => sel.has(f.id)).reverse(); // do mais antigo ao mais novo, como no relatório
+        const agir = async (modo, bt) => {
+          bt.disabled = true;
+          try { if (await exportarFotos(escolhidas(), r, v0, modo)) sairSel(); } finally { bt.disabled = false; pintarSel(); }
+        };
+        const btComp = compartilhaArquivos() ? h('button', { type: 'button', class: 'btn', 'data-acao': 'compartilhar-sel', onclick: () => agir('compartilhar', btComp) }) : null;
+        if (btComp) { btComp.innerHTML = icoComp; ap(btComp, h('span', {}, 'Compartilhar')); }
+        const btBaixar = h('button', { type: 'button', class: 'btn pri', 'data-acao': 'baixar-sel', onclick: () => agir('baixar', btBaixar) });
+        btBaixar.innerHTML = icoBaixar; ap(btBaixar, rotBaixar);
+        const fora = h('span', { class: 'sub fotos-de' }, 'de ' + plural(fotos.length, 'foto', 'fotos'));
+        faixa = h('div', { class: 'fotos-faixa' },
+          h('label', { class: 'fotos-todas' }, chkTodas, h('span', {}, 'Selecionar todas')), fora,
+          h('span', { class: 'sub fotos-shift' }, 'Shift + clique marca um intervalo'),
+          h('div', { class: 'fotos-sel-acoes' }, btComp, btBaixar));
+        pintarSel = () => {
+          const n = sel.size;
+          tit.textContent = n ? plural(n, 'selecionada', 'selecionadas') : 'Toque nas fotos para marcar';
+          chkTodas.checked = n > 0 && n === fotos.length;
+          chkTodas.indeterminate = n > 0 && n < fotos.length;
+          rotBaixar.textContent = 'Baixar' + (n ? ' (' + n + ')' : '');
+          btBaixar.disabled = !n; if (btComp) btComp.disabled = !n;
+          for (const el of grade.children) el.classList.toggle('marcada', sel.has(el.dataset.id));
+        };
+        pintarSel();
+      }
+      rc(boxFotos, h('div', { class: 'fotos-cab' }, tit, btSel), faixa,
         grade || h('div', { class: 'vazio', style: { padding: '14px' } }, aberta && podeEd ? 'Nenhuma foto ainda. Toque em Câmera.' : 'Nenhuma foto ainda.'),
         ordenar ? h('div', { class: 'dica' }, 'No relatório, as fotos saem de baixo para cima: a de baixo é a primeira e a de cima, a última. Para mudar a ordem, segure a foto e arraste (no computador, clique e arraste).') : null,
-        fotos.some((f) => f.fora_relatorio) ? h('div', { class: 'dica' }, 'Fotos esmaecidas não entram no relatório.') : null);
+        fotos.some((f) => f.fora_relatorio) && !sel ? h('div', { class: 'dica' }, 'Fotos esmaecidas não entram no relatório.') : null);
+
       const reverif = (await reverificadasNaVisita(r, id)).reverse(); // mais nova em cima, como as fotos
       const nIrr = irr.length + reverif.length;
       rc(boxIrr, h('h2', {}, '⚠️ Irregularidades (' + nIrr + ')'),
@@ -2936,7 +3067,7 @@
         nIrr && pode.notificar() ? h('div', { class: 'acoes' }, h('button', { class: 'btn', onclick: async () => { await salvarVisita(true); notificarVisita(v0, r); } }, '📝 Gerar notificação com estas irregularidades')) : null,
         reverif.length ? h('div', { class: 'dica' }, 'Irregularidades não sanadas entram na notificação com a foto nova desta visita.') : null);
       boxIrr.className = 'card';
-      boxFotos.className = 'card';
+      boxFotos.className = 'card' + (sel ? ' fotos-selecao' : '');
       const pend = (await irregularidadesDe(r.id)).filter((f) => situacao(f) === 'pendente' && f.visitaId !== id);
       const conferidas = pend.filter((f) => (f.verificacoes || []).some((vf) => vf.visitaId === id));
       const abertasP = pend.length - conferidas.length;
@@ -4369,9 +4500,10 @@
   App.verificarPrazos = verificarPrazos;
 
   /* ---------- Envio e resposta das notificações ---------- */
+  const diasAditados = (n) => (n.aditivosPrazo || []).reduce((t, a) => t + (+a.dias || 0), 0);
   function aplicarEnvio(o, dataISO) {
     o.enviadaEm = dataISO;
-    o.prazoDiasEnvio = +o.prazo_dias || 3;
+    o.prazoDiasEnvio = (+o.prazo_dias || 3) + diasAditados(o); // 3.18.1: os aditivos de prazo continuam valendo
     o.prazoFinal = prazoFinalUteis(dataISO, o.prazoDiasEnvio);
     o.enviadaPor = email();
   }
@@ -4404,11 +4536,79 @@
     return ok ? d : null;
   }
   /* Acompanhamento da notificação emitida: emitida → enviada → prazo (dias úteis) → resposta */
+  /* 3.18.1: aditivo de prazo para responder a notificação (pedido da prefeitura/empresa). Soma dias úteis ao prazo
+     contado desde o envio (o novo prazo continua do dia seguinte ao fim do anterior); justificativa obrigatória.
+     Fica no histórico da notificação e na Atividade da obra. Aparelhos com versões antigas já veem o prazo novo. */
+  async function dialogoAditivoPrazo(n, r) {
+    const pfAtual = prazoDe(n);
+    const st = { dias: 5 };
+    const quem = quemResponde(n.tipo || r.tipo);
+    const inp = h('input', { type: 'number', inputmode: 'numeric', min: '1', max: '365', value: st.dias, class: nc('num'), 'aria-label': 'Dias úteis a mais' });
+    const novo = h('div', { class: nc('adp-novo') });
+    const sugs = h('div', { class: nc('sugs'), style: { justifyContent: 'center', margin: '12px 0 4px' } });
+    const pedido = h('input', { type: 'date', max: X.hojeISO() });
+    const just = h('textarea', { rows: 4, placeholder: 'Ex.: A Prefeitura solicitou, pelo Ofício nº 123/2026, mais prazo para apresentar o cronograma corrigido, alegando…' });
+    const pintar = () => {
+      const fim = prazoFinalUteis(n.enviadaEm, (+n.prazoDiasEnvio || +n.prazo_dias || 3) + st.dias);
+      rc(novo, h('span', { class: 'sub' }, 'Novo prazo'), h('b', {}, DIAS_L[dataD(fim).getDay()] + ', ' + X.dataBR(fim)),
+        h('span', { class: 'sub' }, 'antes: ' + X.dataBR(pfAtual) + ' · +' + plural(st.dias, 'dia útil', 'dias úteis')));
+      rc(sugs, [5, 10, 15, 30].map((x) => h('button', { type: 'button', class: st.dias === x ? nc('on') : null, onclick: () => definir(x) }, '+' + x)));
+    };
+    const definir = (x) => { st.dias = Math.max(1, Math.min(365, Math.round(x) || 1)); inp.value = st.dias; pintar(); };
+    inp.addEventListener('input', () => { const x = parseInt(inp.value, 10); if (x >= 1) { st.dias = Math.min(365, x); pintar(); } });
+    pintar();
+    const sit = situacaoNotif(n);
+    const conteudo = h('div', { class: nc('adp') },
+      h('div', { class: nc('adp-atual') }, ico('relogio'), h('div', {}, h('b', {}, 'Prazo atual: ' + DIAS_L[dataD(pfAtual).getDay()] + ', ' + X.dataBR(pfAtual)),
+        h('div', { class: 'sub' }, plural(+n.prazoDiasEnvio || +n.prazo_dias || 3, 'dia útil', 'dias úteis') + ' desde o envio em ' + X.dataBR(n.enviadaEm) + ' · ' + sit.txt.toLowerCase()))),
+      h('div', { class: 'campo-bloco' }, h('span', {}, 'Dias úteis a mais para ' + quem + ' responder'),
+        h('div', { class: nc('card prazo-n'), style: { background: 'var(--sup2)', boxShadow: 'none' } },
+          h('div', { class: nc('mm') },
+            h('button', { type: 'button', 'aria-label': 'Um dia a menos', onclick: () => definir(st.dias - 1) }, '−'),
+            h('label', { class: nc('pz') }, inp, h('span', {}, 'dias úteis')),
+            h('button', { type: 'button', 'aria-label': 'Um dia a mais', onclick: () => definir(st.dias + 1) }, '+')),
+          sugs, novo)),
+      campo('Data do pedido d' + quem + ' (opcional)', pedido),
+      campo('Justificativa (obrigatória)', just, 'Aparece na Atividade da obra e no histórico desta notificação.'));
+    const r2 = await modal('Aditar prazo de resposta', conteudo, [
+      { txt: 'Cancelar', valor: null },
+      { txt: 'Aditar prazo', cls: 'pri', antes: () => { if (just.value.trim().length < 10) { toast('Escreva a justificativa do aditivo.', true); just.focus(); return false; } return true; },
+        valor: () => ({ dias: st.dias, justificativa: just.value.trim(), pedidoEm: pedido.value || '' }) }]);
+    return r2 || null;
+  }
+  async function aditarPrazoNotif(n, r) {
+    const ad = await dialogoAditivoPrazo(n, r);
+    if (!ad) return false;
+    const de = prazoDe(n);
+    let salvo = null;
+    await atualizarCampos('notificacoes', n.id, (o) => {
+      o.aditivosPrazo = (o.aditivosPrazo || []).slice();
+      o.prazoDiasEnvio = (+o.prazoDiasEnvio || +o.prazo_dias || 3) + ad.dias;
+      o.prazoFinal = prazoFinalUteis(o.enviadaEm, o.prazoDiasEnvio);
+      salvo = Object.assign({ id: DB.uuid(), de, para: o.prazoFinal, em: new Date().toISOString(), por: email(), quemNome: meuNome() }, ad);
+      o.aditivosPrazo.push(salvo);
+    });
+    if (!salvo) return false;
+    const k = (n.aditivosPrazo || []).length + 1;
+    await registrarAtividade(r.id, 'aditivo_prazo', k + 'º aditivo de prazo · Notificação' + (n.numero ? ' nº ' + n.numero : ''),
+      'Resposta até ' + X.dataBR(salvo.para) + ' (antes ' + X.dataBR(de) + ', +' + plural(ad.dias, 'dia útil', 'dias úteis') + ')' + (ad.pedidoEm ? ' · pedido em ' + X.dataBR(ad.pedidoEm) : '') + '\nJustificativa: ' + ad.justificativa,
+      { notificacaoId: n.id });
+    toast('Prazo aditado: resposta até ' + X.dataBR(salvo.para));
+    verificarPrazos();
+    return true;
+  }
   function cartaoEnvio(n, r, redesenhar) {
     const sit = situacaoNotif(n);
     const quem = quemResponde(n.tipo || r.tipo);
     const dias = +(n.prazoDiasEnvio || n.prazo_dias) || 3;
     const pf = n.enviadaEm ? prazoDe(n) : null;
+    const adits = n.aditivosPrazo || [];
+    const diasOrig = dias - diasAditados(n);
+    const btAditar = pode.notificar() && n.enviadaEm && !n.respondidaEm ? h('button', { class: 'btn peq', 'data-acao': 'aditar-prazo', onclick: async () => { if (await aditarPrazoNotif(n, r)) redesenhar(); } }, '⏩ Aditar prazo') : null;
+    const listaAdits = adits.length ? h('div', { class: nc('adp-lista') }, adits.map((a, i) => h('div', { class: nc('adp-item') },
+      h('b', {}, (i + 1) + 'º aditivo · +' + plural(+a.dias, 'dia útil', 'dias úteis') + ' · ' + X.dataBR(a.de) + ' → ' + X.dataBR(a.para)),
+      h('div', { class: 'sub' }, (a.pedidoEm ? 'Pedido em ' + X.dataBR(a.pedidoEm) + ' · ' : '') + 'registrado em ' + dataHoraBR(a.em) + (a.quemNome ? ' por ' + a.quemNome : '')),
+      h('div', { class: nc('adp-just') }, a.justificativa)))) : null;
     const passo = (est, numero, t, sub, extra) => h('div', { class: nc('rp ' + est) },
       h('span', { class: nc('b') }, est === 'feito' ? ico('ok') : String(numero)),
       h('div', { class: nc('c') }, h('b', {}, t), sub ? h('div', { class: 'sub' }, sub) : null, extra || null));
@@ -4437,15 +4637,15 @@
           : h('div', {}, h('div', { class: nc('barra ' + (venc ? 'er' : 'al')), style: { marginTop: '8px', height: '8px' } }, h('i', { style: { width: Math.round(100 * (venc ? dias : usados) / dias) + '%' } })), h('div', { class: 'sub', style: { marginTop: '4px' } }, usados + ' de ' + dias + ' dias úteis')));
     }
     const card = h('div', { class: 'card' }, h('h2', {}, 'Envio e prazo de resposta'),
-      h('div', { class: 'etqs', style: { marginTop: 0, marginBottom: '12px' } }, etq(sit.txt, sit.cls)),
+      h('div', { class: 'etqs', style: { marginTop: 0, marginBottom: '12px' } }, etq(sit.txt, sit.cls), adits.length ? etq(adits.length === 1 ? 'Prazo aditado' : 'Prazo aditado ' + adits.length + '×', 'acc') : null),
       h('div', { class: nc('rastreio') },
         passo('feito', 1, 'Emitida', (n.emitidaEm ? dataHoraBR(n.emitidaEm) : X.dataBR(n.data)) + (n.emitidaPor ? ' · por ' + nomeDe(n.emitidaPor) : '') + (n.numero ? ' · nº ' + n.numero : '')),
         passo(n.enviadaEm ? 'feito' : 'agora', 2, n.enviadaEm ? 'Enviada' : 'Enviar a ' + quem.replace(/^a /, ''),
           n.enviadaEm ? X.dataBR(n.enviadaEm) + (n.enviadaPor ? ' · registrado por ' + nomeDe(n.enviadaPor) : '') : 'Baixe o Word, envie e registre aqui: o prazo começa a contar no dia seguinte.',
           n.enviadaEm ? null : registrarEnvio),
-        passo(n.respondidaEm ? 'feito' : n.enviadaEm ? 'agora' : '', 3, 'Prazo de ' + dias + (dias === 1 ? ' dia útil' : ' dias úteis'),
+        passo(n.respondidaEm ? 'feito' : n.enviadaEm ? 'agora' : '', 3, 'Prazo de ' + dias + (dias === 1 ? ' dia útil' : ' dias úteis') + (adits.length ? ' (' + diasOrig + ' + ' + (dias - diasOrig) + ' aditados)' : ''),
           pf ? (sit.k === 'vencida' ? 'Terminou em ' : 'Vence em ') + DIAS_L[dataD(pf).getDay()] + ', ' + X.dataBR(pf) + ' (fins de semana e feriados não contam)' : 'Começa a contar no dia seguinte ao envio',
-          contador),
+          [contador, listaAdits, btAditar ? h('div', { class: 'acoes', style: { marginTop: '10px' } }, btAditar) : null]),
         passo(n.respondidaEm ? 'feito' : '', 4, n.respondidaEm ? 'Respondida' : 'Resposta ' + (quem === 'a prefeitura' ? 'da prefeitura' : 'da empresa'),
           n.respondidaEm ? X.dataBR(n.respondidaEm) + (n.respondidaEm > pf ? ' (fora do prazo)' : '') + (n.respondidaPor ? ' · registrado por ' + nomeDe(n.respondidaPor) : '') + (n.respostaObs ? ' · ' + n.respostaObs : '') : 'Registre quando ' + quem + ' responder.',
           registrarResp)));
@@ -4467,6 +4667,17 @@
           await atualizarCampos('notificacoes', n.id, (o) => { delete o.enviadaEm; delete o.prazoFinal; delete o.prazoDiasEnvio; delete o.enviadaPor; });
           verificarPrazos(); redesenhar();
         } }, 'Desfazer envio') : null,
+        adits.length && !n.respondidaEm ? h('button', { class: 'btn peq', onclick: async () => {
+          const ult = adits[adits.length - 1];
+          if (!(await confirmar('Desfazer o ' + adits.length + 'º aditivo de prazo (+' + plural(+ult.dias, 'dia útil', 'dias úteis') + ')? O prazo volta para ' + X.dataBR(ult.de) + '.', 'Desfazer'))) return;
+          await atualizarCampos('notificacoes', n.id, (o) => {
+            o.aditivosPrazo = (o.aditivosPrazo || []).filter((a) => a.id !== ult.id);
+            o.prazoDiasEnvio = Math.max(1, (+o.prazoDiasEnvio || 0) - (+ult.dias || 0));
+            o.prazoFinal = prazoFinalUteis(o.enviadaEm, o.prazoDiasEnvio);
+          });
+          await registrarAtividade(r.id, 'aditivo_prazo', 'Aditivo de prazo desfeito · Notificação' + (n.numero ? ' nº ' + n.numero : ''), 'Resposta volta a ser até ' + X.dataBR(ult.de) + ' (era ' + X.dataBR(ult.para) + ')', { notificacaoId: n.id });
+          verificarPrazos(); redesenhar();
+        } }, 'Desfazer último aditivo') : null,
         sit.k === 'vencida' ? h('button', { class: 'btn peq', onclick: () => criarNotificacao(r.id, n) }, '↻ Reiterar (nova notificação)') : null));
     }
     return card;
@@ -5565,7 +5776,7 @@
       for (const f of fotosSemDrive) if (!(await DB.blobGet(f.id))) semArquivo++;
       const log = Sync.lerLog().slice().reverse();
       const resumo = {
-        app: '3.18.0', servidor: Sync.versaoServidor || '?', usuario: (u || {}).email, perfil: perfil(), estado: Sync.estado, erro: Sync.erro || '',
+        app: '3.18.1', servidor: Sync.versaoServidor || '?', usuario: (u || {}).email, perfil: perfil(), estado: Sync.estado, erro: Sync.erro || '',
         online: navigator.onLine, ultimaSync: await DB.kvGet('ultimaSync', null), cursor: await DB.kvGet('servidorDesde', 0),
         pendentes: pendPor, fotosAguardandoEnvio: fotosSemDrive.length - semArquivo, fotosDeOutroAparelhoSemEnvio: semArquivo,
         aparelho: navigator.userAgent, log,
@@ -5839,7 +6050,7 @@
     // a partir de "Aparência e câmera", cada seção vira uma lista suspensa (fechada; lembra as abertas)
     const iniSecoes = cards.findIndex((c) => c.querySelector && (c.querySelector(':scope > h2') || {}).textContent === 'Aparência e câmera');
     if (iniSecoes >= 0) for (let i = iniSecoes; i < cards.length; i++) cards[i] = secaoRecolhivel(cards[i]);
-    cards.push(h('p', { class: 'dica', style: { textAlign: 'center' } }, 'Fiscalização de Obras · v3.18.0 · dados salvos no aparelho' + (Sync.habilitado() ? ' e no Google Drive do administrador' : '') + ' · ', h('a', { href: 'privacidade.html' }, 'Política de privacidade')));
+    cards.push(h('p', { class: 'dica', style: { textAlign: 'center' } }, 'Fiscalização de Obras · v3.18.1 · dados salvos no aparelho' + (Sync.habilitado() ? ' e no Google Drive do administrador' : '') + ' · ', h('a', { href: 'privacidade.html' }, 'Política de privacidade')));
     rcT(tk, ...cards);
   }
 
