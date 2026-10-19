@@ -2034,10 +2034,21 @@
     try {
       const itens = [];
       for (const f of fotos) { const inf = await App.infoFotoDrive(f); itens.push({ id: f.id, driveId: f.driveId, pastas: inf.pastas, nome: inf.nome }); }
-      let i = 0;
+      let i = 0, tam = 8, falhasSeg = 0;
+      // pedidos curtos: o Google pode devolver incompleta a resposta de um pedido demorado; se acontecer, tenta de novo com menos fotos
+      const chamarComRetentativa = async (acao, dados) => {
+        for (let t = 0; ; t++) {
+          try { const r = await Sync.chamar(acao, dados); falhasSeg = 0; return r; } catch (e) {
+            if (/desconhecida|permiss|login|TOKEN/i.test(e.message || '') || t >= 4) throw e;
+            Sync.log('reorganizar', acao + ': tentando de novo', e.message);
+            falhasSeg++; if (dados.itens && dados.itens.length > 2) { dados = Object.assign({}, dados, { itens: dados.itens.slice(0, Math.max(2, Math.ceil(dados.itens.length / 2))) }); tam = dados.itens.length; }
+            await new Promise((ok) => setTimeout(ok, 1500 * (t + 1)));
+          }
+        }
+      };
       while (i < itens.length) {
-        const lote = itens.slice(i, i + 25);
-        const r = await Sync.chamar('moverFotos', { itens: lote });
+        const lote = itens.slice(i, i + tam);
+        const r = await chamarComRetentativa('moverFotos', { itens: lote });
         const feitos = Math.max(1, +r.feitos || 0);
         tot.movidas += +r.movidas || 0; tot.renomeadas += +r.renomeadas || 0; tot.certas += +r.certas || 0; tot.erros.push(...(r.erros || []));
         i += feitos;
@@ -2045,7 +2056,7 @@
       }
       jp.set('Apagando as pastas que ficaram vazias…', 0.95);
       let lim = { removidas: 0, completo: false }, k = 0;
-      do { const r = await Sync.chamar('limparPastasFotos', {}); lim.removidas += +r.removidas || 0; lim.completo = r.completo !== false; k++; } while (!lim.completo && k < 5);
+      do { const r = await chamarComRetentativa('limparPastasFotos', {}); lim.removidas += +r.removidas || 0; lim.completo = r.completo !== false; k++; jp.set('Apagando as pastas que ficaram vazias… (' + lim.removidas + ')', 0.95); } while (!lim.completo && k < 30);
       jp.fechar();
       await modal('Fotos reorganizadas', h('div', {},
         h('p', {}, plural(tot.movidas, 'foto mudou de pasta', 'fotos mudaram de pasta') + (tot.renomeadas ? ', ' + plural(tot.renomeadas, 'renomeada', 'renomeadas') : '') + ' e ' + plural(tot.certas, 'já estava no lugar', 'já estavam no lugar') + '.'),
@@ -6261,7 +6272,7 @@
       for (const f of fotosSemDrive) if (!(await DB.blobGet(f.id))) semArquivo++;
       const log = Sync.lerLog().slice().reverse();
       const resumo = {
-        app: '3.18.4', servidor: Sync.versaoServidor || '?', usuario: (u || {}).email, perfil: perfil(), estado: Sync.estado, erro: Sync.erro || '',
+        app: '3.18.5', servidor: Sync.versaoServidor || '?', usuario: (u || {}).email, perfil: perfil(), estado: Sync.estado, erro: Sync.erro || '',
         online: navigator.onLine, ultimaSync: await DB.kvGet('ultimaSync', null), cursor: await DB.kvGet('servidorDesde', 0),
         pendentes: pendPor, fotosAguardandoEnvio: fotosSemDrive.length - semArquivo, fotosDeOutroAparelhoSemEnvio: semArquivo,
         aparelho: navigator.userAgent, log,
@@ -6536,7 +6547,7 @@
     // a partir de "Aparência e câmera", cada seção vira uma lista suspensa (fechada; lembra as abertas)
     const iniSecoes = cards.findIndex((c) => c.querySelector && (c.querySelector(':scope > h2') || {}).textContent === 'Aparência e câmera');
     if (iniSecoes >= 0) for (let i = iniSecoes; i < cards.length; i++) cards[i] = secaoRecolhivel(cards[i]);
-    cards.push(h('p', { class: 'dica', style: { textAlign: 'center' } }, 'Fiscalização de Obras · v3.18.4 · dados salvos no aparelho' + (Sync.habilitado() ? ' e no Google Drive do administrador' : '') + ' · ', h('a', { href: 'privacidade.html' }, 'Política de privacidade')));
+    cards.push(h('p', { class: 'dica', style: { textAlign: 'center' } }, 'Fiscalização de Obras · v3.18.5 · dados salvos no aparelho' + (Sync.habilitado() ? ' e no Google Drive do administrador' : '') + ' · ', h('a', { href: 'privacidade.html' }, 'Política de privacidade')));
     rcT(tk, ...cards);
   }
 
