@@ -317,7 +317,7 @@
     },
     funcao_padrao: { convenio: ['Fiscal do Convênio'], contrato: ['Fiscal do Contrato', 'Fiscal Suplente do Contrato'] },
     modelos: {},
-    pasta_fotos: '{tipo}-{numero}/{data}',
+    pasta_fotos: '{tipo}-{numero}/{os}/{data}',
     feriados: '',
     feriados_auto: true, // nacionais e de MT calculados pelo app (3.18)
     feriados_facultativos: false,
@@ -356,6 +356,9 @@
   /* Pasta e nome da foto no Google Drive (ex.: Fotos/Conv-013-2023/29.09.2026/14.21.05 - IRREGULARIDADE - ....jpg).
      A mesma regra existe no Code.gs (segmentosFoto_), usada para organizar fotos antigas. */
   const doisDig = (n) => String(n).padStart(2, '0');
+  const PASTA_ANTIGA = '{tipo}-{numero}/{data}';
+  // um campo vazio não deixa " - " sobrando no nome da pasta (mesma regra do Code.gs, limparSeparadores_)
+  const limparSep = (t) => String(t || '').replace(/(\s*[-–·]\s*){2,}/g, ' - ').replace(/^[\s\-–·]+|[\s\-–·]+$/g, '').trim();
   function segmentosPasta(f, r, v, padrao, rotulo) {
     r = r || {};
     let iso = v && v.data;
@@ -368,8 +371,11 @@
       data: d.length === 3 ? d[2] + '.' + d[1] + '.' + d[0] : 'sem-data',
       ano: d[0] || '',
       visita: v ? 'Visita ' + v.numero : rotulo || 'Sem visita',
+      // 3.18.4: O.S. do cadastro do contrato (convênio ou contrato sem O.S.: o nível é pulado)
+      os: r.tipo !== 'convenio' && String(r.os_numero || '').trim() ? 'OS ' + nomeArquivo(r.os_numero) : '',
     };
-    return String(padrao || CONFIG_PADRAO.pasta_fotos).split('/').map((seg) => nomeArquivo(seg.replace(/\{(\w+)\}/g, (m, k) => (val[k] != null ? val[k] : '')))).filter(Boolean);
+    if (padrao === PASTA_ANTIGA) padrao = CONFIG_PADRAO.pasta_fotos; // padrão antigo guardado: passa a separar por O.S.
+    return String(padrao || CONFIG_PADRAO.pasta_fotos).split('/').map((seg) => limparSep(nomeArquivo(seg.replace(/\{(\w+)\}/g, (m, k) => (val[k] != null ? val[k] : ''))))).filter(Boolean);
   }
   App.infoFotoDrive = async function (f) {
     const r = await DB.get('registros', f.registroId);
@@ -2014,6 +2020,41 @@
   /* zoom (roda do mouse / pinça / duplo clique), arrastar a imagem       */
   /* ampliada, setas/teclado/deslizar para passar e tira de miniaturas.  */
   /* ------------------------------------------------------------------ */
+  /* 3.18.4: move as fotos já enviadas para as pastas da regra atual (ex.: separar por O.S.). O app calcula o destino de
+     cada foto e manda em lotes; o servidor só mexe na que está fora do lugar e, no fim, apaga as pastas que ficaram vazias. */
+  async function reorganizarFotosDrive() {
+    if (!Sync.habilitado() || !navigator.onLine) { toast('Precisa de internet e do servidor configurado.', true); return; }
+    if (Sync.versaoServidor && Sync.versaoServidor < 15) { toast('Atualize o servidor (Code.gs versão 15) para reorganizar as fotos.', true); return; }
+    const fotos = (await DB.all('fotos')).filter((f) => f.driveId && !f.excluido);
+    if (!fotos.length) { toast('Nenhuma foto enviada ao Drive ainda.'); return; }
+    if (!(await confirmar('Reorganizar ' + plural(fotos.length, 'foto', 'fotos') + ' no Google Drive conforme a regra de pastas atual (' + (((CONFIG || {}).pasta_fotos && CONFIG.pasta_fotos !== PASTA_ANTIGA) ? CONFIG.pasta_fotos : CONFIG_PADRAO.pasta_fotos) + ')? As fotos que já estão no lugar certo não são mexidas e as pastas que ficarem vazias vão para a lixeira do Drive. Pode levar alguns minutos; deixe o app aberto.', 'Reorganizar'))) return;
+    const jp = janelaProgresso('Calculando o destino das fotos…', 'Reorganizar as fotos do Drive');
+    jp.set(null, 0);
+    const tot = { movidas: 0, renomeadas: 0, certas: 0, erros: [] };
+    try {
+      const itens = [];
+      for (const f of fotos) { const inf = await App.infoFotoDrive(f); itens.push({ id: f.id, driveId: f.driveId, pastas: inf.pastas, nome: inf.nome }); }
+      let i = 0;
+      while (i < itens.length) {
+        const lote = itens.slice(i, i + 25);
+        const r = await Sync.chamar('moverFotos', { itens: lote });
+        const feitos = Math.max(1, +r.feitos || 0);
+        tot.movidas += +r.movidas || 0; tot.renomeadas += +r.renomeadas || 0; tot.certas += +r.certas || 0; tot.erros.push(...(r.erros || []));
+        i += feitos;
+        jp.set('Fotos conferidas: ' + Math.min(i, itens.length) + ' de ' + itens.length + ' · ' + tot.movidas + ' movida(s)', Math.min(i, itens.length) / itens.length * 0.92);
+      }
+      jp.set('Apagando as pastas que ficaram vazias…', 0.95);
+      let lim = { removidas: 0, completo: false }, k = 0;
+      do { const r = await Sync.chamar('limparPastasFotos', {}); lim.removidas += +r.removidas || 0; lim.completo = r.completo !== false; k++; } while (!lim.completo && k < 5);
+      jp.fechar();
+      await modal('Fotos reorganizadas', h('div', {},
+        h('p', {}, plural(tot.movidas, 'foto mudou de pasta', 'fotos mudaram de pasta') + (tot.renomeadas ? ', ' + plural(tot.renomeadas, 'renomeada', 'renomeadas') : '') + ' e ' + plural(tot.certas, 'já estava no lugar', 'já estavam no lugar') + '.'),
+        h('p', {}, plural(lim.removidas, 'pasta vazia foi para a lixeira', 'pastas vazias foram para a lixeira') + ' do Drive.'),
+        tot.erros.length ? h('p', { class: 'aviso' }, plural(tot.erros.length, 'foto não pôde ser movida', 'fotos não puderam ser movidas') + ' (apagada no Drive ou sem acesso). Rode de novo mais tarde.') : null),
+      [{ txt: 'OK', cls: 'pri', valor: true }]);
+    } catch (e) { jp.fechar(); toast(/desconhecida/i.test(e.message || '') ? 'Atualize o servidor (Code.gs versão 15) para reorganizar as fotos.' : 'Não foi possível terminar: ' + e.message + '. Rode de novo: continua de onde parou.', true); }
+  }
+
   /* Salva a foto em tamanho real no aparelho. iPhone/iPad: abre o menu de compartilhar (opção "Salvar Imagem"
      vai para o app Fotos). Android: o arquivo vai para Downloads e aparece na galeria (Google Fotos › Downloads).
      Computador: baixa o arquivo. Se a foto não está no aparelho, busca no Drive (precisa de internet). */
@@ -6220,7 +6261,7 @@
       for (const f of fotosSemDrive) if (!(await DB.blobGet(f.id))) semArquivo++;
       const log = Sync.lerLog().slice().reverse();
       const resumo = {
-        app: '3.18.3', servidor: Sync.versaoServidor || '?', usuario: (u || {}).email, perfil: perfil(), estado: Sync.estado, erro: Sync.erro || '',
+        app: '3.18.4', servidor: Sync.versaoServidor || '?', usuario: (u || {}).email, perfil: perfil(), estado: Sync.estado, erro: Sync.erro || '',
         online: navigator.onLine, ultimaSync: await DB.kvGet('ultimaSync', null), cursor: await DB.kvGet('servidorDesde', 0),
         pendentes: pendPor, fotosAguardandoEnvio: fotosSemDrive.length - semArquivo, fotosDeOutroAparelhoSemEnvio: semArquivo,
         aparelho: navigator.userAgent, log,
@@ -6321,8 +6362,9 @@
         campo('Prazo padrão (dias úteis)', inputTxt(c, 'prazo_padrao', { type: 'number', min: '1' })),
         editorFeriados(c),
         h('h3', {}, 'Fotos no Google Drive'),
-        campo('Pastas das fotos', inputTxt(c, 'pasta_fotos', { placeholder: '{tipo}-{numero}/{data}' }),
-          'Dentro da pasta Fotos. Use / para criar subpastas. {tipo} = Conv ou Contr · {numero} = nº do contrato/convênio · {apelido} = nome curto · {data} = data da visita (29.09.2026) · {ano} · {visita} = “Visita 3”. Ex.: {tipo}-{numero}/{data} → Conv-013-2023/29.09.2026. Vale para as próximas fotos enviadas.'),
+        campo('Pastas das fotos', inputTxt(c, 'pasta_fotos', { placeholder: CONFIG_PADRAO.pasta_fotos }),
+          'Dentro da pasta Fotos. Use / para criar subpastas. {tipo} = Conv ou Contr · {numero} = nº do contrato/convênio · {apelido} = nome curto · {os} = O.S. do contrato (“OS 01-2026”; convênio ou sem O.S.: o nível é pulado) · {data} = data da visita (29.09.2026) · {ano} · {visita} = “Visita 3”. Ex.: {tipo}-{numero}/{os}/{data} → Contr-013-2022/OS 01-2026/29.09.2026. Vale para as próximas fotos enviadas; as já enviadas mudam de pasta com “Reorganizar as fotos do Drive”.'),
+        pode.admin() ? h('div', { class: 'acoes', style: { marginTop: '-4px' } }, h('button', { type: 'button', class: 'btn peq', 'data-acao': 'reorganizar-drive', onclick: () => reorganizarFotosDrive() }, '🗂️ Reorganizar as fotos do Drive')) : null,
         h('div', { class: 'acoes' }, h('button', { class: 'btn pri', onclick: async () => {
           c.fiscais_padrao = fisc.map((x) => x.pessoaId);
           c.coordenadores_padrao = coord.map((x) => x.pessoaId);
@@ -6494,7 +6536,7 @@
     // a partir de "Aparência e câmera", cada seção vira uma lista suspensa (fechada; lembra as abertas)
     const iniSecoes = cards.findIndex((c) => c.querySelector && (c.querySelector(':scope > h2') || {}).textContent === 'Aparência e câmera');
     if (iniSecoes >= 0) for (let i = iniSecoes; i < cards.length; i++) cards[i] = secaoRecolhivel(cards[i]);
-    cards.push(h('p', { class: 'dica', style: { textAlign: 'center' } }, 'Fiscalização de Obras · v3.18.3 · dados salvos no aparelho' + (Sync.habilitado() ? ' e no Google Drive do administrador' : '') + ' · ', h('a', { href: 'privacidade.html' }, 'Política de privacidade')));
+    cards.push(h('p', { class: 'dica', style: { textAlign: 'center' } }, 'Fiscalização de Obras · v3.18.4 · dados salvos no aparelho' + (Sync.habilitado() ? ' e no Google Drive do administrador' : '') + ' · ', h('a', { href: 'privacidade.html' }, 'Política de privacidade')));
     rcT(tk, ...cards);
   }
 
