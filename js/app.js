@@ -271,7 +271,9 @@
   /* situação de uma notificação: rascunho, emitida sem envio, aguardando resposta, prazo encerrado, respondida */
   function situacaoNotif(n) {
     if (n.status !== 'emitida') return { k: 'rascunho', txt: 'Rascunho', cls: 'alerta', ordem: 4 };
-    if (!n.enviadaEm) return { k: 'nao_enviada', txt: 'Emitida · não enviada', cls: 'info', ordem: 2 };
+    if (!n.enviadaEm) return n.assinaturaEm
+      ? { k: 'nao_enviada', assinatura: true, txt: 'Inserida para assinatura · não enviada', cls: 'info', ordem: 2 }
+      : { k: 'nao_enviada', txt: 'Emitida · aguardando assinatura', cls: 'info', ordem: 2 };
     if (n.respondidaEm) {
       const atraso = prazoDe(n) && n.respondidaEm > prazoDe(n);
       return { k: 'respondida', txt: 'Respondida em ' + X.dataBR(n.respondidaEm) + (atraso ? ' (fora do prazo)' : ''), cls: 'ok', ordem: 3 };
@@ -720,7 +722,9 @@
       const tit = (n.ordinal || '?') + 'ª notificação · ' + nome;
       if (s.k === 'vencida') out.push({ grupo: 'venc', ord: -1000 + s.restante, ic: 'sino', c: 'er', t: tit, d: 'Sem resposta ' + (r.tipo === 'convenio' ? 'da prefeitura' : 'da empresa') + ' · prazo terminou ' + dataCurta(prazoDe(n)) + comHora(n), n: s.hoje ? 'hoje' : -s.restante, u: s.hoje ? 'às ' + horaEnvio(n) : 'dias atrás', href: '#/notificacao/' + n.id });
       else if (s.k === 'aguardando') out.push({ grupo: s.restante <= 30 ? 'prox' : 'depois', ord: s.restante, ic: 'sino', c: 'al', t: tit, d: 'Resposta até ' + dataCurta(prazoDe(n)) + comHora(n) + ((n.aditivosPrazo || []).length ? ' · prazo aditado' : ''), n: s.restante, u: s.restante === 1 ? 'dia útil' : 'dias úteis', href: '#/notificacao/' + n.id });
-      else if (s.k === 'nao_enviada') out.push({ grupo: 'prox', ord: -1, ic: 'envio', c: 'in', t: tit, d: 'Emitida, falta registrar o envio', n: '—', u: 'enviar', href: '#/notificacao/' + n.id });
+      else if (s.k === 'nao_enviada') out.push(s.assinatura
+        ? { grupo: 'prox', ord: -1, ic: 'lapis', c: 'acc', t: tit, d: 'Na assinatura desde ' + dataCurta(n.assinaturaEm) + ' · falta registrar o envio', n: '—', u: 'enviar', href: '#/notificacao/' + n.id }
+        : { grupo: 'prox', ord: -2, ic: 'lapis', c: 'in', t: tit, d: 'Emitida, falta inserir para assinatura', n: '—', u: 'assinar', href: '#/notificacao/' + n.id });
       else if (s.k === 'rascunho') out.push({ grupo: 'rasc', ord: 0, ic: 'doc', c: '', t: 'Rascunho de notificação · ' + nome, d: 'Criada ' + haQuanto(String(n.criadoEm || n.data || '').slice(0, 10)), n: '—', u: 'concluir', href: '#/notificacao/' + n.id });
     }
     for (const r of d.regs) {
@@ -1199,7 +1203,7 @@
       const s = situacaoNotif(n);
       ev.push({ k: 'notif', q: new Date(n.emitidaEm || n.criadoEm || 0), quem: nomeDe(n.emitidaPor || n.criadoPor), ic: 'sino', c: COR_N[s.cls] || 'acc', t: (n.ordinal || '?') + 'ª Notificação · ' + s.txt.charAt(0).toLowerCase() + s.txt.slice(1), s: (n.itens && n.itens.length ? plural(n.itens.length, 'item', 'itens') + ' · ' : '') + plural((n.fotos || []).length, 'foto', 'fotos') + (n.enviadaEm ? ' · enviada ' + X.dataBR(n.enviadaEm) : ''), href: '#/notificacao/' + n.id });
     }
-    for (const a of x.atividades) ev.push({ k: a.tipo, id: a.id, a, q: new Date(a.em || a.criadoEm || 0), quem: a.quemNome || nomeDe(a.criadoPor), ic: a.tipo === 'comentario' ? 'resp' : a.tipo === 'aditivo' ? 'doc' : a.tipo === 'aditivo_prazo' ? 'relogio' : 'lapis', c: a.tipo === 'aditivo' ? 'acc' : a.tipo === 'aditivo_prazo' ? 'al' : '', t: a.titulo || (a.tipo === 'comentario' ? 'Comentário' : 'Alteração'), s: a.texto, href: a.tipo === 'comentario' ? null : a.notificacaoId ? '#/notificacao/' + a.notificacaoId : '#/registro/' + r.id + '/dados' });
+    for (const a of x.atividades) ev.push({ k: a.tipo, id: a.id, a, q: new Date(a.em || a.criadoEm || 0), quem: a.quemNome || nomeDe(a.criadoPor), ic: a.tipo === 'comentario' ? 'resp' : a.tipo === 'aditivo' ? 'doc' : a.tipo === 'aditivo_prazo' ? 'relogio' : a.tipo === 'notif_etapa' ? 'sino' : 'lapis', c: a.tipo === 'aditivo' ? 'acc' : a.tipo === 'aditivo_prazo' ? 'al' : a.tipo === 'notif_etapa' ? 'in' : '', t: a.titulo || (a.tipo === 'comentario' ? 'Comentário' : 'Alteração'), s: a.texto, href: a.tipo === 'comentario' ? null : a.notificacaoId ? '#/notificacao/' + a.notificacaoId : '#/registro/' + r.id + '/dados' });
     return ev.sort((a, b) => b.q - a.q);
   }
   function linhaTempo(lista, aoMudar) {
@@ -4530,6 +4534,7 @@
   function aplicarEnvio(o, dataISO, hora) {
     o.enviadaEm = dataISO;
     if (hora) o.enviadaHora = hora; else delete o.enviadaHora;
+    if (!o.assinaturaEm) o.assinaturaDireta = true; // 3.18.3: envio registrado direto (já estava assinada)
     o.prazoDiasEnvio = (+o.prazo_dias || 3) + diasAditados(o); // 3.18.1: os aditivos de prazo continuam valendo
     o.prazoFinal = prazoFinalUteis(dataISO, o.prazoDiasEnvio);
     o.enviadaPor = email();
@@ -4632,6 +4637,26 @@
     verificarPrazos();
     return true;
   }
+  /* 3.18.3: etapa "Inserida para assinatura" entre Emitida e Enviada (data, horário e, opcional, onde/nº do documento).
+     O prazo continua contando só a partir do envio. */
+  async function pedirAssinatura(n, ini) {
+    const d = { data: (ini && ini.data) || X.hojeISO(), hora: (ini && ini.hora) || agoraHM(), ref: (ini && ini.ref) || '' };
+    const inD = h('input', { type: 'date', value: d.data, max: X.hojeISO(), oninput: (e) => { d.data = e.target.value; } });
+    const inH = h('input', { type: 'time', value: d.hora, step: '60', 'aria-label': 'Horário', oninput: (e) => { d.hora = e.target.value; } });
+    const inR = h('input', { type: 'text', value: d.ref, placeholder: 'Ex.: SIGADOC SEDUC-DOC-2026/12345', oninput: (e) => { d.ref = e.target.value; } });
+    const ok = await modal('✍️ Inserida para assinatura', h('div', {},
+      h('p', {}, 'Quando a notificação foi colocada para assinatura? O prazo ainda não começa: ele conta a partir do envio.'),
+      h('div', { class: 'grade2' }, campo('Data', inD), campo('Horário', inH)),
+      campo('Onde / nº do documento (opcional)', inR)),
+    [{ txt: 'Cancelar', valor: false }, { txt: 'Registrar', cls: 'pri', valor: true, antes: () => {
+      if (!d.data || !/^\d\d:\d\d$/.test(d.hora || '')) { toast('Informe a data e o horário.', true); return false; }
+      if (d.data > X.hojeISO() || (d.data === X.hojeISO() && d.hora > agoraHM())) { toast('A data e o horário não podem ser futuros.', true); return false; }
+    } }]);
+    return ok ? { data: d.data, hora: d.hora, ref: d.ref.trim() } : null;
+  }
+  const aplicarAssinatura = (o, a) => { o.assinaturaEm = a.data; o.assinaturaHora = a.hora; if (a.ref) o.assinaturaRef = a.ref; else delete o.assinaturaRef; o.assinaturaPor = email(); delete o.assinaturaDireta; };
+  const nomeNotif = (n) => (n.ordinal ? n.ordinal + 'ª notificação' : 'Notificação') + (n.numero ? ' nº ' + n.numero : '');
+  const ativNotif = (n, titulo, texto) => registrarAtividade(n.registroId, 'notif_etapa', nomeNotif(n) + ' · ' + titulo, texto || '', { notificacaoId: n.id }).catch(() => {});
   function cartaoEnvio(n, r, redesenhar) {
     const sit = situacaoNotif(n);
     const quem = quemResponde(n.tipo || r.tipo);
@@ -4651,6 +4676,7 @@
       const envio = await pedirDataEnvio(n);
       if (!envio) return;
       await atualizarCampos('notificacoes', n.id, (o) => aplicarEnvio(o, envio.data, envio.hora));
+      await ativNotif(n, 'enviada', X.dataBR(envio.data) + ' às ' + envio.hora + (n.assinaturaEm ? '' : ' · registrada direto (já assinada)'));
       toast('Envio registrado — prazo até ' + X.dataBR(prazoFinalUteis(envio.data, +n.prazo_dias || 3)) + ' às ' + envio.hora);
       verificarPrazos(); redesenhar();
     } }, '📨 Registrar envio') : null;
@@ -4658,6 +4684,7 @@
       const resp = await pedirResposta(n);
       if (!resp) return;
       await atualizarCampos('notificacoes', n.id, (o) => { o.respondidaEm = resp.data; o.respostaObs = resp.obs.trim(); o.respondidaPor = email(); });
+      await ativNotif(n, 'respondida', X.dataBR(resp.data) + (resp.obs.trim() ? ' · ' + resp.obs.trim() : ''));
       toast('Resposta registrada'); verificarPrazos(); redesenhar();
     } }, '✅ Registrar resposta') : null;
     // contador de dias úteis
@@ -4675,15 +4702,45 @@
       h('div', { class: 'etqs', style: { marginTop: 0, marginBottom: '12px' } }, etq(sit.txt, sit.cls), adits.length ? etq(adits.length === 1 ? 'Prazo aditado' : 'Prazo aditado ' + adits.length + '×', 'acc') : null),
       h('div', { class: nc('rastreio') },
         passo('feito', 1, 'Emitida', (n.emitidaEm ? dataHoraBR(n.emitidaEm) : X.dataBR(n.data)) + (n.emitidaPor ? ' · por ' + nomeDe(n.emitidaPor) : '') + (n.numero ? ' · nº ' + n.numero : '')),
-        passo(n.enviadaEm ? 'feito' : 'agora', 2, n.enviadaEm ? 'Enviada' : 'Enviar a ' + quem.replace(/^a /, ''),
-          n.enviadaEm ? X.dataBR(n.enviadaEm) + comHora(n) + (n.enviadaPor ? ' · registrado por ' + nomeDe(n.enviadaPor) : '') : 'Baixe o Word, envie e registre aqui a data e o horário do envio: o prazo conta a partir desse momento.',
-          n.enviadaEm ? null : registrarEnvio),
-        passo(n.respondidaEm ? 'feito' : n.enviadaEm ? 'agora' : '', 3, 'Prazo de ' + dias + (dias === 1 ? ' dia útil' : ' dias úteis') + (adits.length ? ' (' + diasOrig + ' + ' + (dias - diasOrig) + ' aditados)' : ''),
+        passo(n.assinaturaEm || n.enviadaEm ? 'feito' : 'agora', 2, 'Inserida para assinatura',
+          n.assinaturaEm ? X.dataBR(n.assinaturaEm) + (n.assinaturaHora ? ' às ' + n.assinaturaHora : '') + (n.assinaturaPor ? ' · registrado por ' + nomeDe(n.assinaturaPor) : '')
+            : n.enviadaEm ? (n.assinaturaDireta ? 'Já estava assinada: o envio foi registrado direto.' : 'Não registrada (envio registrado antes desta etapa).')
+            : 'Baixe o Word e coloque para assinatura (no sistema ou em papel). Registre aqui quando inserir.',
+          n.assinaturaEm && n.assinaturaRef ? h('span', { class: nc('ref-doc') }, '📄 ' + n.assinaturaRef)
+            : !n.assinaturaEm && !n.enviadaEm && pode.notificar() ? h('div', { class: 'acoes', style: { marginTop: '8px', alignItems: 'center' } },
+              h('button', { class: 'btn pri peq', 'data-acao': 'assinatura', onclick: async () => {
+                const a = await pedirAssinatura(n);
+                if (!a) return;
+                await atualizarCampos('notificacoes', n.id, (o) => aplicarAssinatura(o, a));
+                await ativNotif(n, 'inserida para assinatura', X.dataBR(a.data) + ' às ' + a.hora + (a.ref ? ' · ' + a.ref : ''));
+                toast('Registrado: inserida para assinatura'); verificarPrazos(); redesenhar();
+              } }, '✍️ Inserida para assinatura'),
+              h('button', { type: 'button', class: nc('lk') + ' lk-envio-direto', 'data-acao': 'envio-direto', onclick: () => registrarEnvio && registrarEnvio.click() }, 'Já foi assinada? Registrar o envio direto'))
+            : null),
+        passo(n.enviadaEm ? 'feito' : n.assinaturaEm ? 'agora' : '', 3, n.enviadaEm ? 'Enviada' : 'Enviar a ' + quem.replace(/^a /, ''),
+          n.enviadaEm ? X.dataBR(n.enviadaEm) + comHora(n) + (n.enviadaPor ? ' · registrado por ' + nomeDe(n.enviadaPor) : '')
+            : n.assinaturaEm ? 'Depois de assinada, envie e registre aqui a data e o horário do envio: o prazo conta a partir desse momento.' : 'Fica disponível depois da assinatura.',
+          n.enviadaEm || !n.assinaturaEm ? null : registrarEnvio),
+        passo(n.respondidaEm ? 'feito' : n.enviadaEm ? 'agora' : '', 4, 'Prazo de ' + dias + (dias === 1 ? ' dia útil' : ' dias úteis') + (adits.length ? ' (' + diasOrig + ' + ' + (dias - diasOrig) + ' aditados)' : ''),
           pf ? (sit.k === 'vencida' ? 'Terminou em ' : 'Vence em ') + DIAS_L[dataD(pf).getDay()] + ', ' + X.dataBR(pf) + comHora(n) + (horaEnvio(n) ? ' (contado a partir do envio, às ' + horaEnvio(n) + '; fins de semana e feriados não contam)' : ' (fins de semana e feriados não contam)') : 'Conta a partir da data e do horário do envio',
           [contador, listaAdits, btAditar ? h('div', { class: 'acoes', style: { marginTop: '10px' } }, btAditar) : null]),
-        passo(n.respondidaEm ? 'feito' : '', 4, n.respondidaEm ? 'Respondida' : 'Resposta ' + (quem === 'a prefeitura' ? 'da prefeitura' : 'da empresa'),
+        passo(n.respondidaEm ? 'feito' : '', 5, n.respondidaEm ? 'Respondida' : 'Resposta ' + (quem === 'a prefeitura' ? 'da prefeitura' : 'da empresa'),
           n.respondidaEm ? X.dataBR(n.respondidaEm) + (n.respondidaEm > pf ? ' (fora do prazo)' : '') + (n.respondidaPor ? ' · registrado por ' + nomeDe(n.respondidaPor) : '') + (n.respostaObs ? ' · ' + n.respostaObs : '') : 'Registre quando ' + quem + ' responder.',
           registrarResp)));
+    if (pode.notificar() && n.assinaturaEm && !n.enviadaEm) {
+      ap(card, h('div', { class: 'acoes' },
+        h('button', { class: 'btn peq', 'data-acao': 'corrigir-assinatura', onclick: async () => {
+          const a = await pedirAssinatura(n, { data: n.assinaturaEm, hora: n.assinaturaHora, ref: n.assinaturaRef });
+          if (!a) return;
+          await atualizarCampos('notificacoes', n.id, (o) => aplicarAssinatura(o, a));
+          redesenhar();
+        } }, 'Corrigir data da assinatura'),
+        h('button', { class: 'btn peq perigo', 'data-acao': 'desfazer-assinatura', onclick: async () => {
+          if (!(await confirmar('Desfazer o registro “inserida para assinatura”?', 'Desfazer', true))) return;
+          await atualizarCampos('notificacoes', n.id, (o) => { for (const k of ['assinaturaEm', 'assinaturaHora', 'assinaturaRef', 'assinaturaPor', 'assinaturaDireta']) delete o[k]; });
+          verificarPrazos(); redesenhar();
+        } }, 'Desfazer “inserida para assinatura”')));
+    }
     if (pode.notificar() && n.enviadaEm) {
       ap(card, h('div', { class: 'acoes' },
         n.respondidaEm ? h('button', { class: 'btn peq', onclick: async () => {
@@ -4699,7 +4756,7 @@
         } }, 'Corrigir data de envio'),
         !n.respondidaEm ? h('button', { class: 'btn peq perigo', onclick: async () => {
           if (!(await confirmar('Desfazer o registro de envio? O prazo deixa de ser contado.', 'Desfazer', true))) return;
-          await atualizarCampos('notificacoes', n.id, (o) => { delete o.enviadaEm; delete o.enviadaHora; delete o.prazoFinal; delete o.prazoDiasEnvio; delete o.enviadaPor; });
+          await atualizarCampos('notificacoes', n.id, (o) => { delete o.enviadaEm; delete o.enviadaHora; delete o.prazoFinal; delete o.prazoDiasEnvio; delete o.enviadaPor; delete o.assinaturaDireta; });
           verificarPrazos(); redesenhar();
         } }, 'Desfazer envio') : null,
         adits.length && !n.respondidaEm ? h('button', { class: 'btn peq', onclick: async () => {
@@ -5108,9 +5165,12 @@
       const emit = await atualizarCampos('notificacoes', id, (o) => {
         o.registroSnapshot = snap; o.status = n.status; o.emitidaEm = n.emitidaEm; o.emitidaPor = n.emitidaPor;
         o.fotos = fotosEmit;
+        if (direto && direto.assinatura) aplicarAssinatura(o, direto.assinatura);
         if (envio) aplicarEnvio(o, envio.data, envio.hora);
       });
       Object.assign(original, emit);
+      if (direto && direto.assinatura) await ativNotif(emit || n, 'inserida para assinatura', X.dataBR(direto.assinatura.data) + ' às ' + direto.assinatura.hora + (direto.assinatura.ref ? ' · ' + direto.assinatura.ref : ''));
+      if (envio) await ativNotif(emit || n, 'enviada', X.dataBR(envio.data) + (envio.hora ? ' às ' + envio.hora : '') + ' · registrada direto (já assinada)');
       App._sairNotif = null;
       await gerarDireto();
       await telaNotificacao(id);
@@ -5139,7 +5199,7 @@
         emitida && pode.notificar() ? h('button', { class: 'btn peq', onclick: () => criarNotificacao(r.id, n) }, '↻ Nova notificação a partir desta (reiteração)') : null,
         emitida && pode.admin() ? h('button', { class: 'btn peq', onclick: async () => {
           if (!(await confirmar('Reabrir para edição? A notificação voltará a ser rascunho' + (original.enviadaEm ? ' e o registro de envio/resposta será apagado (registre o envio de novo ao reemitir).' : '.'), 'Reabrir'))) return;
-          await atualizarCampos('notificacoes', id, (o) => { o.status = 'rascunho'; delete o.emitidaEm; for (const k of ['enviadaEm', 'enviadaHora', 'prazoFinal', 'prazoDiasEnvio', 'enviadaPor', 'respondidaEm', 'respostaObs', 'respondidaPor']) delete o[k]; });
+          await atualizarCampos('notificacoes', id, (o) => { o.status = 'rascunho'; delete o.emitidaEm; for (const k of ['assinaturaEm', 'assinaturaHora', 'assinaturaRef', 'assinaturaPor', 'assinaturaDireta', 'enviadaEm', 'enviadaHora', 'prazoFinal', 'prazoDiasEnvio', 'enviadaPor', 'respondidaEm', 'respostaObs', 'respondidaPor']) delete o[k]; });
           verificarPrazos(); telaNotificacao(id);
         } }, '🔓 Reabrir') : null,
         (!emitida && pode.notificar()) || pode.admin() ? h('button', { class: 'btn peq perigo', onclick: excluirNotif }, 'Excluir') : null),
@@ -5393,18 +5453,24 @@
         if (!nf.length) erros.push('fiscal');
         const li = (k, t) => h('div', { class: 'nf-chkl' }, h('span', { class: 'b ' + k }, k === 'ok' ? '✓' : k === 'er' ? '✕' : '!'), h('div', {}, t));
         const d = +n.prazo_dias || 3;
-        const st2 = { modo: 'envio', data: X.hojeISO(), hora: agoraHM() };
-        const dEnvio = h('input', { type: 'date', value: st2.data, max: X.hojeISO(), 'aria-label': 'Data do envio', oninput: (e) => { st2.data = e.target.value; pintarOpc(); } });
-        const hEnvio = h('input', { type: 'time', value: st2.hora, step: '60', 'aria-label': 'Horário do envio', oninput: (e) => { st2.hora = e.target.value; pintarOpc(); } });
+        const st2 = { modo: 'ass', data: X.hojeISO(), hora: agoraHM(), ref: '' };
+        const dEnvio = h('input', { type: 'date', value: st2.data, max: X.hojeISO(), 'aria-label': 'Data', oninput: (e) => { st2.data = e.target.value; pintarOpc(); } });
+        const hEnvio = h('input', { type: 'time', value: st2.hora, step: '60', 'aria-label': 'Horário', oninput: (e) => { st2.hora = e.target.value; pintarOpc(); } });
+        const rAss = h('input', { type: 'text', placeholder: 'Onde / nº do documento (opcional)', 'aria-label': 'Onde / nº do documento', oninput: (e) => { st2.ref = e.target.value; } });
+        const quando = (rot) => h('span', {}, h('span', {}, rot), h('span', { class: 'nf-quando' }, dEnvio, h('span', {}, ' às '), hEnvio));
         const opcs = h('div');
+        const opc = (k, titulo, corpo) => h('div', { class: 'nf-opc' + (st2.modo === k ? ' on' : ''), role: 'radio', 'aria-checked': String(st2.modo === k), 'data-opc': k,
+          onclick: (e) => { if (e.target.tagName === 'INPUT') return; if (st2.modo !== k) { st2.modo = k; pintarOpc(); } } }, h('span', { class: 'r' }), h('div', {}, h('b', {}, titulo), corpo));
         const pintarOpc = () => {
           const fim = st2.data ? prazoFinalUteis(st2.data, d) : null;
           rc(opcs,
-            h('div', { class: 'nf-opc' + (st2.modo === 'envio' ? ' on' : ''), role: 'radio', 'aria-checked': String(st2.modo === 'envio'), 'data-opc': 'envio', onclick: (e) => { if (e.target === dEnvio || e.target === hEnvio) return; st2.modo = 'envio'; pintarOpc(); } }, h('span', { class: 'r' }),
-              h('div', {}, h('b', {}, 'Emitir e registrar o envio'), h('span', {}, 'Enviada em '), h('span', { class: 'nf-quando' }, dEnvio, h('span', {}, ' às '), hEnvio),
-                h('span', { class: 'sub', style: { display: 'block' } }, fim ? 'O prazo de ' + plural(d, 'dia útil', 'dias úteis') + ' conta a partir do envio e vence em ' + DIAS_L[dataD(fim).getDay()] + ', ' + X.dataBR(fim) + (st2.hora ? ' às ' + st2.hora : '') + '.' : 'Informe a data do envio.'))),
-            h('div', { class: 'nf-opc' + (st2.modo === 'so' ? ' on' : ''), role: 'radio', 'aria-checked': String(st2.modo === 'so'), 'data-opc': 'so', onclick: () => { st2.modo = 'so'; pintarOpc(); } }, h('span', { class: 'r' }),
-              h('div', {}, h('b', {}, 'Só emitir'), h('span', {}, 'Registro o envio depois, quando mandar ' + (quem === 'a prefeitura' ? 'à prefeitura' : 'à empresa') + '.'))));
+            opc('ass', 'Emitir e registrar que foi para assinatura', st2.modo === 'ass'
+              ? [quando('Inserida em '), rAss, h('span', { class: 'sub', style: { display: 'block' } }, 'O envio é registrado depois; o prazo só começa no envio.')]
+              : h('span', {}, 'Data e horário de agora (dá para mudar). O envio é registrado depois.')),
+            opc('envio', 'Emitir e registrar o envio', st2.modo === 'envio'
+              ? [quando('Enviada em '), h('span', { class: 'sub', style: { display: 'block' } }, fim ? 'Já assinada e enviada: o prazo de ' + plural(d, 'dia útil', 'dias úteis') + ' conta a partir do envio e vence em ' + DIAS_L[dataD(fim).getDay()] + ', ' + X.dataBR(fim) + (st2.hora ? ' às ' + st2.hora : '') + '.' : 'Informe a data do envio.')]
+              : h('span', {}, 'Já assinada e enviada: informe a data e o horário do envio; o prazo começa a contar.')),
+            opc('so', 'Só emitir', h('span', {}, 'Registro a assinatura e o envio depois.')));
         };
         pintarOpc();
         const ok = await modal('Emitir a ' + n.ordinal + 'ª notificação', h('div', { class: 'nf-emitir' },
@@ -5417,15 +5483,15 @@
           erros.length ? null : opcs,
           erros.length ? null : h('div', { class: 'nota' }, 'O número é reservado agora e o conteúdo fica bloqueado.')),
           erros.length ? [{ txt: 'Voltar', valor: false }] : [{ txt: 'Cancelar', valor: false }, { txt: 'Emitir e baixar o Word', cls: 'pri', valor: true, antes: () => {
-          if (st2.modo !== 'envio') return true;
-          if (!st2.data) { toast('Informe a data do envio.', true); return false; }
-          if (!/^\d\d:\d\d$/.test(st2.hora || '')) { toast('Informe o horário do envio.', true); return false; }
-          if (st2.data === X.hojeISO() && st2.hora > agoraHM()) { toast('O horário do envio não pode ser futuro.', true); return false; }
+          if (st2.modo === 'so') return true;
+          if (!st2.data) { toast('Informe a data.', true); return false; }
+          if (!/^\d\d:\d\d$/.test(st2.hora || '')) { toast('Informe o horário.', true); return false; }
+          if (st2.data === X.hojeISO() && st2.hora > agoraHM()) { toast('O horário não pode ser futuro.', true); return false; }
           return true;
         } }]);
         if (!ok) { if (erros.includes('fiscal')) editarAssinantes(); else if (erros.length) editarDatas(); return; }
         clearTimeout(st.tSalvar);
-        await emitir({ direto: true, envio: st2.modo === 'envio' ? st2.data : null, hora: st2.hora });
+        await emitir({ direto: true, envio: st2.modo === 'envio' ? st2.data : null, hora: st2.hora, assinatura: st2.modo === 'ass' ? { data: st2.data, hora: st2.hora, ref: st2.ref.trim() } : null });
       }
       async function menuMais() {
         const v = await modal('Mais opções', h('div', { class: 'nf-menu' },
@@ -6154,7 +6220,7 @@
       for (const f of fotosSemDrive) if (!(await DB.blobGet(f.id))) semArquivo++;
       const log = Sync.lerLog().slice().reverse();
       const resumo = {
-        app: '3.18.2', servidor: Sync.versaoServidor || '?', usuario: (u || {}).email, perfil: perfil(), estado: Sync.estado, erro: Sync.erro || '',
+        app: '3.18.3', servidor: Sync.versaoServidor || '?', usuario: (u || {}).email, perfil: perfil(), estado: Sync.estado, erro: Sync.erro || '',
         online: navigator.onLine, ultimaSync: await DB.kvGet('ultimaSync', null), cursor: await DB.kvGet('servidorDesde', 0),
         pendentes: pendPor, fotosAguardandoEnvio: fotosSemDrive.length - semArquivo, fotosDeOutroAparelhoSemEnvio: semArquivo,
         aparelho: navigator.userAgent, log,
@@ -6428,7 +6494,7 @@
     // a partir de "Aparência e câmera", cada seção vira uma lista suspensa (fechada; lembra as abertas)
     const iniSecoes = cards.findIndex((c) => c.querySelector && (c.querySelector(':scope > h2') || {}).textContent === 'Aparência e câmera');
     if (iniSecoes >= 0) for (let i = iniSecoes; i < cards.length; i++) cards[i] = secaoRecolhivel(cards[i]);
-    cards.push(h('p', { class: 'dica', style: { textAlign: 'center' } }, 'Fiscalização de Obras · v3.18.2 · dados salvos no aparelho' + (Sync.habilitado() ? ' e no Google Drive do administrador' : '') + ' · ', h('a', { href: 'privacidade.html' }, 'Política de privacidade')));
+    cards.push(h('p', { class: 'dica', style: { textAlign: 'center' } }, 'Fiscalização de Obras · v3.18.3 · dados salvos no aparelho' + (Sync.habilitado() ? ' e no Google Drive do administrador' : '') + ' · ', h('a', { href: 'privacidade.html' }, 'Política de privacidade')));
     rcT(tk, ...cards);
   }
 

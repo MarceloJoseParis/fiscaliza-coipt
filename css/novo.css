@@ -869,3 +869,7 @@ body.nf-doc-aberto { overflow: hidden; }
 @media (max-width: 420px) { .nf-ft, .nf-ft img { width: 64px; } .nf-ft img { height: 64px; } .nf-irr { gap: 10px; } }
 .nf-ft .nf-ft-irr { color: var(--al); font-weight: 600; font-size: 10.5px; margin-top: 1px; }
 .nf-ft .nf-ft-irr { white-space: nowrap; }
+/* 3.18.3 — etapa "Inserida para assinatura" */
+.n-ref-doc { display: inline-block; margin-top: 6px; font-size: 12.5px; background: var(--sup2); border-radius: 8px; padding: 3px 8px; color: var(--txt); overflow-wrap: anywhere; }
+.lk-envio-direto { background: none; border: 0; color: var(--txt2); text-decoration: underline; font: inherit; font-size: 12.5px; cursor: pointer; padding: 4px; }
+.nf-opc input[type=text] { width: 100%; margin: 4px 0; }
