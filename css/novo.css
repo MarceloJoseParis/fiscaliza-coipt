@@ -873,3 +873,38 @@ body.nf-doc-aberto { overflow: hidden; }
 .n-ref-doc { display: inline-block; margin-top: 6px; font-size: 12.5px; background: var(--sup2); border-radius: 8px; padding: 3px 8px; color: var(--txt); overflow-wrap: anywhere; }
 .lk-envio-direto { background: none; border: 0; color: var(--txt2); text-decoration: underline; font: inherit; font-size: 12.5px; cursor: pointer; padding: 4px; }
 .nf-opc input[type=text] { width: 100%; margin: 4px 0; }
+
+/* 3.18.6 — texto inteiro editável na notificação */
+.nf-sec { margin: 4px 0 6px; }
+.nf-sec-rot { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 10px 0 6px; font-size: 13px; }
+.nf-sec-rot b { font-size: 13.5px; }
+.nf-sec-rot .nf-lk { margin-left: auto; }
+.nf-sec-ta { line-height: 1.5; font-size: 14.5px; }
+.nf-sec-dica { margin: 4px 0 2px; }
+.nf-lista-rot { margin-top: 16px; }
+.nf-prov2 h2 { margin-bottom: 0; }
+.nf-papel p.ind { text-indent: 2.2em; }
+.nf-papel p.rec { padding-left: 3.4em; text-indent: -1.4em; }
+.nf-papel p.vazio-p { margin: 0; line-height: .8; }
+.nf-papel .nf-cmp b, .nf-papel .nf-cmp i { font: inherit; font-weight: inherit; }
+.nf-papel .nf-cmp b { font-weight: 700; }
+.nf-papel .nf-cmp i { font-style: italic; }
+
+/* 3.18.6: campo com negrito, itálico e sublinhado */
+.rt { border: 1px solid var(--linha); border-radius: 10px; background: var(--sup); transition: border-color .15s, box-shadow .15s; min-width: 0; }
+.rt:focus-within { border-color: var(--pri); box-shadow: 0 0 0 3px var(--pri-bg); }
+.rt-bar { display: flex; align-items: center; gap: 6px; padding: 5px 6px; border-bottom: 1px solid var(--linha); }
+.rt-bar button { width: 40px; height: 34px; border-radius: 8px; border: 0; background: var(--sup2); color: var(--txt); font: 16px Georgia, 'Times New Roman', serif; cursor: pointer; padding: 0; }
+.rt-bar button.on { background: var(--pri); color: var(--pri-txt); }
+.rt-bar .rt-b { font-weight: 800; } .rt-bar .rt-i { font-style: italic; } .rt-bar .rt-u { text-decoration: underline; }
+.rt-dica { margin-left: auto; font-size: 11.5px; color: var(--txt2); }
+@media (max-width: 520px) { .rt-dica { display: none; } }
+.rt-ed { min-height: 96px; padding: 9px 11px; outline: none; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; cursor: text; }
+.rt-ed b, .rt-ed strong { font-weight: 800; }
+.rt-ed { position: relative; }
+.rt-ed.vazio::before { content: attr(data-ph); position: absolute; left: 11px; top: 9px; color: var(--txt2); pointer-events: none; }
+.rt-mini .rt-ed.vazio::before { left: 10px; top: 7px; }
+.rt-mini .rt-bar { padding: 3px 5px; gap: 4px; }
+.rt-mini .rt-bar button { width: 34px; height: 28px; font-size: 14px; }
+.rt-mini .rt-ed { min-height: 44px; padding: 7px 10px; }
+.nf-item-ta { margin-top: 4px; }

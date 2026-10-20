@@ -85,11 +85,22 @@
   }
 
   function campo(rotulo, input, dica) {
+    if (input && input.classList && input.classList.contains('rt')) return campoBloco(rotulo, input, dica); // campo com B/I/U: o <label> repassaria o clique ao botão B
     return h('label', { class: 'campo' }, h('span', {}, rotulo), input, dica ? h('div', { class: 'dica' }, dica) : null);
   }
   /* campo sem <label>: necessario quando o conteudo tem varios botoes (um <label> repassa o clique ao 1o botao) */
   function campoBloco(rotulo, conteudo, dica) {
     return h('div', { class: 'campo-bloco' }, h('span', {}, rotulo), conteudo, dica ? h('div', { class: 'dica' }, dica) : null);
+  }
+  /* app minimizado / fechado no celular: grava o que estiver pendente (o sistema pode encerrar o app em segundo plano) */
+  function salvarAoEsconder(salvarFn, vivo) {
+    const ao = (e) => {
+      if (!vivo()) { tirar(); return; }
+      if (document.visibilityState === 'hidden' || (e && e.type === 'pagehide')) { try { const p = salvarFn(); if (p && p.catch) p.catch((err) => console.error(err)); } catch (err) { console.error(err); } }
+    };
+    const tirar = () => { document.removeEventListener('visibilitychange', ao); removeEventListener('pagehide', ao); };
+    document.addEventListener('visibilitychange', ao); addEventListener('pagehide', ao);
+    return tirar;
   }
   function inputTxt(obj, chave, attrs) {
     return h('input', Object.assign({ type: 'text', value: obj[chave] == null ? '' : obj[chave], oninput: (e) => { obj[chave] = e.target.value; } }, attrs || {}));
@@ -98,6 +109,127 @@
     const t = h('textarea', Object.assign({ oninput: (e) => { obj[chave] = e.target.value; } }, attrs || {}));
     t.value = obj[chave] == null ? '' : obj[chave];
     return t;
+  }
+
+  /* ---- campo de texto com negrito, itálico e sublinhado (3.18.6) ----
+     Mostra o texto já formatado (sem asteriscos) e guarda na marcação do app:
+     **negrito**, *itálico*, __sublinhado__ — a mesma que o gerador do Word entende. Uma linha = um parágrafo. */
+  const RT_BLOCO = /^(DIV|P|LI|UL|OL|H[1-6]|BLOCKQUOTE|PRE)$/;
+  function rtParaNos(texto) {
+    return String(texto == null ? '' : texto).split('\n').map((l) => {
+      const linha = h('div');
+      const partes = (window.DocGen && DocGen.partesRicas) ? DocGen.partesRicas(l) : [{ t: l }];
+      for (const pc of partes) {
+        if (!pc.t) continue;
+        let no = document.createTextNode(pc.t);
+        if (pc.u) { const e = h('u'); e.appendChild(no); no = e; }
+        if (pc.i) { const e = h('i'); e.appendChild(no); no = e; }
+        if (pc.b) { const e = h('b'); e.appendChild(no); no = e; }
+        linha.appendChild(no);
+      }
+      if (!linha.childNodes.length) linha.appendChild(h('br'));
+      return linha;
+    });
+  }
+  function rtParaTexto(raiz) {
+    // asterisco/sublinhado soltos digitados são texto (ex.: "nota (*)", "5*3"): vão com barra e não viram formatação.
+    // "**texto**" e "__texto__" digitados continuam valendo como negrito/sublinhado (era assim antes da barra B/I/U)
+    const esc = (t) => t.replace(/\*+/g, (m) => (m.length === 1 ? '\\*' : m)).replace(/_+/g, (m) => (m.length === 1 ? '\\_' : m));
+    const escTudo = (t) => t.replace(/([*_])/g, '\\$1'); // dentro de um trecho já formatado, todo asterisco é texto
+    const linhas = []; let cur = [], sujo = false;
+    const quebra = () => { linhas.push(cur); cur = []; sujo = false; };
+    const walk = (no, f) => {
+      for (const c of no.childNodes) {
+        if (c.nodeType === 3) { const t = c.textContent.replace(/ /g, ' ').replace(/[\r\n]+/g, ' '); if (t) { cur.push({ t, b: !!f.b, i: !!f.i, u: !!f.u }); sujo = true; } continue; }
+        if (c.nodeType !== 1) continue;
+        const tg = c.tagName;
+        if (tg === 'BR') { if (c === no.lastChild && (no === raiz || RT_BLOCO.test(no.tagName)) && (sujo || no !== raiz)) continue; quebra(); continue; }
+        const nf = Object.assign({}, f), st = c.style || {};
+        const peso = st.fontWeight;
+        if (tg === 'B' || tg === 'STRONG' || peso === 'bold' || +peso >= 600) nf.b = true;
+        if (peso === 'normal' || (+peso && +peso < 600)) nf.b = false;
+        if (tg === 'I' || tg === 'EM' || st.fontStyle === 'italic') nf.i = true;
+        if (st.fontStyle === 'normal') nf.i = false;
+        if (tg === 'U' || /underline/.test(st.textDecoration || st.textDecorationLine || '')) nf.u = true;
+        if (RT_BLOCO.test(tg)) { if (sujo) quebra(); const antes = linhas.length; walk(c, nf); if (sujo || linhas.length === antes) quebra(); }
+        else walk(c, nf);
+      }
+    };
+    walk(raiz, {});
+    if (sujo) quebra();
+    // cada linha: junta trechos com a mesma formatação e escreve os marcadores só onde a formatação muda
+    const txt = linhas.map((segs) => {
+      const m = [];
+      for (const s of segs) { const u = m[m.length - 1]; if (u && u.b === s.b && u.i === s.i && u.u === s.u) u.t += s.t; else m.push(Object.assign({}, s)); }
+      let out = '', at = { b: false, i: false, u: false };
+      const MK = { b: '**', i: '*', u: '__' };
+      const muda = (nv) => { let x = ''; for (const k of ['u', 'i', 'b']) if (at[k] && !nv[k]) x += MK[k]; for (const k of ['b', 'i', 'u']) if (!at[k] && nv[k]) x += MK[k]; at = nv; return x; };
+      for (const s of m) {
+        if (!(s.b || s.i || s.u) || !s.t.trim()) { out += muda({ b: false, i: false, u: false }) + esc(s.t); continue; }
+        // espaços das pontas ficam fora dos marcadores
+        const ini = s.t.match(/^\s*/)[0], fim = s.t.match(/\s*$/)[0], meio = s.t.slice(ini.length, s.t.length - fim.length);
+        out += muda({ b: false, i: false, u: false }) + ini + muda({ b: s.b, i: s.i, u: s.u }) + escTudo(meio); if (fim) out += muda({ b: false, i: false, u: false }) + fim;
+      }
+      return out + muda({ b: false, i: false, u: false });
+    }).join('\n');
+    return txt.replace(/\s+$/, '') ? txt.replace(/\n+$/, '') : '';
+  }
+  let rtOuvindo = false;
+  function rtEstado() {
+    const sel = document.getSelection(); const no = sel && sel.anchorNode;
+    const ed = no && (no.nodeType === 1 ? no : no.parentElement); const rt = ed && ed.closest && ed.closest('.rt');
+    for (const b of document.querySelectorAll('.rt-bar button.on')) if (!rt || !rt.contains(b)) b.classList.remove('on');
+    if (!rt) return;
+    for (const b of rt.querySelectorAll('.rt-bar button')) { let on = false; try { on = document.queryCommandState(b.dataset.c); } catch (e) { /* */ } b.classList.toggle('on', !!on); }
+  }
+  /* editorRico({ valor, aoMudar(texto), rotulo, placeholder, mini, attrs }) → elemento .rt
+     el.ed é o campo; el.valor() devolve a marcação; el.definir(texto) troca o conteúdo */
+  function editorRico(o) {
+    o = o || {};
+    if (!rtOuvindo) { rtOuvindo = true; document.addEventListener('selectionchange', rtEstado); }
+    const ed = h('div', Object.assign({ class: 'rt-ed', contenteditable: 'true', spellcheck: 'true', role: 'textbox', 'aria-multiline': 'true', 'aria-label': o.rotulo || 'Texto', 'data-ph': o.placeholder || '' }, o.attrs || {}));
+    const vazio = () => ed.classList.toggle('vazio', !ed.textContent.trim());
+    const mudou = () => { vazio(); if (o.aoMudar) o.aoMudar(rtParaTexto(ed)); };
+    const botao = (c, txt, nome, atalho) => h('button', { type: 'button', class: 'rt-' + c[0], 'data-c': c, title: nome + ' (Ctrl+' + atalho + ')', 'aria-label': nome, tabindex: '-1',
+      onmousedown: (e) => e.preventDefault(), // não tira a seleção do campo
+      onclick: () => {
+        const sel = document.getSelection();
+        if (!sel || !sel.rangeCount || sel.isCollapsed || !ed.contains(sel.anchorNode) || !ed.contains(sel.focusNode)) { toast('Selecione o trecho primeiro'); ed.focus(); return; }
+        try { document.execCommand('styleWithCSS', false, false); } catch (e) { /* */ }
+        document.execCommand(c); mudou(); rtEstado();
+      } }, txt);
+    if (o.ro) { ed.setAttribute('contenteditable', 'false'); ed.removeAttribute('role'); }
+    const el = h('div', { class: 'rt' + (o.mini ? ' rt-mini' : '') + (o.ro ? ' rt-ro' : '') },
+      h('div', { class: 'rt-bar', role: 'toolbar', 'aria-label': 'Formatação' }, botao('bold', 'B', 'Negrito', 'B'), botao('italic', 'I', 'Itálico', 'I'), botao('underline', 'U', 'Sublinhado', 'U'),
+        o.mini ? null : h('span', { class: 'rt-dica' }, 'selecione o trecho e toque')),
+      ed);
+    ed.addEventListener('input', mudou);
+    el.addEventListener('click', (e) => { if (el.parentElement && el.parentElement.closest('label')) e.preventDefault(); }); // dentro de <label>: não repassa o clique
+    ed.addEventListener('focus', () => { try { document.execCommand('defaultParagraphSeparator', false, 'div'); } catch (e) { /* */ } });
+    ed.addEventListener('paste', (e) => { e.preventDefault(); const t = (e.clipboardData || window.clipboardData).getData('text/plain'); document.execCommand('insertText', false, t); });
+    ed.addEventListener('drop', (e) => { if (e.dataTransfer && e.dataTransfer.types && [...e.dataTransfer.types].includes('text/html')) { e.preventDefault(); } });
+    const definir = (t) => { ed.textContent = ''; if (String(t || '') !== '') for (const l of rtParaNos(t)) ed.appendChild(l); vazio(); };
+    definir(o.valor);
+    Object.defineProperty(ed, 'valorMarcado', { get: () => rtParaTexto(ed) });
+    ed.definirMarcado = (t) => { definir(t); mudou(); }; // para testes e para "restaurar"
+    Object.defineProperty(el, 'value', { get: () => rtParaTexto(ed), set: (t) => definir(t) }); // usado como um textarea
+    el.ed = ed; el.valor = () => rtParaTexto(ed); el.definir = definir;
+    el.focus = () => ed.focus();
+    return el;
+  }
+  /* troca direta de inputArea por um campo com B/I/U: o oninput recebe { target } com .value (a marcação) */
+  function areaRica(obj, chave, attrs) {
+    attrs = Object.assign({}, attrs || {});
+    const oninput = attrs.oninput; delete attrs.oninput;
+    const ro = !!attrs.readonly; delete attrs.readonly;
+    const ph = attrs.placeholder || ''; delete attrs.placeholder;
+    const rot = attrs['aria-label']; delete attrs['aria-label'];
+    const est = attrs.style; delete attrs.style; delete attrs.rows;
+    let el = null;
+    el = editorRico({ valor: obj[chave] == null ? '' : obj[chave], ro, placeholder: ro ? '' : ph, rotulo: rot, mini: attrs.mini, attrs: Object.assign({ class: 'rt-ed' }, (() => { const a = Object.assign({}, attrs); delete a.mini; return a; })()),
+      aoMudar: (t) => { obj[chave] = t; if (oninput) oninput({ target: el }); } });
+    if (est && est.minHeight) el.ed.style.minHeight = est.minHeight;
+    return el;
   }
 
   function baixarBlob(blob, nome) {
@@ -245,10 +377,16 @@
   const nomeFeriado = (iso) => { const m = mapaFeriados(); const v = m.get(iso) || m.get(String(iso).slice(5)); return v ? v.nome : ''; };
   function ehDiaUtil(d, fer) { const w = d.getDay(), iso = isoDe(d); return w !== 0 && w !== 6 && !fer.has(iso) && !fer.has(iso.slice(5)); }
   /* prazo final sempre recalculado (um feriado cadastrado depois do envio passa a contar) */
-  const prazoDe = (n) => (n.enviadaEm ? prazoFinalUteis(n.enviadaEm, n.prazoDiasEnvio || n.prazo_dias) : n.prazoFinal);
+  const prazoOriginal = (n) => (n.enviadaEm ? prazoFinalUteis(n.enviadaEm, n.prazoDiasEnvio || n.prazo_dias) : n.prazoFinal);
+  /* 3.18.6: contrarresposta — depois da resposta, a nossa réplica com novo prazo. Enquanto a última não for
+     respondida, é o prazo dela que vale (Prazos, Início, avisos). */
+  const rodadaAberta = (n) => { const l = (n && n.rodadas) || []; const u = l[l.length - 1]; return n && n.respondidaEm && u && u.enviadaEm && !u.respondidaEm ? u : null; };
+  const prazoDe = (n) => { const ro = rodadaAberta(n); return ro ? prazoFinalUteis(ro.enviadaEm, ro.prazoDias || 3) : prazoOriginal(n); };
   /* 3.18.2: o prazo conta a partir da data E do horário do envio — vence no último dia útil do prazo, no mesmo horário.
      Notificações registradas antes (sem horário) continuam vencendo no fim do dia. */
-  const horaEnvio = (n) => (n && /^\d\d:\d\d$/.test(String(n.enviadaHora || '')) ? n.enviadaHora : '');
+  const horaValida = (x) => (/^\d\d:\d\d$/.test(String(x || '')) ? x : '');
+  const horaEnvio = (n) => { if (!n) return ''; const ro = rodadaAberta(n); return horaValida(ro ? ro.enviadaHora : n.enviadaHora); };
+  const horaEnv0 = (n) => horaValida(n && n.enviadaHora); // horário do envio da notificação (não da contrarresposta)
   const agoraHM = () => { const d = new Date(); return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0'); };
   const comHora = (n) => (horaEnvio(n) ? ' às ' + horaEnvio(n) : '');
   function prazoFinalUteis(isoEnvio, dias) {
@@ -274,16 +412,20 @@
     if (!n.enviadaEm) return n.assinaturaEm
       ? { k: 'nao_enviada', assinatura: true, txt: 'Inserida para assinatura · não enviada', cls: 'info', ordem: 2 }
       : { k: 'nao_enviada', txt: 'Emitida · aguardando assinatura', cls: 'info', ordem: 2 };
-    if (n.respondidaEm) {
-      const atraso = prazoDe(n) && n.respondidaEm > prazoDe(n);
+    const ro = rodadaAberta(n);
+    if (n.respondidaEm && !ro) {
+      const rods = n.rodadas || [], ult = rods[rods.length - 1];
+      if (ult && ult.respondidaEm) return { k: 'respondida', txt: 'Contrarresposta respondida em ' + X.dataBR(ult.respondidaEm), cls: 'ok', ordem: 3 };
+      const po = prazoOriginal(n), atraso = po && n.respondidaEm > po;
       return { k: 'respondida', txt: 'Respondida em ' + X.dataBR(n.respondidaEm) + (atraso ? ' (fora do prazo)' : ''), cls: 'ok', ordem: 3 };
     }
     const pf = prazoDe(n);
     const r = uteisRestantes(pf);
     const hh = horaEnvio(n);
-    if (r < 0) return { k: 'vencida', txt: 'Prazo encerrado em ' + X.dataBR(pf) + comHora(n) + ' (há ' + -r + (r === -1 ? ' dia)' : ' dias)'), cls: 'perigo', ordem: 0, restante: r };
-    if (r === 0 && hh && pf === X.hojeISO() && agoraHM() >= hh) return { k: 'vencida', txt: 'Prazo encerrado hoje às ' + hh, cls: 'perigo', ordem: 0, restante: 0, hoje: true };
-    return { k: 'aguardando', txt: r === 0 ? 'Prazo termina hoje' + comHora(n) : r === 1 ? 'Falta 1 dia útil' : 'Faltam ' + r + ' dias úteis', cls: r <= 1 ? 'alerta' : 'info', ordem: 1, restante: r };
+    const pre = ro ? 'Contrarresposta: ' : '';
+    if (r < 0) return { k: 'vencida', contra: !!ro, txt: pre + 'Prazo encerrado em ' + X.dataBR(pf) + comHora(n) + ' (há ' + -r + (r === -1 ? ' dia)' : ' dias)'), cls: 'perigo', ordem: 0, restante: r };
+    if (r === 0 && hh && pf === X.hojeISO() && agoraHM() >= hh) return { k: 'vencida', contra: !!ro, txt: pre + 'Prazo encerrado hoje às ' + hh, cls: 'perigo', ordem: 0, restante: 0, hoje: true };
+    return { k: 'aguardando', contra: !!ro, txt: pre + (r === 0 ? 'Prazo termina hoje' + comHora(n) : r === 1 ? 'Falta 1 dia útil' : 'Faltam ' + r + ' dias úteis'), cls: r <= 1 ? 'alerta' : 'info', ordem: 1, restante: r };
   }
 
   /* ================================================================== */
@@ -444,7 +586,7 @@
   }
   function redesenharMantendo() {
     const ativo = document.activeElement;
-    if (ativo && $main.contains(ativo) && /^(INPUT|TEXTAREA|SELECT)$/.test(ativo.tagName)) {
+    if (ativo && $main.contains(ativo) && (/^(INPUT|TEXTAREA|SELECT)$/.test(ativo.tagName) || ativo.isContentEditable)) {
       if (!redesenhoPendente) {
         redesenhoPendente = true;
         const seq = rotaSeq;
@@ -509,6 +651,8 @@
     delete document.body.dataset.foco;
     if (!manterRolagem) window.scrollTo(0, 0);
     document.querySelectorAll('.fab').forEach((f) => f.remove());
+    // "Ver documento" da notificação aberto em tela cheia (ex.: botão Voltar do Android): fecha junto
+    document.querySelectorAll('.nf-doc-tela').forEach((f) => f.remove()); document.body.classList.remove('nf-doc-aberto');
     if (Sync.habilitado() && !App.usuario() && r !== 'config') return telaLogin();
     if (Sync.habilitado() && Sync.estado === 'sem_acesso' && r !== 'config') return telaLogin(Sync.erro);
     atualizarNavCam();
@@ -562,6 +706,9 @@
     if (!Sync.habilitado() || !pode.admin()) return;
     if (!(await DB.kvGet('ultimaSync', null))) return;
     if (await DB.get('config', 'geral')) return;
+    // a configuração da equipe chegou mas não pôde ser gravada neste aparelho: não cria a padrão por cima dela
+    const falhos = (await DB.kvGet('recebidosFalhos', {})) || {};
+    if (Object.keys(falhos).some((k) => /^(config|pessoas):/.test(k))) return;
     const c = JSON.parse(JSON.stringify(CONFIG_PADRAO));
     c.fiscais_padrao = ['p-talison', 'p-hiago', 'p-marcelo'];
     c.coordenadores_padrao = ['p-norberto', 'p-andressa'];
@@ -726,12 +873,12 @@
       const r = d.porId.get(n.registroId); if (!r) continue;
       const s = situacaoNotif(n), nome = r.apelido || ROTULO[r.tipo];
       const tit = (n.ordinal || '?') + 'ª notificação · ' + nome;
-      if (s.k === 'vencida') out.push({ grupo: 'venc', ord: -1000 + s.restante, ic: 'sino', c: 'er', t: tit, d: 'Sem resposta ' + (r.tipo === 'convenio' ? 'da prefeitura' : 'da empresa') + ' · prazo terminou ' + dataCurta(prazoDe(n)) + comHora(n), n: s.hoje ? 'hoje' : -s.restante, u: s.hoje ? 'às ' + horaEnvio(n) : 'dias atrás', href: '#/notificacao/' + n.id });
-      else if (s.k === 'aguardando') out.push({ grupo: s.restante <= 30 ? 'prox' : 'depois', ord: s.restante, ic: 'sino', c: 'al', t: tit, d: 'Resposta até ' + dataCurta(prazoDe(n)) + comHora(n) + ((n.aditivosPrazo || []).length ? ' · prazo aditado' : ''), n: s.restante, u: s.restante === 1 ? 'dia útil' : 'dias úteis', href: '#/notificacao/' + n.id });
+      if (s.k === 'vencida') out.push({ grupo: 'venc', ord: -1000 + s.restante, ic: 'sino', c: 'er', t: tit, d: (s.contra ? 'Contrarresposta · ' : '') + 'Sem resposta ' + (r.tipo === 'convenio' ? 'da prefeitura' : 'da empresa') + ' · prazo terminou ' + dataCurta(prazoDe(n)) + comHora(n), n: s.hoje ? 'hoje' : -s.restante, u: s.hoje ? 'às ' + horaEnvio(n) : 'dias atrás', href: '#/notificacao/' + n.id });
+      else if (s.k === 'aguardando') out.push({ grupo: s.restante <= 30 ? 'prox' : 'depois', ord: s.restante, ic: 'sino', c: 'al', t: tit, d: (s.contra ? 'Contrarresposta · ' : '') + 'Resposta até ' + dataCurta(prazoDe(n)) + comHora(n) + ((n.aditivosPrazo || []).length ? ' · prazo aditado' : ''), n: s.restante, u: s.restante === 1 ? 'dia útil' : 'dias úteis', href: '#/notificacao/' + n.id });
       else if (s.k === 'nao_enviada') out.push(s.assinatura
         ? { grupo: 'prox', ord: -1, ic: 'lapis', c: 'acc', t: tit, d: 'Na assinatura desde ' + dataCurta(n.assinaturaEm) + ' · falta registrar o envio', n: '—', u: 'enviar', href: '#/notificacao/' + n.id }
         : { grupo: 'prox', ord: -2, ic: 'lapis', c: 'in', t: tit, d: 'Emitida, falta inserir para assinatura', n: '—', u: 'assinar', href: '#/notificacao/' + n.id });
-      else if (s.k === 'rascunho') out.push({ grupo: 'rasc', ord: 0, ic: 'doc', c: '', t: 'Rascunho de notificação · ' + nome, d: 'Criada ' + haQuanto(String(n.criadoEm || n.data || '').slice(0, 10)), n: '—', u: 'concluir', href: '#/notificacao/' + n.id });
+      else if (s.k === 'rascunho') out.push({ grupo: 'rasc', ord: 0, ic: 'doc', c: '', t: 'Rascunho de notificação · ' + nome, d: 'Criada ' + haQuanto(n.criadoEm && !isNaN(new Date(n.criadoEm)) ? isoDe(new Date(n.criadoEm)) : String(n.data || '').slice(0, 10)), n: '—', u: 'concluir', href: '#/notificacao/' + n.id });
     }
     for (const r of d.regs) {
       const nome = r.apelido || ROTULO[r.tipo];
@@ -765,7 +912,7 @@
   function eventosDia(d, di) {
     const ev = [];
     for (const n of d.notifs) {
-      if (n.status !== 'emitida' || !n.enviadaEm || n.respondidaEm || prazoDe(n) !== di) continue;
+      if (n.status !== 'emitida' || !n.enviadaEm || (n.respondidaEm && !rodadaAberta(n)) || prazoDe(n) !== di) continue;
       const r = d.porId.get(n.registroId);
       ev.push({ ic: 'sino', c: 'al', t: 'Vence a resposta da ' + (n.ordinal || '?') + 'ª notificação', d: (r.apelido || '') + ' · ' + (r.n_nome || ''), n: '', href: '#/notificacao/' + n.id });
     }
@@ -2691,11 +2838,11 @@
       campo('Última notificação emitida antes de usar o app', ultimaInp, 'Ex.: se já foram emitidas 5 notificações, informe 5 (a próxima será a 6ª). Se ficar vazio, o app pergunta na primeira notificação.'),
       campo('Prazo para resposta (dias úteis)', h('input', { type: 'number', min: '1', value: r.prazo_dias || CONFIG.prazo_padrao, oninput: (e) => { r.prazo_dias = parseInt(e.target.value, 10) || CONFIG.prazo_padrao; resumir(); } }))], false);
 
-    const sancArea = inputArea(r, 'sancoes', { placeholder: 'Em branco = usa as sanções do modelo do Word.', style: { minHeight: '180px' } });
+    const sancArea = areaRica(r, 'sancoes', { placeholder: 'Em branco = usa as sanções do modelo do Word.', style: { minHeight: '180px' } });
     const secSanc = bloco('sanc', 'Sanções administrativas', [
       h('p', { class: 'sub', style: { margin: 0 } }, 'Texto da seção “Possíveis sanções administrativas” deste ' + rot + '. Deixe em branco para usar o texto padrão do modelo.'),
       sancArea,
-      h('div', { class: 'dica' }, 'Cada linha vira um parágrafo. Use **texto** para negrito (ex.: **16.1.** Comete infração…).'),
+      h('div', { class: 'dica' }, 'Cada linha vira um parágrafo · selecione um trecho e toque em B, I ou U (ex.: “16.1.” em negrito).'),
       h('div', { class: 'acoes' },
         h('button', { class: 'btn peq', type: 'button', onclick: async () => {
           if (r.sancoes && r.sancoes.trim() && !(await confirmar('Substituir o texto atual pelo texto padrão do modelo?', 'Substituir'))) return;
@@ -3171,10 +3318,10 @@
     const num = (k, attrs) => h('input', Object.assign({ type: 'number', inputmode: 'decimal', value: v[k] == null ? '' : v[k], readonly: ro,
       oninput: (e) => { v[k] = e.target.value === '' ? null : Number(e.target.value); marcar(); } }, attrs || {}));
     const txt = (k, attrs) => inputTxt(v, k, Object.assign({ readonly: ro, oninput: (e) => { v[k] = e.target.value; marcar(); } }, attrs || {}));
-    const area = (k, attrs) => inputArea(v, k, Object.assign({ readonly: ro, oninput: (e) => { v[k] = e.target.value; marcar(); } }, attrs || {}));
+    const area = (k, attrs) => areaRica(v, k, Object.assign({ readonly: ro, oninput: (e) => { v[k] = e.target.value; marcar(); } }, attrs || {}));
 
     // observações gerais à vista (o que mais se escreve na obra)
-    const obs = h('div', { class: nc('obs') }, campo('Observações gerais', area('observacoes', { placeholder: 'O que foi visto na obra…' }), 'Use **texto** para negrito. Cada linha vira um parágrafo.'), podeEd ? statusObs : null);
+    const obs = h('div', { class: nc('obs') }, campo('Observações gerais', area('observacoes', { placeholder: 'O que foi visto na obra…' }), 'Selecione um trecho e toque em B, I ou U · cada linha vira um parágrafo.'), podeEd ? statusObs : null);
 
     // condições do canteiro: clima em botões, trabalhadores com + e −, avanço em barra
     const climaBox = h('div', { class: nc('climas') });
@@ -4229,11 +4376,28 @@
     await pausaTela();
     const dados = DocGen.montarDados(reg, Object.assign({}, n, { fotosDoc }));
     prog.set(null, 0.75);
-    const blob = await DocGen.gerar(await modeloDocx(reg.tipo), dados, { type: 'blob', larguraFotoCm: 13, aoProgresso: jp ? progGravar(jp, 0.75, 1) : undefined });
+    const modelo = await modeloDocx(reg.tipo);
+    const secoes = await secoesEditadas(n, modelo, dados);
+    const blob = await DocGen.gerar(modelo, dados, { type: 'blob', larguraFotoCm: 13, secoes, aoProgresso: jp ? progGravar(jp, 0.75, 1) : undefined });
     const nome = nomeArquivo(n.ordinal + 'ª NOTIFICAÇÃO - ' + (reg.apelido || ROTULO[reg.tipo])) + '.docx';
     return { blob, nome };
   }
 
+  /* 3.18.6: textos editados na tela da notificação (Dos fatos: antes e depois da lista; Providências).
+     null = usa o texto do próprio modelo do Word (preenchido com os dados). */
+  const temTextoEditado = (n) => n.fatosAntes != null || n.fatosDepois != null || n.provTexto != null;
+  const linhasItens = (itens) => (itens || []).map((t) => '- ' + String(t.texto != null ? t.texto : t).replace(/\s*\n\s*/g, ' ').trim()).filter((l) => l !== '- ');
+  async function secoesEditadas(n, modelo, dados) {
+    if (!temTextoEditado(n)) return null;
+    const auto = await DocGen.textoSecoes(modelo, dados);
+    if (!auto.ok) return null; // modelo próprio sem os títulos das seções: segue o modelo
+    const fatosEd = n.fatosAntes != null || n.fatosDepois != null;
+    const ant = n.fatosAntes != null ? n.fatosAntes : auto.fatosAntes, dep = n.fatosDepois != null ? n.fatosDepois : auto.fatosDepois;
+    return {
+      fatos: fatosEd ? [ant, linhasItens(dados.itens).join('\n'), dep].filter((x) => String(x || '').trim()).join('\n') : null,
+      prov: n.provTexto != null ? n.provTexto : null,
+    };
+  }
   // rascunho: projeto atual da irregularidade da foto anexada (a menos que tenha sido desmarcado)
   async function projetoDaSel(sel) {
     if (sel.semProjeto) return null;
@@ -4553,7 +4717,7 @@
   async function verificarPrazosInterno() {
     try {
       const regs = new Map((await DB.all('registros')).map((r) => [r.id, r]));
-      const ativas = (await DB.listar('notificacoes')).filter((n) => { const r = regs.get(n.registroId); return r && !r.excluido && n.status === 'emitida' && n.enviadaEm && !n.respondidaEm; });
+      const ativas = (await DB.listar('notificacoes')).filter((n) => { const r = regs.get(n.registroId); return r && !r.excluido && n.status === 'emitida' && n.enviadaEm && (!n.respondidaEm || rodadaAberta(n)); });
       const vencidas = ativas.filter((n) => situacaoNotif(n).k === 'vencida');
       const hoje = ativas.filter((n) => { const st = situacaoNotif(n); return st.k === 'aguardando' && st.restante === 0; });
       const b = document.getElementById('badge-notif');
@@ -4592,7 +4756,7 @@
     o.enviadaPor = email();
   }
   async function pedirDataEnvio(n, inicial) {
-    const d = { data: inicial || X.hojeISO(), hora: inicial ? horaEnvio(n) : agoraHM() };
+    const d = { data: inicial || X.hojeISO(), hora: inicial ? horaEnv0(n) : agoraHM() };
     const dias = (+n.prazo_dias || 3) + ((n.aditivosPrazo || []).reduce((t, a) => t + (+a.dias || 0), 0));
     const inp = h('input', { type: 'date', value: d.data, max: X.hojeISO(), oninput: (e) => { d.data = e.target.value; prev(); } });
     const inpH = h('input', { type: 'time', value: d.hora, step: '60', 'aria-label': 'Horário do envio', oninput: (e) => { d.hora = e.target.value; prev(); } });
@@ -4626,6 +4790,32 @@
       if (d.data > X.hojeISO()) { toast('A data da resposta não pode ser futura.', true); return false; }
     } }]);
     return ok ? d : null;
+  }
+  async function pedirContra(n) {
+    const d = { data: X.hojeISO(), hora: agoraHM(), dias: +(CONFIG || {}).prazo_padrao || 3, obs: '' };
+    const quem = quemResponde(n.tipo);
+    const inD = h('input', { type: 'date', value: d.data, max: X.hojeISO(), min: n.respondidaEm || null, oninput: (e) => { d.data = e.target.value; prev(); } });
+    const inH = h('input', { type: 'time', value: d.hora, step: '60', 'aria-label': 'Horário', oninput: (e) => { d.hora = e.target.value; prev(); } });
+    const inN = h('input', { type: 'number', min: '1', max: '365', value: d.dias, inputmode: 'numeric', 'aria-label': 'Dias úteis', oninput: (e) => { d.dias = Math.max(1, Math.min(365, parseInt(e.target.value, 10) || 0)); prev(); } });
+    const info = h('p', { class: 'sub' });
+    const prev = () => {
+      if (!d.data || !d.dias) { rc(info, ''); return; }
+      const fim = prazoFinalUteis(d.data, d.dias);
+      rc(info, 'Prazo para ' + quem + ' responder à contrarresposta: até ', h('b', {}, DIAS_L[dataD(fim).getDay()] + ', ' + X.dataBR(fim) + (d.hora ? ' às ' + d.hora : '')), ' (fins de semana e feriados não contam).');
+    };
+    prev();
+    const ok = await modal('↩️ Registrar contrarresposta', h('div', {},
+      h('p', {}, 'Nossa resposta à manifestação ' + (quem === 'a prefeitura' ? 'da prefeitura' : 'da empresa') + ', com um novo prazo para ' + quem + ' responder. Informe quando foi enviada.'),
+      h('div', { class: 'grade2' }, campo('Data do envio', inD), campo('Horário do envio', inH)),
+      campo('Prazo para responder (dias úteis)', inN), info,
+      campo('Resumo / documento (opcional)', inputArea(d, 'obs', { placeholder: 'Ex.: Ofício nº 45/2026 — não aceitamos a justificativa; pedimos o cronograma de troca.' }))),
+    [{ txt: 'Cancelar', valor: false }, { txt: 'Registrar', cls: 'pri', valor: true, antes: () => {
+      if (!d.data || !/^\d\d:\d\d$/.test(d.hora || '')) { toast('Informe a data e o horário do envio.', true); return false; }
+      if (d.data > X.hojeISO() || (d.data === X.hojeISO() && d.hora > agoraHM())) { toast('A data e o horário não podem ser futuros.', true); return false; }
+      if (n.respondidaEm && d.data < n.respondidaEm) { toast('A contrarresposta não pode ser anterior à resposta (' + X.dataBR(n.respondidaEm) + ').', true); return false; }
+      if (!(d.dias >= 1)) { toast('Informe o prazo em dias úteis.', true); return false; }
+    } }]);
+    return ok ? { enviadaEm: d.data, enviadaHora: d.hora, prazoDias: d.dias, obs: d.obs.trim() } : null;
   }
   /* Acompanhamento da notificação emitida: emitida → enviada → prazo (dias úteis) → resposta */
   /* 3.18.1: aditivo de prazo para responder a notificação (pedido da prefeitura/empresa). Soma dias úteis ao prazo
@@ -4713,7 +4903,7 @@
     const sit = situacaoNotif(n);
     const quem = quemResponde(n.tipo || r.tipo);
     const dias = +(n.prazoDiasEnvio || n.prazo_dias) || 3;
-    const pf = n.enviadaEm ? prazoDe(n) : null;
+    const pf = n.enviadaEm ? prazoOriginal(n) : null;
     const adits = n.aditivosPrazo || [];
     const diasOrig = dias - diasAditados(n);
     const btAditar = pode.notificar() && n.enviadaEm && !n.respondidaEm ? h('button', { class: 'btn peq', 'data-acao': 'aditar-prazo', onclick: async () => { if (await aditarPrazoNotif(n, r)) redesenhar(); } }, '⏩ Aditar prazo') : null;
@@ -4729,7 +4919,7 @@
       if (!envio) return;
       await atualizarCampos('notificacoes', n.id, (o) => aplicarEnvio(o, envio.data, envio.hora));
       await ativNotif(n, 'enviada', X.dataBR(envio.data) + ' às ' + envio.hora + (n.assinaturaEm ? '' : ' · registrada direto (já assinada)'));
-      toast('Envio registrado — prazo até ' + X.dataBR(prazoFinalUteis(envio.data, +n.prazo_dias || 3)) + ' às ' + envio.hora);
+      toast('Envio registrado — prazo até ' + X.dataBR(prazoFinalUteis(envio.data, (+n.prazo_dias || 3) + diasAditados(n))) + ' às ' + envio.hora);
       verificarPrazos(); redesenhar();
     } }, '📨 Registrar envio') : null;
     const registrarResp = pode.notificar() && n.enviadaEm && !n.respondidaEm ? h('button', { class: 'btn ok peq', onclick: async () => {
@@ -4741,6 +4931,15 @@
     } }, '✅ Registrar resposta') : null;
     // contador de dias úteis
     let contador = null;
+    const contadorDe = (sit, dias, horaEnvio) => {
+      const venc = sit.k === 'vencida';
+      const rest = venc ? -sit.restante : sit.restante;
+      const usados = Math.max(0, Math.min(dias, dias - (venc ? 0 : sit.restante)));
+      return h('div', {},
+        h('div', { class: nc('contador') }, h('b', { class: nc('num'), style: { color: 'var(--' + (venc ? 'er' : 'al') + ')' } }, sit.hoje ? horaEnvio : String(rest)), h('span', { class: 'sub' }, sit.hoje ? 'prazo encerrado hoje' : venc ? (rest === 1 ? 'dia de atraso' : 'dias de atraso') : rest === 1 ? 'dia útil restante' : rest === 0 && horaEnvio ? 'dias úteis restantes · termina hoje às ' + horaEnvio : 'dias úteis restantes')),
+        dias <= 20 ? h('div', { class: nc('dias-u') }, Array.from({ length: dias }, (_, i) => h('i', { class: i < (venc ? dias : usados) ? nc(venc ? 'v' : 'p') : null })))
+          : h('div', { class: nc('barra ' + (venc ? 'er' : 'al')), style: { marginTop: '8px', height: '8px' } }, h('i', { style: { width: Math.round(100 * (venc ? dias : usados) / dias) + '%' } })));
+    };
     if (n.enviadaEm && !n.respondidaEm) {
       const venc = sit.k === 'vencida';
       const rest = venc ? -sit.restante : sit.restante;
@@ -4749,6 +4948,31 @@
         h('div', { class: nc('contador') }, h('b', { class: nc('num'), style: { color: 'var(--' + (venc ? 'er' : 'al') + ')' } }, sit.hoje ? horaEnvio(n) : String(rest)), h('span', { class: 'sub' }, sit.hoje ? 'prazo encerrado hoje' : venc ? (rest === 1 ? 'dia de atraso' : 'dias de atraso') : rest === 1 ? 'dia útil restante' : rest === 0 && horaEnvio(n) ? 'dias úteis restantes · termina hoje às ' + horaEnvio(n) : 'dias úteis restantes')),
         dias <= 20 ? h('div', { class: nc('dias-u') }, Array.from({ length: dias }, (_, i) => h('i', { class: i < (venc ? dias : usados) ? nc(venc ? 'v' : 'p') : null })))
           : h('div', {}, h('div', { class: nc('barra ' + (venc ? 'er' : 'al')), style: { marginTop: '8px', height: '8px' } }, h('i', { style: { width: Math.round(100 * (venc ? dias : usados) / dias) + '%' } })), h('div', { class: 'sub', style: { marginTop: '4px' } }, usados + ' de ' + dias + ' dias úteis')));
+    }
+    // contrarrespostas: para cada uma, "enviada" e "resposta" (com o prazo e o contador enquanto aberta)
+    function passosContra() {
+      const rods = n.rodadas || [];
+      const daQuem = quem === 'a prefeitura' ? 'da prefeitura' : 'da empresa';
+      return rods.map((ro, i) => {
+        const k = rods.length > 1 ? ' ' + (i + 1) : '';
+        const dias = +ro.prazoDias || 3, fim = prazoFinalUteis(ro.enviadaEm, dias), hh = horaValida(ro.enviadaHora);
+        const aberta = !ro.respondidaEm && i === rods.length - 1;
+        const btResp = aberta && pode.notificar() ? h('button', { class: 'btn ok peq', 'data-acao': 'resposta-contra', onclick: async () => {
+          const resp = await pedirResposta({ tipo: n.tipo, enviadaEm: ro.enviadaEm });
+          if (!resp) return;
+          await atualizarCampos('notificacoes', n.id, (o) => { o.rodadas = (o.rodadas || []).map((x) => (x.id === ro.id ? Object.assign({}, x, { respondidaEm: resp.data, respostaObs: resp.obs.trim(), respondidaPor: email() }) : x)); });
+          await ativNotif(n, 'resposta à contrarresposta' + k, X.dataBR(resp.data) + (resp.obs.trim() ? ' · ' + resp.obs.trim() : ''));
+          toast('Resposta registrada'); verificarPrazos(); redesenhar();
+        } }, '✅ Registrar resposta') : null;
+        return [
+          passo('feito', 6 + i * 2, 'Contrarresposta' + k + ' enviada', X.dataBR(ro.enviadaEm) + (hh ? ' às ' + hh : '') + ' · prazo de ' + plural(dias, 'dia útil', 'dias úteis') + (ro.por ? ' · registrado por ' + nomeDe(ro.por) : ''),
+            ro.obs ? h('div', { class: nc('adp-just') }, ro.obs) : null),
+          passo(ro.respondidaEm ? 'feito' : 'agora', 7 + i * 2, ro.respondidaEm ? 'Respondida' : 'Resposta ' + daQuem + ' à contrarresposta',
+            ro.respondidaEm ? X.dataBR(ro.respondidaEm) + (ro.respondidaEm > fim ? ' (fora do prazo)' : '') + (ro.respondidaPor ? ' · registrado por ' + nomeDe(ro.respondidaPor) : '') + (ro.respostaObs ? ' · ' + ro.respostaObs : '')
+              : (sit.k === 'vencida' ? 'Terminou em ' : 'Vence em ') + DIAS_L[dataD(fim).getDay()] + ', ' + X.dataBR(fim) + (hh ? ' às ' + hh : ''),
+            aberta ? [contadorDe(sit, dias, hh), h('div', { class: 'acoes', style: { marginTop: '10px' } }, btResp)] : null),
+        ];
+      });
     }
     const card = h('div', { class: 'card' }, h('h2', {}, 'Envio e prazo de resposta'),
       h('div', { class: 'etqs', style: { marginTop: 0, marginBottom: '12px' } }, etq(sit.txt, sit.cls), adits.length ? etq(adits.length === 1 ? 'Prazo aditado' : 'Prazo aditado ' + adits.length + '×', 'acc') : null),
@@ -4770,15 +4994,28 @@
               h('button', { type: 'button', class: nc('lk') + ' lk-envio-direto', 'data-acao': 'envio-direto', onclick: () => registrarEnvio && registrarEnvio.click() }, 'Já foi assinada? Registrar o envio direto'))
             : null),
         passo(n.enviadaEm ? 'feito' : n.assinaturaEm ? 'agora' : '', 3, n.enviadaEm ? 'Enviada' : 'Enviar a ' + quem.replace(/^a /, ''),
-          n.enviadaEm ? X.dataBR(n.enviadaEm) + comHora(n) + (n.enviadaPor ? ' · registrado por ' + nomeDe(n.enviadaPor) : '')
+          n.enviadaEm ? X.dataBR(n.enviadaEm) + (horaEnv0(n) ? ' às ' + horaEnv0(n) : '') + (n.enviadaPor ? ' · registrado por ' + nomeDe(n.enviadaPor) : '')
             : n.assinaturaEm ? 'Depois de assinada, envie e registre aqui a data e o horário do envio: o prazo conta a partir desse momento.' : 'Fica disponível depois da assinatura.',
           n.enviadaEm || !n.assinaturaEm ? null : registrarEnvio),
         passo(n.respondidaEm ? 'feito' : n.enviadaEm ? 'agora' : '', 4, 'Prazo de ' + dias + (dias === 1 ? ' dia útil' : ' dias úteis') + (adits.length ? ' (' + diasOrig + ' + ' + (dias - diasOrig) + ' aditados)' : ''),
-          pf ? (sit.k === 'vencida' ? 'Terminou em ' : 'Vence em ') + DIAS_L[dataD(pf).getDay()] + ', ' + X.dataBR(pf) + comHora(n) + (horaEnvio(n) ? ' (contado a partir do envio, às ' + horaEnvio(n) + '; fins de semana e feriados não contam)' : ' (fins de semana e feriados não contam)') : 'Conta a partir da data e do horário do envio',
+          pf ? (sit.k === 'vencida' ? 'Terminou em ' : 'Vence em ') + DIAS_L[dataD(pf).getDay()] + ', ' + X.dataBR(pf) + (horaEnv0(n) ? ' às ' + horaEnv0(n) : '') + (horaEnv0(n) ? ' (contado a partir do envio, às ' + horaEnv0(n) + '; fins de semana e feriados não contam)' : ' (fins de semana e feriados não contam)') : 'Conta a partir da data e do horário do envio',
           [contador, listaAdits, btAditar ? h('div', { class: 'acoes', style: { marginTop: '10px' } }, btAditar) : null]),
         passo(n.respondidaEm ? 'feito' : '', 5, n.respondidaEm ? 'Respondida' : 'Resposta ' + (quem === 'a prefeitura' ? 'da prefeitura' : 'da empresa'),
           n.respondidaEm ? X.dataBR(n.respondidaEm) + (n.respondidaEm > pf ? ' (fora do prazo)' : '') + (n.respondidaPor ? ' · registrado por ' + nomeDe(n.respondidaPor) : '') + (n.respostaObs ? ' · ' + n.respostaObs : '') : 'Registre quando ' + quem + ' responder.',
-          registrarResp)));
+          registrarResp),
+        passosContra()));
+    if (pode.notificar() && n.respondidaEm && !rodadaAberta(n)) {
+      ap(card, h('div', { class: 'acoes' }, h('button', { class: 'btn pri peq', 'data-acao': 'contrarresposta', onclick: async () => {
+        const c = await pedirContra(n);
+        if (!c) return;
+        const ro = Object.assign({ id: DB.uuid(), por: email(), em: new Date().toISOString() }, c);
+        await atualizarCampos('notificacoes', n.id, (o) => { o.rodadas = (o.rodadas || []).concat(ro); });
+        const k = (n.rodadas || []).length + 1;
+        await ativNotif(n, (k > 1 ? k + 'ª ' : '') + 'contrarresposta enviada', X.dataBR(c.enviadaEm) + ' às ' + c.enviadaHora + ' · prazo de ' + plural(c.prazoDias, 'dia útil', 'dias úteis') + ' (até ' + X.dataBR(prazoFinalUteis(c.enviadaEm, c.prazoDias)) + ' às ' + c.enviadaHora + ')' + (c.obs ? '\n' + c.obs : ''));
+        toast('Contrarresposta registrada — prazo até ' + X.dataBR(prazoFinalUteis(c.enviadaEm, c.prazoDias)) + ' às ' + c.enviadaHora);
+        verificarPrazos(); redesenhar();
+      } }, '↩️ Registrar contrarresposta')));
+    }
     if (pode.notificar() && n.assinaturaEm && !n.enviadaEm) {
       ap(card, h('div', { class: 'acoes' },
         h('button', { class: 'btn peq', 'data-acao': 'corrigir-assinatura', onclick: async () => {
@@ -4795,7 +5032,18 @@
     }
     if (pode.notificar() && n.enviadaEm) {
       ap(card, h('div', { class: 'acoes' },
-        n.respondidaEm ? h('button', { class: 'btn peq', onclick: async () => {
+        (n.rodadas || []).length ? (() => {
+          const rods = n.rodadas, ult = rods[rods.length - 1];
+          return h('button', { class: 'btn peq', 'data-acao': 'desfazer-contra', onclick: async () => {
+            if (!(await confirmar(ult.respondidaEm ? 'Desfazer o registro da resposta à contrarresposta?' : 'Desfazer a última contrarresposta?', 'Desfazer'))) return;
+            await atualizarCampos('notificacoes', n.id, (o) => {
+              const l = (o.rodadas || []).slice(); const u = l[l.length - 1];
+              if (u && u.respondidaEm) { l[l.length - 1] = Object.assign({}, u); delete l[l.length - 1].respondidaEm; delete l[l.length - 1].respostaObs; delete l[l.length - 1].respondidaPor; } else l.pop();
+              o.rodadas = l;
+            });
+            verificarPrazos(); redesenhar();
+          } }, ult.respondidaEm ? 'Desfazer resposta à contrarresposta' : 'Desfazer contrarresposta');
+        })() : n.respondidaEm ? h('button', { class: 'btn peq', onclick: async () => {
           if (!(await confirmar('Desfazer o registro da resposta? A notificação volta a aguardar resposta.', 'Desfazer'))) return;
           await atualizarCampos('notificacoes', n.id, (o) => { delete o.respondidaEm; delete o.respostaObs; delete o.respondidaPor; });
           verificarPrazos(); redesenhar();
@@ -4855,7 +5103,9 @@
      da tela e a barra de passos no topo (toque para ir direto). O que foi preenchido fica guardado ao trocar de
      passo. "Ver tudo numa página" mostra todas as seções de uma vez (fica lembrado neste aparelho). */
   // 3.18.2: a tela simples é o padrão; "Todos os campos" (tela completa, a antiga "tudo numa página") fica lembrada neste aparelho
-  const modoNotif = () => { try { return localStorage.getItem('notif_tela') === 'completa' ? 'tudo' : 'simples'; } catch (e) { return 'simples'; } };
+  // 3.18.6: a tela simples é sempre o padrão; "Todos os campos" vale só até fechar o app (não fica lembrado)
+  try { localStorage.removeItem('notif_tela'); } catch (e) { /* */ }
+  const modoNotif = () => { try { return sessionStorage.getItem('notif_tela') === 'completa' ? 'tudo' : 'simples'; } catch (e) { return 'simples'; } };
   function passosNotificacao(secoes, opc) {
     const nomes = ['Dados', 'Texto', 'Anexos', 'Emitir'];
     const chave = 'passo_notif_' + (opc.id || '');
@@ -4867,7 +5117,7 @@
     const ant = h('button', { class: 'btn', style: { flex: '0 0 auto' } }, 'Voltar');
     const resumoBox = opc.resumoBox || h('div');
     const trocarModo = h('button', { type: 'button', class: nc('lk') + ' passos-modo', style: { background: 'none', border: '0', cursor: 'pointer', padding: '4px 2px', marginLeft: 'auto' }, onclick: () => {
-      try { localStorage.setItem('notif_tela', 'simples'); } catch (e) { /* */ }
+      try { sessionStorage.removeItem('notif_tela'); } catch (e) { /* */ }
       if (opc.redesenhar) opc.redesenhar();
     } }, 'Tela simples');
     const mostrar = () => {
@@ -4967,7 +5217,8 @@
       if (trocou) { sujo = true; setTimeout(() => toast(trocou + ' foto(s) de irregularidade atualizada(s) para a foto mais recente — salve o rascunho.'), 300); }
     }
     let aoMarcar = null; // tela simples: salva sozinho e atualiza a prévia do documento
-    const marcar = () => { sujo = true; if (aoMarcar) aoMarcar(); };
+    let edVer = 0; // conta as alterações: o que for digitado enquanto grava não se perde
+    const marcar = () => { sujo = true; edVer++; if (aoMarcar) aoMarcar(); };
     // 3.18.2: a legenda da foto é a descrição da foto na visita — o que for escrito aqui corrige a visita ao salvar
     const legEditadas = new Set();
     const semPonto = (t) => String(t || '').trim().replace(/[\s.;:]+$/, '');
@@ -5005,13 +5256,13 @@
     const itensBox = h('div', { class: 'lista-ord' });
     const desenharItens = () => {
       rc(itensBox, ...(n.itens || []).map((t, i) => h('div', { class: 'li' },
-        (() => { const ta = h('textarea', { readonly: ro, oninput: (e) => { n.itens[i] = e.target.value; marcar(); } }); ta.value = t; return ta; })(),
+        areaRica(n.itens, i, { readonly: ro, mini: true, 'aria-label': 'Item ' + (i + 1), oninput: () => marcar() }),
         ro ? null : h('div', { class: 'ctl' },
           h('button', { class: 'btn peq', disabled: i === 0, onclick: () => { n.itens.splice(i - 1, 0, n.itens.splice(i, 1)[0]); marcar(); desenharItens(); } }, '▲'),
           h('button', { class: 'btn peq', disabled: i === n.itens.length - 1, onclick: () => { n.itens.splice(i + 1, 0, n.itens.splice(i, 1)[0]); marcar(); desenharItens(); } }, '▼'),
           h('button', { class: 'btn peq perigo', onclick: () => { n.itens.splice(i, 1); marcar(); desenharItens(); } }, '✕')))),
       ro ? null : h('div', { class: 'acoes' },
-        h('button', { class: 'btn peq', onclick: () => { n.itens = n.itens || []; n.itens.push(''); marcar(); desenharItens(); const t = itensBox.querySelectorAll('textarea'); if (t.length) t[t.length - 1].focus(); } }, '+ Item'),
+        h('button', { class: 'btn peq', onclick: () => { n.itens = n.itens || []; n.itens.push(''); marcar(); desenharItens(); const t = itensBox.querySelectorAll('.rt-ed'); if (t.length) t[t.length - 1].focus(); } }, '+ Item'),
         h('button', { class: 'btn peq', onclick: async () => {
           const descs = (n.fotos || []).map(descSel).filter((d) => d && d.trim());
           const unicos = [...new Set(descs.map((d) => d.trim().replace(/[.;]?$/, ';')))].filter((d) => !(n.itens || []).includes(d));
@@ -5034,13 +5285,13 @@
     desenharItens();
     const secFatos = h('div', { class: 'card' }, h('h2', {}, '1. Dos fatos e irregularidades'),
       h('p', { class: 'sub' }, '“…visto que em diligência efetuada in loco no dia ' + (X.dataBR(n.data_vistoria) || '__') + ', ” + texto abaixo'),
-      campo('Constatação', inputArea(n, 'constatacao', { readonly: ro, oninput: (e) => { n.constatacao = e.target.value; marcar(); } }), 'Use **texto** para negrito.'),
+      campo('Constatação', areaRica(n, 'constatacao', { readonly: ro, mini: true, oninput: () => marcar() }), 'Selecione um trecho e toque em B, I ou U.'),
       h('h3', {}, 'Itens (lista com marcadores)'), itensBox);
 
     /* --- providencias --- */
     const secProv = h('div', { class: 'card' }, h('h2', {}, '2. Providências'),
       r.tipo === 'contrato' ? h('p', { class: 'sub' }, 'O parágrafo padrão do modelo (prazo, contrato nº, protocolo) é preenchido automaticamente. Abaixo, texto complementar opcional.') : null,
-      campo(r.tipo === 'contrato' ? 'Providências complementares (opcional)' : 'Texto das providências', inputArea(n, 'providencias', { readonly: ro, oninput: (e) => { n.providencias = e.target.value; marcar(); } }), 'Use **texto** para negrito. Cada linha vira um parágrafo.'),
+      campo(r.tipo === 'contrato' ? 'Providências complementares (opcional)' : 'Texto das providências', areaRica(n, 'providencias', { readonly: ro, oninput: () => marcar() }), 'Selecione um trecho e toque em B, I ou U · cada linha vira um parágrafo.'),
       campoPrazoDias(n, ro, marcar));
 
     /* --- assinaturas --- */
@@ -5129,10 +5380,12 @@
         // itens vazios saem: a tela é redesenhada, senão o que se digitasse depois iria para a posição errada
         if (JSON.stringify(limpos) !== JSON.stringify(n.itens || [])) { n.itens = limpos; desenharItens(); }
       }
-      const salvo = await salvarMudancas('notificacoes', nBase, n);
+      const v0 = edVer, snap = clonar(n);
+      const salvo = await salvarMudancas('notificacoes', nBase, snap);
       Object.assign(original, salvo);
-      nBase = clonar(n);
-      sujo = false;
+      nBase = snap;
+      sujo = edVer !== v0;
+      if (sujo && aoMarcar) aoMarcar(); // alterado durante a gravação: grava de novo em seguida
       // legendas editadas → descrição da foto (ou da irregularidade) na visita
       for (const fid of Array.from(legEditadas)) {
         legEditadas.delete(fid);
@@ -5251,7 +5504,7 @@
         emitida && pode.notificar() ? h('button', { class: 'btn peq', onclick: () => criarNotificacao(r.id, n) }, '↻ Nova notificação a partir desta (reiteração)') : null,
         emitida && pode.admin() ? h('button', { class: 'btn peq', onclick: async () => {
           if (!(await confirmar('Reabrir para edição? A notificação voltará a ser rascunho' + (original.enviadaEm ? ' e o registro de envio/resposta será apagado (registre o envio de novo ao reemitir).' : '.'), 'Reabrir'))) return;
-          await atualizarCampos('notificacoes', id, (o) => { o.status = 'rascunho'; delete o.emitidaEm; for (const k of ['assinaturaEm', 'assinaturaHora', 'assinaturaRef', 'assinaturaPor', 'assinaturaDireta', 'enviadaEm', 'enviadaHora', 'prazoFinal', 'prazoDiasEnvio', 'enviadaPor', 'respondidaEm', 'respostaObs', 'respondidaPor']) delete o[k]; });
+          await atualizarCampos('notificacoes', id, (o) => { o.status = 'rascunho'; delete o.emitidaEm; for (const k of ['rodadas', 'aditivosPrazo', 'assinaturaEm', 'assinaturaHora', 'assinaturaRef', 'assinaturaPor', 'assinaturaDireta', 'enviadaEm', 'enviadaHora', 'prazoFinal', 'prazoDiasEnvio', 'enviadaPor', 'respondidaEm', 'respostaObs', 'respondidaPor']) delete o[k]; });
           verificarPrazos(); telaNotificacao(id);
         } }, '🔓 Reabrir') : null,
         (!emitida && pode.notificar()) || pode.admin() ? h('button', { class: 'btn peq perigo', onclick: excluirNotif }, 'Excluir') : null),
@@ -5265,10 +5518,15 @@
       const comoItem = (t) => { const x = semPonto(t); return x ? x + ';' : ''; };
       const itemDe = (sl) => (sl.itemProprio && String(sl.item || '').trim() ? String(sl.item).trim() : comoItem(sl.legenda));
       const itensFinal = () => [...(n.fotos || []).filter((sl) => sl.naLista).map(itemDe), ...(n.itensExtras || [])].map((t) => String(t || '').trim()).filter(Boolean);
+      // mesmo que itensFinal, com o trecho da tela de cada item (foto ou item sem foto) para a prévia
+      const itensComAlvo = () => [...(n.fotos || []).filter((sl) => sl.naLista).map((sl) => [itemDe(sl), 'foto:' + sl.fotoId]), ...(n.itensExtras || []).map((t) => [t, 'extras'])]
+        .map(([t, a]) => [String(t || '').trim(), a]).filter(([t]) => t);
       // rascunho antigo (itens e fotos separados): liga cada item à foto de mesma descrição; o resto fica como item sem foto
+      const eraV2 = !!n.itensV2;
       if (!n.itensV2) {
         const resto = (n.itens || []).slice();
         for (const sl of n.fotos || []) {
+          delete sl.item; sl.itemProprio = false; // refaz a ligação do zero (texto próprio antigo não volta)
           const f = fonteDesc(sl) || {};
           const cand = [comoItem(sl.legenda), comoItem(f.descricao)].filter(Boolean);
           const k = resto.findIndex((t) => cand.includes(comoItem(t)));
@@ -5277,8 +5535,9 @@
         }
         n.itensExtras = resto; n.itensV2 = true; sujo = true;
       }
-      // a legenda acompanha a descrição atual da foto na visita
-      for (const sl of n.fotos || []) {
+      // a legenda acompanha a descrição atual da foto na visita (rascunhos de antes da 3.18.2, cujas legendas
+      // podiam ser diferentes da descrição de propósito, ficam como estão)
+      if (eraV2) for (const sl of n.fotos || []) {
         const f = fonteDesc(sl);
         if (f && semPonto(f.descricao) && semPonto(f.descricao) !== semPonto(sl.legenda)) { sl.legenda = legendaPadrao(f); sujo = true; }
       }
@@ -5300,7 +5559,9 @@
         pintarSalvo('Alterações não salvas…', 'esp');
         clearTimeout(st.tSalvar); st.tSalvar = setTimeout(autoSalvar, 1500);
         clearTimeout(tPrev); tPrev = setTimeout(pintarDoc, 250);
+        if (n.fatosAntes == null || n.fatosDepois == null || n.provTexto == null) { clearTimeout(tAuto); tAuto = setTimeout(carregarAuto, 600); }
       };
+      let tAuto = null;
 
       /* ---- dados ---- */
       const cardDados = h('div', { class: 'card nf-dados' });
@@ -5346,6 +5607,51 @@
         marcar(); pintarDados();
       }
 
+      /* ---- 3.18.6: texto inteiro editável (Dos fatos: antes e depois da lista; Providências) ----
+         O texto começa igual ao do modelo do Word (já com datas, equipe, prazo…) e acompanha os dados até ser
+         editado; depois fica como foi escrito ("Restaurar o texto do modelo" volta ao automático). */
+      const secAuto = { ok: false, carregando: true, fatosAntes: '', fatosDepois: '', prov: '' };
+      const ROT_SEC = { fatosAntes: 'Texto antes da lista', fatosDepois: 'Texto depois da lista', provTexto: 'Texto' };
+      const autoDe = (k) => (k === 'provTexto' ? secAuto.prov : secAuto[k]);
+      const efTexto = (k) => (n[k] != null ? n[k] : autoDe(k));
+      const autoAltura = (ta) => { ta.style.height = 'auto'; ta.style.height = Math.min(ta.scrollHeight + 4, 900) + 'px'; };
+      const blocos = {};
+      const blocoTexto = (k) => {
+        if (blocos[k]) return blocos[k].el;
+        const etqEl = h('span', { class: nc('etq') });
+        const restaurar = h('button', { type: 'button', class: 'nf-lk', 'data-acao': 'restaurar-' + k, onclick: async () => {
+          if (!(await confirmar('Voltar ao texto do modelo? O que foi escrito aqui será substituído.', 'Restaurar'))) return;
+          delete n[k]; rt.definir(autoDe(k)); pintar(); marcar();
+        } }, 'Restaurar o texto do modelo');
+        const rt = editorRico({ valor: efTexto(k), rotulo: ROT_SEC[k], attrs: { class: 'rt-ed nf-sec-ta', 'data-sec': k }, aoMudar: (t) => { n[k] = t; pintar(); marcar(); } });
+        const ta = rt.ed;
+        const pintar = () => {
+          const ed = n[k] != null;
+          etqEl.textContent = ed ? 'editado' : 'do modelo'; etqEl.className = nc('etq ' + (ed ? 'acc' : ''));
+          restaurar.style.display = ed ? '' : 'none';
+        };
+        const el = h('div', { class: 'nf-sec' }, h('div', { class: 'nf-sec-rot' }, h('b', {}, ROT_SEC[k]), etqEl, restaurar), rt);
+        blocos[k] = { el, ta, pintar, atualizar: () => { if (n[k] == null && document.activeElement !== ta) rt.definir(autoDe(k)); pintar(); } };
+        pintar();
+        return el;
+      };
+      const dicaMarcacao = () => h('div', { class: 'dica nf-sec-dica' }, 'Selecione um trecho e toque em B (negrito), I (itálico) ou U (sublinhado) · cada linha é um parágrafo · comece com “- ” para item com marcador ou “a) ” para item recuado.');
+      async function carregarAuto() {
+        try {
+          const dados = DocGen.montarDados(r, Object.assign({}, n, {
+            fiscais: (() => { const f = snapshotAssinantes(edFiscais, pessoas, true); return f.length ? f : n.fiscais || []; })(), coordenadores: (() => { const c = snapshotAssinantes(edCoord, pessoas, false); return c.length ? c : n.coordenadores || []; })(),
+            fotosDoc: (n.fotos || []).map((x) => ({ legenda: x.legenda || '' })),
+          }));
+          const t = await DocGen.textoSecoes(await modeloDocx(r.tipo), dados);
+          const antes = secAuto.ok;
+          Object.assign(secAuto, t, { carregando: false });
+          if (!antes && t.ok) { pintarFatos(); pintarProv(); }
+          else if (!t.ok && antes !== t.ok) { pintarFatos(); pintarProv(); }
+          for (const b of Object.values(blocos)) b.atualizar();
+          pintarDoc();
+        } catch (e) { secAuto.carregando = false; console.error(e); pintarFatos(); pintarProv(); }
+      }
+
       /* ---- o que foi constatado ---- */
       const cardFatos = h('div', { class: 'card nf-fatos' });
       redesenharSimples = () => pintarFatos();
@@ -5365,10 +5671,9 @@
           const pintarItem = () => {
             if (!sl.naLista) { rc(verItem, h('span', { class: 'sub' }, 'Só no anexo (não entra na lista de irregularidades)')); return; }
             if (sl.itemProprio) {
-              const ta = h('textarea', { rows: 2, class: 'nf-item-ta', 'aria-label': 'Texto na lista de irregularidades', oninput: (e) => { sl.item = e.target.value; marcar(); } });
-              ta.value = sl.item || comoItem(sl.legenda);
+              const ta = editorRico({ valor: sl.item || comoItem(sl.legenda), mini: true, rotulo: 'Texto na lista de irregularidades', attrs: { class: 'rt-ed nf-item-ta' }, aoMudar: (t) => { sl.item = t; marcar(); } });
               rc(verItem, h('div', { class: 'nf-item-rot' }, 'Texto na lista (próprio)', h('button', { type: 'button', class: 'nf-lk', onclick: () => { sl.itemProprio = false; delete sl.item; marcar(); pintarItem(); } }, 'gerar da legenda')), ta);
-            } else rc(verItem, h('div', { class: 'nf-item-rot' }, 'Na lista: ', h('button', { type: 'button', class: 'nf-lk', onclick: () => { sl.itemProprio = true; sl.item = comoItem(sl.legenda); marcar(); pintarItem(); const t = verItem.querySelector('textarea'); if (t) t.focus(); } }, 'escrever outro texto')),
+            } else rc(verItem, h('div', { class: 'nf-item-rot' }, 'Na lista: ', h('button', { type: 'button', class: 'nf-lk', onclick: () => { sl.itemProprio = true; sl.item = comoItem(sl.legenda); marcar(); pintarItem(); const t = verItem.querySelector('.rt-ed'); if (t) t.focus(); } }, 'escrever outro texto')),
               h('div', { class: 'nf-item-v' }, comoItem(sl.legenda) || '—'));
           };
           pintarItem();
@@ -5386,20 +5691,23 @@
               h('button', { type: 'button', 'aria-label': 'Tirar da notificação', class: 'nf-x', onclick: () => { fs.splice(i, 1); legEditadas.delete(sl.fotoId); marcar(); pintarFatos(); } }, '✕')));
         };
         const extra = (t, i) => {
-          const ta = h('textarea', { rows: 2, placeholder: 'Irregularidade sem foto', oninput: (e) => { n.itensExtras[i] = e.target.value; marcar(); } }); ta.value = t;
+          const ta = editorRico({ valor: t, mini: true, placeholder: 'Irregularidade sem foto', rotulo: 'Irregularidade sem foto', aoMudar: (v) => { n.itensExtras[i] = v; marcar(); } });
           return h('div', { class: 'nf-irr nf-extra' }, h('div', { class: 'nf-ft vazio' }, '≡', h('small', {}, 'sem foto')),
             h('div', { class: 'nf-c' }, h('label', { class: 'nf-rot' }, 'Irregularidade (só na lista)'), ta),
             h('div', { class: 'nf-ctl' }, h('button', { type: 'button', class: 'nf-x', 'aria-label': 'Remover', onclick: () => { n.itensExtras.splice(i, 1); marcar(); pintarFatos(); } }, '✕')));
         };
         rc(cardFatos,
-          h('h2', {}, 'O que foi constatado', h('span', { class: nc('etq ' + (nLista ? 'al' : '')) }, plural(nLista, 'item na lista', 'itens na lista'))),
-          campo('Texto antes da lista', inputArea(n, 'constatacao', { rows: 2, 'data-alvo': 'constatacao', placeholder: 'Ex.: foram constatadas as seguintes irregularidades:', oninput: (e) => { n.constatacao = e.target.value; marcar(); } }), '“…visto que em diligência efetuada in loco no dia ' + (X.dataBR(n.data_vistoria) || '__') + ', ” + este texto'),
+          h('h2', {}, 'Dos fatos e irregularidades', h('span', { class: nc('etq ' + (nLista ? 'al' : '')) }, plural(nLista, 'item na lista', 'itens na lista'))),
+          secAuto.carregando ? h('div', { class: 'sub', style: { padding: '8px 0' } }, h('span', { class: 'carregando' }), ' Carregando o texto do modelo…')
+            : secAuto.ok ? [blocoTexto('fatosAntes'), dicaMarcacao(), h('div', { class: 'nf-sec-rot nf-lista-rot' }, h('b', {}, 'Lista das irregularidades'), h('span', { class: 'sub' }, 'a legenda de cada foto vira um item'))]
+            : campo('Texto antes da lista', areaRica(n, 'constatacao', { mini: true, 'data-alvo': 'constatacao', placeholder: 'Ex.: foram constatadas as seguintes irregularidades:', oninput: (e) => { n.constatacao = e.target.value; marcar(); } }), '“…visto que em diligência efetuada in loco no dia ' + (X.dataBR(n.data_vistoria) || '__') + ', ” + este texto'),
           fs.map(cartao), ex.map(extra),
           !fs.length && !ex.length ? h('div', { class: 'vazio', style: { padding: '12px 4px' } }, 'Inclua as irregularidades pendentes, fotos da obra ou itens sem foto.') : null,
           h('div', { class: 'nf-add' },
             pend.length ? h('button', { type: 'button', class: 'nf-add-pend', 'data-acao': 'incluir-pendentes', onclick: incluirPendentes }, '+ ' + plural(pend.length, 'pendente da obra', 'pendentes da obra')) : null,
             h('button', { type: 'button', 'data-acao': 'mais-fotos', onclick: escolherFotos }, '+ Foto'),
-            h('button', { type: 'button', 'data-acao': 'item-sem-foto', onclick: () => { n.itensExtras = n.itensExtras || []; n.itensExtras.push(''); marcar(); pintarFatos(); const t = cardFatos.querySelectorAll('.nf-extra textarea'); if (t.length) t[t.length - 1].focus(); } }, '+ Item sem foto')));
+            h('button', { type: 'button', 'data-acao': 'item-sem-foto', onclick: () => { n.itensExtras = n.itensExtras || []; n.itensExtras.push(''); marcar(); pintarFatos(); const t = cardFatos.querySelectorAll('.nf-extra .rt-ed'); if (t.length) t[t.length - 1].focus(); } }, '+ Item sem foto')),
+          secAuto.ok && !secAuto.carregando ? blocoTexto('fatosDepois') : null);
       };
       async function incluirPendentes() {
         const pend = pendentesFora().sort((a, b) => String(a.dataHora).localeCompare(b.dataHora));
@@ -5427,21 +5735,43 @@
       }
 
       /* ---- providências ---- */
-      const provTa = inputArea(n, 'providencias', { rows: 4, 'data-alvo': 'providencias', oninput: (e) => { n.providencias = e.target.value; marcar(); pintarProvSub(); } });
+      const provTa = areaRica(n, 'providencias', { 'data-alvo': 'providencias', oninput: (e) => { n.providencias = e.target.value; marcar(); pintarProvSub(); } });
       const provSub = h('span', {});
       const pintarProvSub = () => rc(provSub, r.tipo === 'contrato'
         ? 'Parágrafo padrão do contrato' + (String(n.providencias || '').trim() ? ' + texto complementar' : '') + ' · toque para editar'
         : (String(n.providencias || '').trim() ? String(n.providencias).trim().slice(0, 70) + (String(n.providencias).trim().length > 70 ? '…' : '') : 'Sem texto') + ' · toque para editar');
       pintarProvSub();
-      const cardProv = h('details', { class: 'card nf-prov' },
+      const cardProvAntigo = h('details', { class: 'card nf-prov' },
         h('summary', {}, h('span', { class: nc('ic') + ' nf-ic' }, ico('doc')), h('div', { class: 'nf-c' }, h('b', {}, 'Providências'), provSub), h('span', { class: 'nf-dir' }, '›')),
         r.tipo === 'contrato' ? h('p', { class: 'sub' }, 'O parágrafo padrão do modelo (prazo, contrato nº, protocolo) é preenchido sozinho. Abaixo, texto complementar opcional.') : null,
-        campo(r.tipo === 'contrato' ? 'Providências complementares (opcional)' : 'Texto das providências', provTa, 'Use **texto** para negrito. Cada linha vira um parágrafo.'));
+        campo(r.tipo === 'contrato' ? 'Providências complementares (opcional)' : 'Texto das providências', provTa, 'Selecione um trecho e toque em B, I ou U · cada linha vira um parágrafo.'));
+
+      const cardProv = h('div', { class: 'nf-prov-box' });
+      const pintarProv = () => {
+        if (secAuto.carregando) { rc(cardProv); return; }
+        if (!secAuto.ok || secAuto.okProv === false) { rc(cardProv, cardProvAntigo); return; } // modelo sem o título "Possíveis sanções": como antes
+        rc(cardProv, h('div', { class: 'card nf-prov2' }, h('h2', {}, 'Providências a serem adotadas'), blocoTexto('provTexto'), dicaMarcacao()));
+      };
+      pintarProv();
 
       /* ---- documento (prévia simplificada do Word) ---- */
       const doc = h('div', { class: 'nf-papel', 'aria-label': 'Prévia do documento' });
       const cmp = (txt, alvo, auto) => h('span', { class: 'nf-cmp' + (auto ? ' auto' : ''), 'data-ir': alvo || null }, txt);
+      // texto com a marcação (linhas, "- ", "a) ", **negrito**, *itálico*) → parágrafos da prévia
+      const fmtRico = (pc) => { let x = pc.t; if (pc.u) x = h('u', {}, x); if (pc.i) x = h('i', {}, x); if (pc.b) x = h('b', {}, x); return x; };
+      const docTexto = (texto, alvo) => {
+        const out = []; let ul = null;
+        for (const l of String(texto || '').split('\n')) {
+          const rico = (t) => h('span', { class: 'nf-cmp', 'data-ir': alvo }, DocGen.partesRicas(t).map(fmtRico));
+          if (/^\s*[-•]\s+/.test(l)) { if (!ul) { ul = h('ul'); out.push(ul); } ap(ul, h('li', {}, rico(l.replace(/^\s*[-•]\s+/, '')))); continue; }
+          ul = null;
+          if (!l.trim()) { out.push(h('p', { class: 'vazio-p' }, '\u00a0')); continue; }
+          out.push(h('p', { class: /^\s*[a-z]\)\s/i.test(l) ? 'rec' : 'ind' }, rico(l.trim())));
+        }
+        return out;
+      };
       function pintarDoc() {
+        if (secAuto.ok && !secAuto.carregando) return pintarDocLivre();
         const nome = r.n_nome_texto || r.n_nome || '—';
         const eq = (n.equipe && n.equipe.trim()) || equipeAuto() || '—';
         const d = +n.prazo_dias || 3;
@@ -5464,6 +5794,25 @@
           fs.length ? [h('h4', {}, 'ANEXOS'), h('div', { class: 'nf-imgs' }, imgs)] : null,
           h('div', { class: 'nf-ass' }, (nomesF().length ? nomesF() : ['Fiscal']).concat(nomesC()).map((x) => h('div', {}, x))));
       }
+      function pintarDocLivre() {
+        const nome = r.n_nome_texto || r.n_nome || '—';
+        const itens = itensFinal();
+        const fs = n.fotos || [];
+        const imgs = fs.map((sl, i) => { const f = mapaFotos.get(sl.fotoId) || { id: sl.fotoId }; const im = h('img', { alt: '' }); urlFoto(f).then((u) => { im.src = u; }); return h('figure', {}, im, h('figcaption', {}, 'Imagem ' + (i + 1) + ' – ', cmp(sl.legenda || '', 'foto:' + sl.fotoId))); });
+        rc(doc,
+          h('h3', {}, n.ordinal + 'ª NOTIFICAÇÃO EXTRAJUDICIAL' + (r.tipo === 'convenio' ? ' AO CONVÊNIO' : '')),
+          h('p', { class: 'c' }, h('b', {}, 'NOTIFICAÇÃO Nº: '), cmp(n.numero || (seqAuto ? 'definido ao emitir' : '___'), 'numero', !n.numero)),
+          h('p', {}, h('b', {}, 'NOTIFICADA: '), nome + ' · ' + (r.tipo === 'convenio' ? 'CONVÊNIO' : 'CONTRATO') + ' Nº ' + (r.numero || '—')),
+          h('h4', {}, 'DOS FATOS E IRREGULARIDADES IDENTIFICADAS'),
+          docTexto(efTexto('fatosAntes'), 'fatosAntes'),
+          itens.length ? h('ul', {}, itensComAlvo().map(([t, alvo]) => h('li', {}, h('span', { class: 'nf-cmp', 'data-ir': alvo }, DocGen.partesRicas(t).map(fmtRico))))) : h('p', { class: 'falta' }, '(nenhum item na lista)'),
+          docTexto(efTexto('fatosDepois'), 'fatosDepois'),
+          h('h4', {}, 'PROVIDÊNCIAS A SEREM ADOTADAS'),
+          secAuto.okProv === false ? h('p', {}, cmp(n.providencias || '(texto do modelo)', 'providencias')) : docTexto(efTexto('provTexto'), 'provTexto'),
+          h('h4', {}, 'POSSÍVEIS SANÇÕES ADMINISTRATIVAS'), h('p', { class: 'cinza' }, '(texto do modelo)'),
+          fs.length ? [h('h4', {}, 'ANEXOS'), h('div', { class: 'nf-imgs' }, imgs)] : null,
+          h('div', { class: 'nf-ass' }, (nomesF().length ? nomesF() : ['Fiscal']).concat(nomesC()).map((x) => h('div', {}, x))));
+      }
       // tocar num trecho do documento leva ao campo
       doc.addEventListener('click', (e) => {
         const el = e.target.closest('[data-ir]'); if (!el) return;
@@ -5476,8 +5825,9 @@
           if (a === 'assinam') return editarAssinantes();
           let alvo = null;
           if (a === 'constatacao') alvo = cardFatos.querySelector('[data-alvo=constatacao]');
-          else if (a === 'providencias') { cardProv.open = true; alvo = provTa; }
-          else if (a === 'extras') alvo = cardFatos.querySelector('.nf-extra textarea');
+          else if (a === 'providencias') { cardProvAntigo.open = true; alvo = provTa; }
+          else if (blocos[a]) alvo = blocos[a].ta;
+          else if (a === 'extras') alvo = cardFatos.querySelector('.nf-extra .rt-ed');
           else if (a.startsWith('foto:')) { const c = cardFatos.querySelector('[data-foto="' + a.slice(5) + '"]'); alvo = c && c.querySelector('textarea'); }
           if (alvo) { alvo.scrollIntoView({ block: 'center', behavior: 'smooth' }); setTimeout(() => alvo.focus(), 350); }
         }, 60);
@@ -5532,12 +5882,14 @@
           li(nf.length ? 'ok' : 'er', nf.length ? 'Assina' + (nf.length > 1 ? 'm' : '') + ' ' + nf.join(', ') : 'Escolha quem assina'),
           !n.numero && !seqAuto ? li('er', 'Informe o número') : null,
           pend.length ? li('al', plural(pend.length, 'irregularidade pendente da obra ficou de fora', 'irregularidades pendentes da obra ficaram de fora')) : null,
+          n.provTexto != null && !new RegExp('(^|\\D)0?' + d + '(\\D|$)').test(n.provTexto) ? li('al', 'O texto das providências (editado) não cita o prazo de ' + plural(d, 'dia útil', 'dias úteis') + ' — confira.') : null,
           erros.length ? null : opcs,
           erros.length ? null : h('div', { class: 'nota' }, 'O número é reservado agora e o conteúdo fica bloqueado.')),
           erros.length ? [{ txt: 'Voltar', valor: false }] : [{ txt: 'Cancelar', valor: false }, { txt: 'Emitir e baixar o Word', cls: 'pri', valor: true, antes: () => {
           if (st2.modo === 'so') return true;
           if (!st2.data) { toast('Informe a data.', true); return false; }
           if (!/^\d\d:\d\d$/.test(st2.hora || '')) { toast('Informe o horário.', true); return false; }
+          if (st2.data > X.hojeISO()) { toast('A data não pode ser futura.', true); return false; }
           if (st2.data === X.hojeISO() && st2.hora > agoraHM()) { toast('O horário não pode ser futuro.', true); return false; }
           return true;
         } }]);
@@ -5563,13 +5915,13 @@
             const k = b.dataset.v;
             if (k === 'word') gerar(false); else if (k === 'comp') gerar(true);
             else if (k === 'excluir') excluirNotif();
-            else if (k === 'completo') { if (sujo) await salvar(true); try { localStorage.setItem('notif_tela', 'completa'); } catch (e2) { /* */ } telaNotificacao(id); }
+            else if (k === 'completo') { if (sujo) await salvar(true); try { sessionStorage.setItem('notif_tela', 'completa'); } catch (e2) { /* */ } telaNotificacao(id); }
           });
         }, 0);
       };
 
       /* ---- montagem ---- */
-      pintarDados(); pintarFatos(); pintarDoc();
+      pintarDados(); pintarFatos(); pintarDoc(); carregarAuto();
       const btMais = h('button', { type: 'button', class: 'nf-mais', 'aria-label': 'Mais opções', 'data-acao': 'mais', onclick: abrirMenu }, '⋯');
       const cab = h('div', { class: 'nf-cab' }, statusSalvo,
         h('button', { type: 'button', class: 'n-btn n-cont n-peq so-pc-nf', onclick: () => gerar(false) }, '⬇ Baixar Word'),
@@ -5581,7 +5933,8 @@
       document.body.dataset.foco = '1';
       rcT(tk, h('div', { class: 'nf-tela' }, cab, h('div', { class: 'nf-cols' }, h('div', { class: 'nf-ed' }, cardDados, cardFatos, cardProv), colDoc)), pe);
       if (sujo) aoMarcar();
-      App._sairNotif = async () => { clearTimeout(st.tSalvar); if (sujo) await salvar(true); };
+      const tirarEsc = salvarAoEsconder(() => { clearTimeout(st.tSalvar); return autoSalvar(); }, () => document.body.contains(statusSalvo));
+      App._sairNotif = async () => { tirarEsc(); clearTimeout(st.tSalvar); if (sujo) await salvar(true); };
     }
     if (!ro && modoNotif() !== 'tudo') { telaSimples(); return; }
 
@@ -5600,14 +5953,28 @@
             li(!!(edFiscais.length || (n.fiscais || []).length), 'Assinam: ' + (snapshotAssinantes(edFiscais, pessoas, true).map((f) => f.nome).join(', ') || '—'))),
           h('div', { class: 'dica' }, 'Baixe o Word para conferir o documento. Ao emitir, o número é reservado e o conteúdo fica bloqueado.'));
       };
+      // textos editados na tela simples: são eles que vão no documento — avisa (os campos antigos não os mudam)
+      if (temTextoEditado(n)) {
+        const avisoEd = () => h('div', { class: 'aviso nf-aviso-ed', style: { margin: '6px 0 10px' } }, '⚠️ Este texto foi editado na tela simples e é ele que vai no documento; os campos abaixo não o alteram. ',
+          h('button', { type: 'button', class: 'btn peq', onclick: async () => { if (sujo) await salvar(true); try { sessionStorage.removeItem('notif_tela'); } catch (e) { /* */ } telaNotificacao(id); } }, 'Editar na tela simples'));
+        if (n.fatosAntes != null || n.fatosDepois != null) secFatos.insertBefore(avisoEd(), secFatos.children[1] || null);
+        if (n.provTexto != null) secProv.insertBefore(avisoEd(), secProv.children[1] || null);
+      }
       const resumoCard = h('div');
       const ps = passosNotificacao([[secCab], [secFatos, secProv], [secFotos], [resumoCard, secAss, acoes]], { id, resumo, resumoBox: resumoCard, salvar: () => salvar(), excluir: excluirNotif, redesenhar: async () => { if (sujo) await salvar(true); telaNotificacao(id); } });
       document.body.dataset.foco = '1';
       rcT(tk, ps.barra, secCab, secFatos, secProv, secFotos, resumoCard, secAss, acoes, ps.pe);
       ps.mostrar();
-    } else rcT(tk, emitida ? cartaoEnvio(original, r, () => telaNotificacao(id)) : null, secCab, secFatos, secProv, secAss, secFotos, acoes);
-    // salvamento automatico do rascunho ao sair da tela
-    App._sairNotif = async () => { if (sujo && !ro) await salvar(true); };
+    } else {
+      // textos editados na tela simples (3.18.6): é o que vai no documento
+      const ed = temTextoEditado(n) ? h('div', { class: 'card' }, h('h2', {}, 'Texto da notificação (editado)'),
+        [['fatosAntes', 'Dos fatos — antes da lista'], ['fatosDepois', 'Dos fatos — depois da lista'], ['provTexto', 'Providências']].filter(([k]) => n[k] != null)
+          .map(([k, t]) => [h('h3', {}, t), h('div', { class: 'sub', style: { color: 'var(--txt)' } }, rtParaNos(n[k]))])) : null;
+      rcT(tk, emitida ? cartaoEnvio(original, r, () => telaNotificacao(id)) : null, secCab, ed, secFatos, secProv, secAss, secFotos, acoes);
+    }
+    // salvamento automatico do rascunho ao sair da tela (e com o app minimizado)
+    const tirarEscN = ro ? () => {} : salvarAoEsconder(() => (sujo ? salvar(true) : null), () => document.body.contains(secCab));
+    App._sairNotif = async () => { tirarEscN(); if (sujo && !ro) await salvar(true); };
   }
 
   /* ================================================================== */
@@ -5754,7 +6121,7 @@
             // o que a empresa apresentou na medição (opcional), ao lado da descrição — sai em coluna própria no Word
             h('label', { class: 'campo med-qtd' }, h('span', {}, h('span', { class: 'med-pc', title: 'Quantitativo apresentado pela empresa (opcional)' }, 'Quant. empresa'), h('span', { class: 'med-cel' }, 'Quantitativo da empresa (opcional)')),
               area(it, 'quantitativo', 'Ex.: 40 h', { rows: 1, title: 'Quantitativo apresentado pela empresa na medição (opcional). Ex.: 40 h, 85,00 m², 30%' })),
-            h('label', { class: 'campo' }, h('span', {}, 'Comentário'), area(it, 'comentario', 'Ex.: não medido — serviço iniciado, aguardando conclusão do pano')),
+            h('div', { class: 'campo-bloco' }, h('span', {}, 'Comentário'), areaRica(it, 'comentario', { readonly: ro, mini: true, placeholder: 'Ex.: não medido — serviço iniciado, aguardando conclusão do pano', oninput: () => marcar() })),
             memAberto
               ? h('label', { class: 'campo' }, h('span', {}, 'Memorial de cálculo (opcional)'), area(it, 'memorial', 'Ex.: Parede eixo A: 12,40 × 2,80 = 34,72 m²\nDescontar porta: 0,80 × 2,10 = 1,68 m²\nTotal = 33,04 m²', { class: 'mono' }))
               : (ro ? h('label', { class: 'campo med-semmem' }, h('span', {}, 'Memorial de cálculo'), h('div', { class: 'sub' }, '—'))
@@ -5785,7 +6152,7 @@
         } }, '📋 Colar vários itens')));
 
     const obs = h('div', { class: 'card' }, h('h2', {}, 'Observações gerais (opcional)'),
-      (() => { const t = h('textarea', { readonly: ro, placeholder: ro ? '' : 'Observações que valem para a medição como um todo.', oninput: (e) => { m.observacoes = e.target.value; marcar(); } }); t.value = m.observacoes || ''; return t; })());
+      areaRica(m, 'observacoes', { readonly: ro, placeholder: 'Observações que valem para a medição como um todo.', oninput: () => marcar() }));
     const equipe = h('div', { class: 'card' }, h('h2', {}, 'Equipe de fiscalização (assinaturas)'),
       ro ? h('div', { class: 'sub' }, (m.fiscais || []).map((f) => f.nome).join(', ') || '—')
         : h('div', { onchange: marcar, onclick: (e) => { if (e.target.tagName === 'BUTTON') marcar(); } }, editorAssinantes(edFiscais, pessoas, 'fiscal', true, 'contrato')));
@@ -5836,8 +6203,9 @@
     const hub = await hubMedicao(original, r, 'itens', { antes: () => salvar(true) });
     rcT(tk, hub, cab, secItens, obs, equipe, acoes, barra);
     requestAnimationFrame(ajustarAlturas); // as caixas de texto só têm altura depois de entrar na tela
-    // salva o rascunho ao sair da tela
-    App._sairNotif = async () => { if (sujo && !ro) await salvar(true); };
+    // salva o rascunho ao sair da tela (e com o app minimizado)
+    const tirarEsc = ro ? () => {} : salvarAoEsconder(() => (sujo ? salvar(true) : null), () => document.body.contains(cab));
+    App._sairNotif = async () => { tirarEsc(); if (sujo && !ro) await salvar(true); };
   }
 
   /* ================================================================== */
@@ -6244,6 +6612,7 @@
         h('div', { class: 'sub' }, u ? u.email : ''),
         h('div', { class: 'sub' }, 'Última sincronização: ' + (ult ? dataHoraBR(ult) : 'nunca')),
         Sync.versaoServidor && Sync.versaoServidor < 11 && medPend ? h('div', { class: 'aviso', style: { marginTop: '8px' } }, '⚠️ ' + medPend + ' medição(ões) aguardando: o servidor (Code.gs) precisa ser atualizado para a versão 3.11 para as medições irem para a equipe. Até lá, elas ficam guardadas neste aparelho.') : null,
+        Sync.versaoServidor && Sync.versaoServidor >= 5 && Sync.versaoServidor < 16 && perfil() === 'admin' ? h('div', { class: 'aviso', style: { marginTop: '8px' } }, 'ℹ️ Há uma versão nova do servidor (Code.gs versão 16, com correções no envio das fotos ao Drive). Atualize no Apps Script quando puder.') : null,
         Sync.versaoServidor && Sync.versaoServidor < 5 ? h('div', { class: 'aviso', style: { marginTop: '8px' } }, '⚠️ O servidor (Code.gs) está numa versão antiga, sujeita a perda de sincronismo. O administrador deve colar o Code.gs novo no Apps Script e publicar como nova versão (Guia de publicação, Parte G).') : null,
         Sync.estado === 'erro' ? h('div', { class: 'aviso', style: { marginTop: '8px' } }, Sync.erro) : null,
         Sync.estado === 'sem_acesso' ? h('div', { class: 'aviso', style: { marginTop: '8px' } }, 'Seu e-mail não está autorizado. Peça ao administrador para incluí-lo.') : null,
@@ -6272,7 +6641,7 @@
       for (const f of fotosSemDrive) if (!(await DB.blobGet(f.id))) semArquivo++;
       const log = Sync.lerLog().slice().reverse();
       const resumo = {
-        app: '3.18.5', servidor: Sync.versaoServidor || '?', usuario: (u || {}).email, perfil: perfil(), estado: Sync.estado, erro: Sync.erro || '',
+        app: VERSAO_APP, servidor: Sync.versaoServidor || '?', usuario: (u || {}).email, perfil: perfil(), estado: Sync.estado, erro: Sync.erro || '',
         online: navigator.onLine, ultimaSync: await DB.kvGet('ultimaSync', null), cursor: await DB.kvGet('servidorDesde', 0),
         pendentes: pendPor, fotosAguardandoEnvio: fotosSemDrive.length - semArquivo, fotosDeOutroAparelhoSemEnvio: semArquivo,
         aparelho: navigator.userAgent, log,
@@ -6366,10 +6735,10 @@
         h('div', { class: 'dica' }, 'Use {seq3} = sequencial do setor no ano (013), {ano} = ano, {ordinal2} = ordem da notificação do contrato (05).'),
         campo('Último nº sequencial emitido antes do app em ' + anoAtual, inputTxt(seqObj, 'v', { type: 'number', min: '0' })),
         h('h3', {}, 'Textos padrão'),
-        campo('Constatação padrão — Contrato', inputArea(c.constatacao_padrao, 'contrato')),
-        campo('Constatação padrão — Convênio', inputArea(c.constatacao_padrao, 'convenio')),
-        campo('Providências padrão — Convênio', inputArea(c.providencias_padrao, 'convenio'), '{nome_texto} é trocado pelo nome da notificada. **texto** = negrito.'),
-        campo('Providências complementares padrão — Contrato', inputArea(c.providencias_padrao, 'contrato')),
+        campo('Constatação padrão — Contrato', areaRica(c.constatacao_padrao, 'contrato', { mini: true })),
+        campo('Constatação padrão — Convênio', areaRica(c.constatacao_padrao, 'convenio', { mini: true })),
+        campo('Providências padrão — Convênio', areaRica(c.providencias_padrao, 'convenio'), '{nome_texto} é trocado pelo nome da notificada. Selecione um trecho e toque em B, I ou U.'),
+        campo('Providências complementares padrão — Contrato', areaRica(c.providencias_padrao, 'contrato')),
         campo('Prazo padrão (dias úteis)', inputTxt(c, 'prazo_padrao', { type: 'number', min: '1' })),
         editorFeriados(c),
         h('h3', {}, 'Fotos no Google Drive'),
@@ -6547,7 +6916,7 @@
     // a partir de "Aparência e câmera", cada seção vira uma lista suspensa (fechada; lembra as abertas)
     const iniSecoes = cards.findIndex((c) => c.querySelector && (c.querySelector(':scope > h2') || {}).textContent === 'Aparência e câmera');
     if (iniSecoes >= 0) for (let i = iniSecoes; i < cards.length; i++) cards[i] = secaoRecolhivel(cards[i]);
-    cards.push(h('p', { class: 'dica', style: { textAlign: 'center' } }, 'Fiscalização de Obras · v3.18.5 · dados salvos no aparelho' + (Sync.habilitado() ? ' e no Google Drive do administrador' : '') + ' · ', h('a', { href: 'privacidade.html' }, 'Política de privacidade')));
+    cards.push(h('p', { class: 'dica', style: { textAlign: 'center' } }, 'Fiscalização de Obras · v3.18.6 · dados salvos no aparelho' + (Sync.habilitado() ? ' e no Google Drive do administrador' : '') + ' · ', h('a', { href: 'privacidade.html' }, 'Política de privacidade')));
     rcT(tk, ...cards);
   }
 
@@ -6804,7 +7173,27 @@
   /* ================================================================== */
   /* Inicializacao                                                       */
   /* ================================================================== */
+  /* 3.18.6: com internet fraca o navegador pode juntar arquivos de duas versões do app (um novo, outro guardado).
+     Se isso acontecer, pede a versão nova inteira ao service worker e recarrega (uma vez por sessão). */
+  const VERSAO_APP = '3.18.6';
+  function conferirVersaoArquivos() {
+    const vj = self.VERSOES_JS || {};
+    const dif = ['db', 'sync', 'docgen'].filter((k) => vj[k] !== VERSAO_APP);
+    if (!dif.length) { try { sessionStorage.removeItem('recarregouVersao'); } catch (e) { /* */ } return; }
+    console.warn('Arquivos de versões diferentes:', dif, vj);
+    let n = 0; try { n = +sessionStorage.getItem('recarregouVersao') || 0; } catch (e) { /* */ }
+    if (n >= 2) { toast('O app não terminou de atualizar. Quando tiver uma internet melhor, feche e abra o app de novo.', true); return; }
+    try { sessionStorage.setItem('recarregouVersao', String(n + 1)); } catch (e) { /* */ }
+    toast('Terminando de atualizar o app…');
+    const recarregar = () => location.reload();
+    if (navigator.serviceWorker && navigator.serviceWorker.getRegistration) {
+      navigator.serviceWorker.addEventListener('controllerchange', recarregar, { once: true });
+      navigator.serviceWorker.getRegistration().then((r) => (r ? r.update() : null)).catch(() => {});
+    }
+    setTimeout(recarregar, 8000);
+  }
   async function iniciar() {
+    conferirVersaoArquivos();
     if (navigator.storage && navigator.storage.persist) { try { await navigator.storage.persist(); } catch (e) { /* */ } }
     Sync.usuario = Sync.usuarioLocal();
     await carregarConfig();

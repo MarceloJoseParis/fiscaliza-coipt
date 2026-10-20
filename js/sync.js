@@ -1,4 +1,5 @@
 /* Login Google + sincronizacao com o backend (Google Apps Script) */
+try { (self.VERSOES_JS = self.VERSOES_JS || {}).sync = '3.18.6'; } catch (e) { /* fora do navegador */ }
 (function (root) {
   const ENTIDADES = ['pessoas', 'registros', 'visitas', 'notificacoes', 'fotos', 'config', 'medicoes', 'atividades'];
   // medições só sincronizam com o servidor versão 11 ou mais nova (o antigo ignoraria e elas se perderiam da equipe);
@@ -162,6 +163,8 @@
         (e.rede || e.temporario || TEMPORARIO.test(e.message)) && navigator.onLine;
       if (!repetir) throw e;
       Sync.log('repetindo', acao + ': ' + e.message);
+      // a foto pode ter sido gravada mesmo com a resposta perdida: na nova tentativa o servidor procura a duplicata
+      if (acao === 'enviarFoto' && dados && dados.repetida === false) dados = Object.assign({}, dados, { repetida: true });
       await new Promise((r) => setTimeout(r, 2500 * ((tentativa || 0) + 1)));
       return Sync.chamar(acao, dados, (tentativa || 0) + 1);
     }
@@ -280,6 +283,20 @@
       // limparia a variável antes da hora e ela ficaria presa para sempre, bloqueando novas sincronizações)
       await null;
       Sync.ultimaTentativa = Date.now();
+      // 3.18.6: duas abas/janelas do app no mesmo computador não sincronizam ao mesmo tempo (fotos em dobro no Drive)
+      if (typeof navigator !== 'undefined' && navigator.locks && navigator.locks.request) {
+        let ocupado = false;
+        await navigator.locks.request('fiscalizacao-sync', { ifAvailable: true }, async (trava) => { if (!trava) { ocupado = true; return; } await corpoSync(forcar); });
+        if (ocupado) { Sync.log('outra aba', 'sincronização em andamento em outra janela do app — tenta de novo em 20 s'); clearTimeout(tentativaAuto); tentativaAuto = setTimeout(() => Sync.sincronizar({ forcar: true }), 20000); }
+      } else await corpoSync(forcar);
+    })().finally(() => {
+      emAndamento = null;
+      // alterações feitas durante a sincronização: sincroniza de novo em seguida
+      if (pedidoDurante && Sync.estado !== 'login' && Sync.estado !== 'sem_acesso') { const f = pedidoForcado; pedidoDurante = false; pedidoForcado = false; setTimeout(() => Sync.sincronizar(f ? { forcar: true } : { rapido: true }), 800); }
+    });
+    return emAndamento;
+  };
+  async function corpoSync(forcar) {
       try {
         if (!Sync.habilitado()) { emitir('local'); return; }
         if (!navigator.onLine) { emitir('offline'); return; }
@@ -328,14 +345,8 @@
           Sync.log('erro', e && e.message, e && e.stack);
           emitir('erro', { erro: (e && e.message) || String(e) });
         }
-      } finally {
-        emAndamento = null;
-        // alterações feitas durante a sincronização: sincroniza de novo em seguida
-        if (pedidoDurante && Sync.estado !== 'login' && Sync.estado !== 'sem_acesso') { const f = pedidoForcado; pedidoDurante = false; pedidoForcado = false; setTimeout(() => Sync.sincronizar(f ? { forcar: true } : { rapido: true }), 800); }
       }
-    })();
-    return emAndamento;
-  };
+  }
 
   let pedidoForcado = false;
   // a consulta de novidades (há menos de 25 s) já disse qual é a última gravação do servidor e o aparelho já a tem
@@ -401,7 +412,7 @@
         await DB.atualizar('fotos', f.id, (a) => {
           if (!a) return undefined;
           // o endereço no Drive entra no controle por campo (assim uma edição feita em outro aparelho não o apaga)
-          if (!a._pendente) { a._campos = {}; a._base = {}; }
+          if (!a._pendente) { a._campos = {}; a._base = {}; a._versaoBase = a.atualizadoEm; } // com a versão de base: o servidor confere conflitos
           if (a._campos) { a._campos.driveId = a.atualizadoEm; if (!('driveId' in (a._base || {}))) a._base = Object.assign({}, a._base, { driveId: 'undefined' }); }
           a.driveId = j.driveId; a._pendente = true;
           return a;
@@ -533,10 +544,52 @@
      Campo alterado só aqui: fica o daqui. Campo alterado só lá: fica o de lá. Alterado nos dois: vence a
      alteração mais recente. Exclusão vence sempre. */
   const jsn = (v) => String(JSON.stringify(v));
+  const SIS = new Set(['id', 'atualizadoEm', 'atualizadoPor', 'criadoEm', 'criadoPor', '_pendente', '_campos', '_base', '_versaoBase', '_vb']);
+  const ehEmitida = (n) => !!n && (n.status === 'emitida' || n.status === 'enviada' || n.status === 'respondida');
+  /* listas de itens com "id" (aditivos de prazo, contrarrespostas…): junta item a item — dois aparelhos que
+     acrescentaram cada um o seu não perdem nenhum; o que foi tirado aqui (desfazer) continua fora */
+  function juntarPorId(baseJson, loc, sv) {
+    if (!Array.isArray(loc) || !Array.isArray(sv)) return loc;
+    if (![...loc, ...sv].every((x) => x && typeof x === 'object' && x.id)) return loc;
+    let base = []; try { base = JSON.parse(baseJson); } catch (err) { base = []; }
+    if (!Array.isArray(base)) base = [];
+    const mb = new Map(base.filter((x) => x && x.id).map((x) => [x.id, jsn(x)]));
+    const ml = new Map(loc.map((x) => [x.id, x]));
+    const out = [];
+    for (const x of sv) {
+      if (ml.has(x.id)) { const l = ml.get(x.id); out.push(mb.has(x.id) && mb.get(x.id) === jsn(l) ? x : l); ml.delete(x.id); } // mexido aqui: fica o daqui
+      else if (!mb.has(x.id)) out.push(x); // novo do outro aparelho
+      // estava na base e foi tirado aqui: fica fora
+    }
+    for (const l of ml.values()) if (!mb.has(l.id)) out.push(l); // novo deste aparelho
+    return out;
+  }
   function mesclar(e, local, srv) {
     const out = Object.assign({}, srv);
     if (local && local.miniatura && !out.miniatura) out.miniatura = local.miniatura;
     if (!local) return out;
+    // 3.18.6: notificação emitida em outro aparelho: o rascunho antigo deste aparelho não muda o documento emitido
+    if (e === 'notificacoes' && local._pendente && local._campos && !srv.excluido && ehEmitida(srv) && !ehEmitida(local) && !('status' in local._campos)) { // ("Reabrir" muda o status: esse vale)
+      Sync.log('notificação emitida em outro aparelho', String(srv.id).slice(0, 8) + ' — alterações do rascunho deste aparelho descartadas');
+      for (const k of DB.CAMPOS_LOCAIS) delete out[k];
+      return out;
+    }
+    // e o contrário: emitida AQUI com base num rascunho que outro aparelho mexeu — vale o que foi emitido aqui
+    if (e === 'notificacoes' && local._pendente && local._campos && !srv.excluido && ehEmitida(local) && !ehEmitida(srv) && 'status' in local._campos) {
+      const campos = {};
+      for (const k of new Set([...Object.keys(local), ...Object.keys(srv)])) {
+        if (SIS.has(k) || k === 'miniatura') continue;
+        if (jsn(local[k]) === jsn(srv[k])) continue;
+        if (local[k] === undefined) delete out[k]; else out[k] = local[k];
+        campos[k] = local._campos[k] || local.atualizadoEm;
+      }
+      out._campos = campos; out._base = {}; for (const k of Object.keys(campos)) out._base[k] = jsn(srv[k]);
+      out._pendente = true; out._versaoBase = srv.atualizadoEm;
+      const ref = String(local.atualizadoEm || '') > String(srv.atualizadoEm || '') ? local.atualizadoEm : srv.atualizadoEm;
+      out.atualizadoEm = DB.carimbo(ref); out.atualizadoPor = local.atualizadoPor || srv.atualizadoPor;
+      pedidoDurante = true;
+      return out;
+    }
     // não perde o endereço da foto no Drive por causa de uma edição feita em outro aparelho
     let pend = false;
     if (e === 'fotos' && local.driveId && !out.driveId) { out.driveId = local.driveId; pend = true; }
@@ -548,6 +601,8 @@
         const sv = jsn(srv[k]);
         if (sv === jsn(local[k])) continue;
         const servidorMudou = local._base && k in local._base && sv !== local._base[k];
+        const lista = servidorMudou && Array.isArray(local[k]) && Array.isArray(srv[k]) ? juntarPorId(local._base[k], local[k], srv[k]) : null;
+        if (lista && lista !== local[k]) { out[k] = lista; if (jsn(lista) !== sv) { campos[k] = local._campos[k]; base[k] = sv; } continue; }
         if (servidorMudou && tSrv > (Date.parse(local._campos[k]) || 0)) continue; // os dois mexeram: vale a mais recente
         if (local[k] === undefined) delete out[k]; else out[k] = local[k];
         campos[k] = local._campos[k]; base[k] = sv;
@@ -575,6 +630,8 @@
       if (local) {
         // mesma versao que o aparelho ja tem: nada a fazer
         if (!local._pendente && String(local.atualizadoEm) === String(o.atualizadoEm) && !!local.excluido === !!o.excluido && (e !== 'fotos' || !o.driveId || local.driveId === o.driveId)) return undefined;
+        // 3.18.6: cópia mais antiga do que a que o aparelho já tem (ex.: recebida antes e guardada para gravar depois): ignora
+        if (!local._pendente && !o.excluido && String(local.atualizadoEm || '') > String(o.atualizadoEm || '')) return undefined;
         // exclusao e definitiva: uma copia antiga do servidor nao "ressuscita" o que foi excluido aqui
         if (local.excluido && !o.excluido) {
           if (local._pendente) return undefined;
@@ -643,6 +700,10 @@
         if (!lista.length) continue;
         const r = await aplicarRecebidos(e, lista);
         total += r.total;
+        const ruins = new Set(r.falhos.map((f) => f.o.id));
+        let tirou = false;
+        for (const o of lista) if (!ruins.has(o.id) && falhos[e + ':' + o.id]) { delete falhos[e + ':' + o.id]; tirou = true; }
+        if (tirou) { try { await DB.kvSet('recebidosFalhos', falhos); } catch (err) { /* */ } }
         for (const f of r.falhos) {
           // não conseguiu gravar no aparelho (memória cheia, app em segundo plano…): guarda para tentar de novo
           // (antes o registro era pulado para sempre, porque o cursor avançava)

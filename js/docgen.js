@@ -10,6 +10,7 @@
  *                            -> repete (ou remove) a linha inteira da tabela
  *   Dentro do laco {#fotos}, a imagem modelo (media/foto_modelo.png) e trocada pela foto.
  */
+try { (self.VERSOES_JS = self.VERSOES_JS || {}).docgen = '3.18.6'; } catch (e) { /* fora do navegador */ }
 (function (root) {
   const W = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';
   const R = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships';
@@ -114,8 +115,7 @@
     const lines = s.replace(/\r\n?/g, '\n').split('\n');
     lines.forEach((line, li) => {
       if (li > 0) out.push({ br: true });
-      const parts = line.split('**');
-      parts.forEach((part, k) => { if (part) out.push({ text: part, bold: k % 2 === 1 }); });
+      for (const pc of partesRicas(line)) if (pc.t) out.push({ text: pc.t, bold: !!pc.b, italic: !!pc.i, under: !!pc.u });
     });
     return out;
   }
@@ -134,7 +134,7 @@
         if (name[0] === '#' || name[0] === '/') { /* marcador residual */ }
         else {
           const v = valueToString(lookup(name, scopes));
-          if (v.indexOf('**') >= 0 || /[\r\n]/.test(v)) rich = true;
+          if (/[\r\n]/.test(v) || (/[*_]/.test(v) && temMarcas(v))) rich = true;
           segs.push({ val: v });
         }
         last = re.lastIndex;
@@ -143,7 +143,7 @@
       const run = t.parentNode;
       const simpleRun = run && isEl(run, 'r') && kids(run).filter((c) => !isEl(c, 'rPr')).length === 1;
       if (!rich || !simpleRun) {
-        setText(t, segs.map((x) => (x.lit !== undefined ? x.lit : x.val.replace(/\*\*/g, '').replace(/\s*[\r\n]+\s*/g, ' '))).join(''));
+        setText(t, segs.map((x) => (x.lit !== undefined ? x.lit : semMarcas(x.val).replace(/\s*[\r\n]+\s*/g, ' '))).join(''));
         continue;
       }
       // divide o run
@@ -157,9 +157,11 @@
       for (const pc of pieces) {
         const r = doc.createElementNS(W, 'w:r');
         let rPr = rPr0 ? rPr0.cloneNode(true) : null;
-        if (pc.bold) {
+        if (pc.bold || pc.italic || pc.under) {
           if (!rPr) rPr = doc.createElementNS(W, 'w:rPr');
-          setBold(doc, rPr);
+          if (pc.bold) setBold(doc, rPr);
+          if (pc.italic) setFlag(doc, rPr, ['i', 'iCs'], true);
+          if (pc.under) setFlag(doc, rPr, ['u'], true);
         }
         if (rPr) r.appendChild(rPr);
         if (pc.br) { r.appendChild(doc.createElementNS(W, 'w:br')); r.setAttribute('data-nl', '1'); }
@@ -433,7 +435,13 @@
     };
 
     const body = byTag(doc, W, 'body')[0];
-    renderChildren(ctx, body, [data]);
+    // seções de texto livre: garante um item na lista para servir de modelo do parágrafo com marcador
+    const dadosRender = opts.secoes && opts.secoes.fatos != null ? Object.assign({}, data, { itens: [{ texto: 'x' }] }) : data;
+    // parágrafo com marcador do modelo (o do {texto} da lista), para "- " em qualquer seção
+    let protoMarcador = null;
+    if (opts.secoes) { const pm = byTag(body, W, 'p').find((p) => temNum(p) && /\{\s*texto\s*\}/.test(paraText(p))); if (pm) protoMarcador = pm.cloneNode(true); }
+    renderChildren(ctx, body, [dadosRender]);
+    if (opts.secoes) aplicarSecoes(doc, opts.secoes, protoMarcador);
 
     // remove ids de paragrafo duplicados (clonados)
     const seen = new Set();
@@ -480,6 +488,173 @@
     }, opts.aoProgresso ? (m) => { try { opts.aoProgresso(m.percent); } catch (e) { /* */ } } : undefined);
   }
 
+
+  /* ------------------------------------------------------------------ */
+  /* 3.18.6: seções de texto livre da notificação ("Dos fatos" e "Providências").                         */
+  /* O texto padrão vem do próprio modelo (já preenchido); o usuário edita tudo e o documento troca os     */
+  /* parágrafos da seção pelos do texto, com a formatação dos parágrafos do modelo.                       */
+  /* Marcação: cada linha = 1 parágrafo · "- " no começo = item com marcador · "a) " = item recuado ·      */
+  /* **negrito** · *itálico*                                                                              */
+  const semAcento = (t) => String(t || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toUpperCase();
+  const SECAO = { fatos: /DOS FATOS/, prov: /PROVIDENCIAS A SEREM ADOTADAS/, sanc: /POSSIVEIS SANCOES/ };
+  const SENTINELA = '\u0001ITENS\u0001';
+  function acharSecoes(body) {
+    const ps = kids(body).filter((c) => isEl(c, 'p'));
+    const idx = {};
+    ps.forEach((p, i) => {
+      const t = semAcento(paraText(p)).trim();
+      if (t.length > 70) return;
+      for (const k of Object.keys(SECAO)) if (idx[k] == null && SECAO[k].test(t)) idx[k] = i;
+    });
+    return { ps, idx };
+  }
+  const temNum = (p) => { const pPr = kids(p).find((c) => isEl(c, 'pPr')); return !!(pPr && kids(pPr).some((c) => isEl(c, 'numPr'))); };
+  function flagRun(rPr, nome) {
+    const el = rPr ? kids(rPr).find((c) => isEl(c, nome)) : null;
+    return !!el && !/^(0|false|none)$/.test(el.getAttributeNS(W, 'val') || '');
+  }
+  // asterisco/sublinhado que são texto (ex.: "nota (*)") vão com barra: "\*" — não viram formatação
+  const escaparMarcas = (t) => String(t).replace(/([*_])/g, '\\$1');
+  function paragrafoParaTexto(p) {
+    const segs = [];
+    for (const r of byTag(p, W, 'r')) {
+      const txt = byTag(r, W, 't').map((x) => x.textContent).join('');
+      if (!txt) continue;
+      const rPr = kids(r).find((c) => isEl(c, 'rPr'));
+      const b = flagRun(rPr, 'b'), it = flagRun(rPr, 'i'), u = flagRun(rPr, 'u');
+      const ult = segs[segs.length - 1];
+      if (ult && ult.b === b && ult.i === it && ult.u === u) ult.txt += txt; else segs.push({ txt, b, i: it, u });
+    }
+    const linha = segs.map((sg) => {
+      if ((!sg.b && !sg.i && !sg.u) || !sg.txt.trim()) return escaparMarcas(sg.txt);
+      const m = /^(\s*)(.*?)(\s*)$/.exec(sg.txt);
+      const ab = (sg.b ? '**' : '') + (sg.i ? '*' : '') + (sg.u ? '__' : ''), fe = (sg.u ? '__' : '') + (sg.i ? '*' : '') + (sg.b ? '**' : '');
+      return m[1] + ab + escaparMarcas(m[2]) + fe + m[3];
+    }).join('').replace(/[ \t]{2,}/g, ' ').trim();
+    return (temNum(p) && linha ? '- ' : '') + linha;
+  }
+  const aparar = (l) => { while (l.length && !l[0].trim()) l.shift(); while (l.length && !l[l.length - 1].trim()) l.pop(); return l; };
+  /** Texto (já preenchido com os dados) das seções do modelo: { fatosAntes, fatosDepois, prov, ok }. */
+  async function textoSecoes(template, data, opts) {
+    opts = opts || {};
+    const JSZip = opts.JSZip || root.JSZip;
+    const DP = opts.DOMParser || root.DOMParser;
+    const zip = await JSZip.loadAsync(template);
+    const doc = new DP().parseFromString(await zip.file('word/document.xml').async('string'), 'application/xml');
+    const d = Object.assign({}, data, { itens: [{ texto: SENTINELA }], fotos: [] });
+    const ctx = { doc, applyPhoto() {}, applyTagged() {}, inserir() {} };
+    const body = byTag(doc, W, 'body')[0];
+    renderChildren(ctx, body, [d]);
+    const { ps, idx } = acharSecoes(body);
+    // okProv: o fim das Providências é o título "Possíveis sanções" — modelo sem ele: Providências ficam como antes
+    const out = { fatosAntes: '', fatosDepois: '', prov: '', ok: idx.fatos != null && idx.prov != null, okProv: idx.sanc != null && idx.sanc > idx.prov };
+    if (!out.ok) return out;
+    const fatos = ps.slice(idx.fatos + 1, idx.prov).map(paragrafoParaTexto);
+    const k = fatos.findIndex((t) => t.indexOf(SENTINELA) >= 0);
+    out.fatosAntes = aparar(k >= 0 ? fatos.slice(0, k) : fatos).join('\n');
+    out.fatosDepois = aparar(k >= 0 ? fatos.slice(k + 1) : []).join('\n');
+    out.prov = out.okProv ? aparar(ps.slice(idx.prov + 1, idx.sanc).map(paragrafoParaTexto)).join('\n') : '';
+    return out;
+  }
+  /* **negrito**, *itálico*, __sublinhado__ (podem se combinar: **__texto__**). Cada marcador só vale em par;
+     um asterisco sozinho fica como texto. */
+  function partesRicas(s) {
+    s = String(s == null ? '' : s);
+    const marc = [];
+    for (let i = 0; i < s.length;) {
+      if (s[i] === '\\' && (s[i + 1] === '*' || s[i + 1] === '_')) { marc.push({ i, k: 'esc', n: 1 }); i += 2; } // "\*" = asterisco de texto
+      else if (s.startsWith('**', i)) { marc.push({ i, k: 'b', n: 2 }); i += 2; }
+      else if (s.startsWith('__', i)) { marc.push({ i, k: 'u', n: 2 }); i += 2; }
+      else if (s[i] === '*') { marc.push({ i, k: 'i', n: 1 }); i += 1; }
+      else i++;
+    }
+    const usados = new Set(marc.filter((m) => m.k === 'esc'));
+    for (const k of ['b', 'u', 'i']) {
+      const l = marc.filter((m) => m.k === k);
+      for (let j = 0; j + 1 < l.length; j += 2) { usados.add(l[j]); usados.add(l[j + 1]); }
+    }
+    const out = [], f = { b: false, i: false, u: false };
+    let buf = '', pos = 0;
+    const flush = () => { if (buf) out.push({ t: buf, b: f.b, i: f.i, u: f.u }); buf = ''; };
+    for (const m of marc) {
+      if (!usados.has(m)) continue;
+      if (m.k === 'esc') { buf += s.slice(pos, m.i); pos = m.i + 1; continue; } // tira só a barra; o caractere fica
+      buf += s.slice(pos, m.i); flush(); f[m.k] = !f[m.k]; pos = m.i + m.n;
+    }
+    buf += s.slice(pos); flush();
+    return out;
+  }
+  const temMarcas = (s) => partesRicas(s).some((p) => p.b || p.i || p.u);
+  const semMarcas = (s) => partesRicas(s).map((p) => p.t).join('');
+  function setFlag(doc, rPr, nomes, ligar) {
+    for (const name of nomes) {
+      let el = kids(rPr).find((c) => isEl(c, name));
+      if (!ligar) { if (el) rPr.removeChild(el); continue; }
+      if (el) { if (name === 'u') el.setAttributeNS(W, 'w:val', 'single'); else el.removeAttributeNS(W, 'val'); continue; }
+      el = doc.createElementNS(W, 'w:' + name);
+      if (name === 'u') el.setAttributeNS(W, 'w:val', 'single');
+      const myIdx = RPR_ORDER.indexOf(name);
+      const after = kids(rPr).find((c) => RPR_ORDER.indexOf(c.localName) > myIdx);
+      if (after) rPr.insertBefore(el, after); else rPr.appendChild(el);
+    }
+  }
+  function novoParagrafo(doc, proto, linha, semNumero, recuo) {
+    const p = doc.createElementNS(W, 'w:p');
+    const pPr0 = kids(proto).find((c) => isEl(c, 'pPr'));
+    if (pPr0 || recuo) {
+      const pPr = pPr0 ? pPr0.cloneNode(true) : doc.createElementNS(W, 'w:pPr');
+      if (semNumero) { const np = kids(pPr).find((c) => isEl(c, 'numPr')); if (np) pPr.removeChild(np); }
+      if (recuo) { // "a) ...": recuado, com a letra pendurada
+        let ind = kids(pPr).find((c) => isEl(c, 'ind'));
+        if (!ind) { ind = doc.createElementNS(W, 'w:ind'); const jc = kids(pPr).find((c) => isEl(c, 'jc') || isEl(c, 'rPr')); if (jc) pPr.insertBefore(ind, jc); else pPr.appendChild(ind); }
+        for (const a of ['firstLine', 'hanging', 'left', 'start', 'firstLineChars', 'hangingChars']) ind.removeAttributeNS(W, a);
+        ind.setAttributeNS(W, 'w:left', '1418'); ind.setAttributeNS(W, 'w:hanging', '284');
+      }
+      p.appendChild(pPr);
+    }
+    const r0 = byTag(proto, W, 'r').find((r) => byTag(r, W, 't').length);
+    const rPr0 = r0 ? kids(r0).find((c) => isEl(c, 'rPr')) : null;
+    for (const pc of partesRicas(linha)) {
+      if (!pc.t) continue;
+      const r = doc.createElementNS(W, 'w:r');
+      const rPr = rPr0 ? rPr0.cloneNode(true) : doc.createElementNS(W, 'w:rPr');
+      setFlag(doc, rPr, ['b', 'bCs'], !!pc.b);
+      setFlag(doc, rPr, ['i', 'iCs'], !!pc.i);
+      setFlag(doc, rPr, ['u'], !!pc.u);
+      if (kids(rPr).length) r.appendChild(rPr);
+      const t = doc.createElementNS(W, 'w:t'); setText(t, pc.t); r.appendChild(t);
+      p.appendChild(r);
+    }
+    return p;
+  }
+  /** Troca os parágrafos das seções (secoes.fatos / secoes.prov: texto com a marcação acima). */
+  function aplicarSecoes(doc, secoes, protoMarcador) {
+    const body = byTag(doc, W, 'body')[0];
+    const { ps, idx } = acharSecoes(body);
+    const trocar = (ini, fim, texto) => {
+      if (ini == null || fim == null || texto == null) return;
+      const corpo = ps.slice(ini + 1, fim);
+      const naoVazio = corpo.filter((p) => paraText(p).trim());
+      const normal = naoVazio.find((p) => !temNum(p)) || corpo[0] || ps[ini];
+      const marcador = naoVazio.find((p) => temNum(p)) || protoMarcador || normal;
+      // espaço antes do próximo título: o último parágrafo vazio fica
+      const ultimo = corpo[corpo.length - 1];
+      const manter = ultimo && !paraText(ultimo).trim() ? ultimo : null;
+      const ref = manter || ps[fim];
+      const novos = String(texto).replace(/\r\n?/g, '\n').split('\n').map((l) => {
+        const lt = l.replace(/\s+$/, '');
+        if (/^\s*[-•]\s+/.test(lt)) return novoParagrafo(doc, marcador, lt.replace(/^\s*[-•]\s+/, ''), false);
+        if (/^\s*[a-z]\)\s+/i.test(lt)) return novoParagrafo(doc, normal, lt.trim(), true, true);
+        return novoParagrafo(doc, normal, lt.trim(), false);
+      });
+      for (const p of corpo) if (p !== manter) body.removeChild(p);
+      for (const p of novos) body.insertBefore(p, ref);
+    };
+    // de baixo para cima: os índices de cima continuam valendo
+    if (secoes.prov != null && idx.sanc != null && idx.sanc > idx.prov) trocar(idx.prov, idx.sanc, secoes.prov);
+    if (secoes.fatos != null) trocar(idx.fatos, idx.prov, secoes.fatos);
+  }
+
   /** Lista os marcadores encontrados em um modelo (para validar modelos enviados pelo usuario). */
   async function listarMarcadores(template, opts) {
     opts = opts || {};
@@ -513,22 +688,8 @@
       if (t === '{#' + nome + '}') { dentro = true; continue; }
       if (t === '{/' + nome + '}') break;
       if (!dentro) continue;
-      const segs = [];
-      for (const r of byTag(p, W, 'r')) {
-        const txt = byTag(r, W, 't').map((x) => x.textContent).join('');
-        if (!txt) continue;
-        const rPr = kids(r).find((c) => isEl(c, 'rPr'));
-        const b = rPr ? kids(rPr).find((c) => isEl(c, 'b')) : null;
-        const bold = !!b && !/^(0|false)$/.test(b.getAttributeNS(W, 'val') || '');
-        const ult = segs[segs.length - 1];
-        if (ult && ult.bold === bold) ult.txt += txt; else segs.push({ txt, bold });
-      }
-      const linha = segs.map((sg) => {
-        if (!sg.bold || !sg.txt.trim()) return sg.txt;
-        const m = /^(\s*)(.*?)(\s*)$/.exec(sg.txt);
-        return m[1] + '**' + m[2] + '**' + m[3];
-      }).join('').replace(/[ \t]{2,}/g, ' ').trim();
-      linhas.push(linha);
+      const l = paragrafoParaTexto(p);
+      linhas.push(temNum(p) ? l.replace(/^- /, '') : l);
     }
     return linhas.join('\n');
   }
@@ -836,7 +997,7 @@
     }, paresFiscais(fiscais));
   }
 
-  const api = { gerar, montarDadosMedicao, montarDadosRelatorio, montarDadosSanadas, montarDadosIrregularidades, montarDados, listarMarcadores, extrairTextoBloco, textoEquipe, imageSize };
+  const api = { gerar, textoSecoes, partesRicas, montarDadosMedicao, montarDadosRelatorio, montarDadosSanadas, montarDadosIrregularidades, montarDados, listarMarcadores, extrairTextoBloco, textoEquipe, imageSize };
   if (typeof module === 'object' && module.exports) module.exports = api;
   else root.DocGen = api;
 })(typeof self !== 'undefined' ? self : this);
