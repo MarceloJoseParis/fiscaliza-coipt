@@ -1,5 +1,5 @@
 /* Service worker: guarda o app no aparelho para funcionar sem internet */
-const VERSAO = 'notif-v3.18.5';
+const VERSAO = 'notif-v3.18.6-r2';
 const ARQUIVOS = [
   './', 'index.html', 'privacidade.html', 'config.js', 'manifest.webmanifest', 'css/app.css', 'css/novo.css',
   'lib/jszip.min.js', 'js/extenso.js', 'js/docgen.js', 'js/xlsx.js', 'js/db.js', 'js/foto.js', 'js/camera.js', 'js/sync.js', 'js/app.js',
