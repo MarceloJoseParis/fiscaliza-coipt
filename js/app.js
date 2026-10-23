@@ -1385,15 +1385,15 @@
     cacheAnexos.set(x.id, b);
     return b;
   }
-  async function abrirAnexo(x, a, aoMudar) {
-    const podeEd = a && (a.criadoPor === email() || pode.admin()) && !a.excluido && pode.coletar();
+  /* Cabeçalho + Abrir/Baixar/Compartilhar de um arquivo anexado (comentário da obra ou documento da notificação) */
+  function painelArquivo(x, quemNome) {
     const st = h('div', { class: 'sub', style: { margin: '6px 0 10px' } });
     let blob = null;
     const carregar = async () => {
       if (blob) return blob;
       rc(st, h('span', { class: 'carregando' }), ' Baixando o arquivo…');
       try { blob = await blobAnexo(x); } catch (e) { rc(st, '⚠️ Não foi possível baixar: ' + e.message); return null; }
-      if (!blob) { rc(st, 'O arquivo ainda não chegou ao Drive (está no aparelho de ' + ((a && a.quemNome) || 'quem anexou') + ').'); return null; }
+      if (!blob) { rc(st, 'O arquivo ainda não chegou ao Drive (está no aparelho de ' + (quemNome || 'quem anexou') + ').'); return null; }
       rc(st, 'Pronto · ' + tamDoc(blob.size)); return blob;
     };
     const abrir = async () => {
@@ -1401,9 +1401,7 @@
       const b = await carregar(); if (!b) { if (w) w.close(); return; }
       if (w) { w.location.href = URL.createObjectURL(b); } else baixarBlob(b, x.nome);
     };
-    const tipoSel = h('select', { 'aria-label': 'Tipo' }, TIPOS_DOC.map((t) => h('option', { selected: t === x.tipo ? 'selected' : null }, t)));
-    const discSel = h('select', { 'aria-label': 'Disciplina' }, h('option', { value: '' }, '— sem disciplina —'), DISC_DOC.map((t) => h('option', { selected: t === x.disc ? 'selected' : null }, t)));
-    const corpo = h('div', {},
+    return h('div', {},
       h('div', { class: 'anx-item', style: { cursor: 'default' } }, h('span', { class: 'anx-ico ' + corDoc(x.nome) }, (extDoc(x.nome) || 'arq').slice(0, 4).toUpperCase()),
         h('div', { class: 'anx-c' }, h('div', { class: 'anx-n', style: { whiteSpace: 'normal' } }, x.nome), h('small', {}, tamDoc(x.tam) + (x.driveId ? ' · no Drive' : ' · ainda não está no Drive')))),
       st,
@@ -1414,7 +1412,13 @@
           const b = await carregar(); if (!b) return;
           const f = new File([b], x.nome, { type: b.type });
           try { if (navigator.canShare({ files: [f] })) await navigator.share({ files: [f], title: x.nome }); else baixarBlob(b, x.nome); } catch (e) { /* cancelado */ }
-        } }, '📤 Compartilhar') : null),
+        } }, '📤 Compartilhar') : null));
+  }
+  async function abrirAnexo(x, a, aoMudar) {
+    const podeEd = a && (a.criadoPor === email() || pode.admin()) && !a.excluido && pode.coletar();
+    const tipoSel = h('select', { 'aria-label': 'Tipo' }, TIPOS_DOC.map((t) => h('option', { selected: t === x.tipo ? 'selected' : null }, t)));
+    const discSel = h('select', { 'aria-label': 'Disciplina' }, h('option', { value: '' }, '— sem disciplina —'), DISC_DOC.map((t) => h('option', { selected: t === x.disc ? 'selected' : null }, t)));
+    const corpo = h('div', {}, painelArquivo(x, a && a.quemNome),
       podeEd ? h('div', { style: { marginTop: '14px' } }, h('div', { class: 'grade2' }, campo('Tipo', tipoSel), campo('Disciplina', discSel))) : null);
     const v = await modal('Arquivo', corpo, podeEd ? [{ txt: 'Fechar', valor: false }, { txt: 'Salvar tipo', cls: 'pri', valor: true }] : [{ txt: 'Fechar', valor: false }]);
     if (v && podeEd && (tipoSel.value !== x.tipo || (discSel.value || '') !== (x.disc || ''))) {
@@ -4905,8 +4909,8 @@
     o.prazoFinal = prazoFinalUteis(dataISO, o.prazoDiasEnvio);
     o.enviadaPor = email();
   }
-  async function pedirDataEnvio(n, inicial) {
-    const d = { data: inicial || X.hojeISO(), hora: inicial ? horaEnv0(n) : agoraHM() };
+  async function pedirDataEnvio(n, inicial, opts) {
+    const d = { data: inicial || X.hojeISO(), hora: inicial ? horaEnv0(n) : agoraHM(), docs: { arqs: [] } };
     const dias = (+n.prazo_dias || 3) + ((n.aditivosPrazo || []).reduce((t, a) => t + (+a.dias || 0), 0));
     const inp = h('input', { type: 'date', value: d.data, max: X.hojeISO(), oninput: (e) => { d.data = e.target.value; prev(); } });
     const inpH = h('input', { type: 'time', value: d.hora, step: '60', 'aria-label': 'Horário do envio', oninput: (e) => { d.hora = e.target.value; prev(); } });
@@ -4919,7 +4923,8 @@
     prev();
     const ok = await modal('📨 Registrar envio', h('div', {},
       h('p', {}, 'Data e horário em que a notificação foi enviada. O prazo em dias úteis conta a partir desse momento: vence no último dia do prazo, no mesmo horário do envio.'),
-      h('div', { class: 'grade2' }, campo('Data do envio', inp), campo('Horário do envio', inpH)), info),
+      h('div', { class: 'grade2' }, campo('Data do envio', inp), campo('Horário do envio', inpH)), info,
+      opts && opts.docs ? campoBloco('Documentos (opcional)', seletorDocs(d.docs, { rotulo: '📎 Anexar notificação assinada / comprovante' })) : null),
     [{ txt: 'Cancelar', valor: false }, { txt: 'Registrar envio', cls: 'pri', valor: true, antes: () => {
       if (!d.data) { toast('Informe a data.', true); return false; }
       if (d.data > X.hojeISO()) { toast('A data do envio não pode ser futura.', true); return false; }
@@ -4929,11 +4934,12 @@
     return ok ? d : null;
   }
   async function pedirResposta(n) {
-    const d = { data: X.hojeISO(), obs: '' };
+    const d = { data: X.hojeISO(), obs: '', docs: { arqs: [] } };
     const ok = await modal('✅ Registrar resposta', h('div', {},
       h('p', {}, 'Data em que ' + quemResponde(n.tipo) + ' respondeu à notificação. A pendência sai da lista de prazos.'),
       campo('Data da resposta', h('input', { type: 'date', value: d.data, min: n.enviadaEm || null, oninput: (e) => { d.data = e.target.value; } })),
-      campo('Observação (opcional)', inputArea(d, 'obs', { placeholder: 'Ex.: Ofício nº 123/2026 — apresentou cronograma de correção.' }))),
+      campo('Observação (opcional)', inputArea(d, 'obs', { placeholder: 'Ex.: Ofício nº 123/2026 — apresentou cronograma de correção.' })),
+      campoBloco('Documentos da resposta (opcional)', seletorDocs(d.docs, { rotulo: '📎 Anexar ofício, e-mail…' }))),
     [{ txt: 'Cancelar', valor: false }, { txt: 'Registrar', cls: 'ok', valor: true, antes: () => {
       if (!d.data) { toast('Informe a data.', true); return false; }
       if (n.enviadaEm && d.data < n.enviadaEm) { toast('A resposta não pode ser anterior ao envio (' + X.dataBR(n.enviadaEm) + ').', true); return false; }
@@ -4942,7 +4948,7 @@
     return ok ? d : null;
   }
   async function pedirContra(n) {
-    const d = { data: X.hojeISO(), hora: agoraHM(), dias: +(CONFIG || {}).prazo_padrao || 3, obs: '' };
+    const d = { data: X.hojeISO(), hora: agoraHM(), dias: +(CONFIG || {}).prazo_padrao || 3, obs: '', docs: { arqs: [] } };
     const quem = quemResponde(n.tipo);
     const inD = h('input', { type: 'date', value: d.data, max: X.hojeISO(), min: n.respondidaEm || null, oninput: (e) => { d.data = e.target.value; prev(); } });
     const inH = h('input', { type: 'time', value: d.hora, step: '60', 'aria-label': 'Horário', oninput: (e) => { d.hora = e.target.value; prev(); } });
@@ -4958,14 +4964,15 @@
       h('p', {}, 'Nossa resposta à manifestação ' + (quem === 'a prefeitura' ? 'da prefeitura' : 'da empresa') + ', com um novo prazo para ' + quem + ' responder. Informe quando foi enviada.'),
       h('div', { class: 'grade2' }, campo('Data do envio', inD), campo('Horário do envio', inH)),
       campo('Prazo para responder (dias úteis)', inN), info,
-      campo('Resumo / documento (opcional)', inputArea(d, 'obs', { placeholder: 'Ex.: Ofício nº 45/2026 — não aceitamos a justificativa; pedimos o cronograma de troca.' }))),
+      campo('Resumo / documento (opcional)', inputArea(d, 'obs', { placeholder: 'Ex.: Ofício nº 45/2026 — não aceitamos a justificativa; pedimos o cronograma de troca.' })),
+      campoBloco('Documentos (opcional)', seletorDocs(d.docs, { rotulo: '📎 Anexar a contrarresposta' }))),
     [{ txt: 'Cancelar', valor: false }, { txt: 'Registrar', cls: 'pri', valor: true, antes: () => {
       if (!d.data || !/^\d\d:\d\d$/.test(d.hora || '')) { toast('Informe a data e o horário do envio.', true); return false; }
       if (d.data > X.hojeISO() || (d.data === X.hojeISO() && d.hora > agoraHM())) { toast('A data e o horário não podem ser futuros.', true); return false; }
       if (n.respondidaEm && d.data < n.respondidaEm) { toast('A contrarresposta não pode ser anterior à resposta (' + X.dataBR(n.respondidaEm) + ').', true); return false; }
       if (!(d.dias >= 1)) { toast('Informe o prazo em dias úteis.', true); return false; }
     } }]);
-    return ok ? { enviadaEm: d.data, enviadaHora: d.hora, prazoDias: d.dias, obs: d.obs.trim() } : null;
+    return ok ? { enviadaEm: d.data, enviadaHora: d.hora, prazoDias: d.dias, obs: d.obs.trim(), docs: d.docs.arqs } : null;
   }
   /* Acompanhamento da notificação emitida: emitida → enviada → prazo (dias úteis) → resposta */
   /* 3.18.1: aditivo de prazo para responder a notificação (pedido da prefeitura/empresa). Soma dias úteis ao prazo
@@ -5001,16 +5008,19 @@
             h('button', { type: 'button', 'aria-label': 'Um dia a mais', onclick: () => definir(st.dias + 1) }, '+')),
           sugs, novo)),
       campo('Data do pedido d' + quem + ' (opcional)', pedido),
-      campo('Justificativa (obrigatória)', just, 'Aparece na Atividade da obra e no histórico desta notificação.'));
+      campo('Justificativa (obrigatória)', just, 'Aparece na Atividade da obra e no histórico desta notificação.'),
+      campoBloco('Pedido d' + quem + ' (opcional)', seletorDocs(st, { rotulo: '📎 Anexar o pedido (ofício, e-mail…)' })));
     const r2 = await modal('Aditar prazo de resposta', conteudo, [
       { txt: 'Cancelar', valor: null },
       { txt: 'Aditar prazo', cls: 'pri', antes: () => { if (just.value.trim().length < 10) { toast('Escreva a justificativa do aditivo.', true); just.focus(); return false; } return true; },
-        valor: () => ({ dias: st.dias, justificativa: just.value.trim(), pedidoEm: pedido.value || '' }) }]);
+        valor: () => ({ dias: st.dias, justificativa: just.value.trim(), pedidoEm: pedido.value || '', docs: st.arqs || [] }) }]);
     return r2 || null;
   }
   async function aditarPrazoNotif(n, r) {
-    const ad = await dialogoAditivoPrazo(n, r);
-    if (!ad) return false;
+    const ad0 = await dialogoAditivoPrazo(n, r);
+    if (!ad0) return false;
+    const docsAd = ad0.docs || [];
+    const ad = Object.assign({}, ad0); delete ad.docs; // os arquivos vão para n.documentos (etapa "aditivo")
     const de = prazoDe(n);
     let salvo = null;
     await atualizarCampos('notificacoes', n.id, (o) => {
@@ -5025,6 +5035,7 @@
     await registrarAtividade(r.id, 'aditivo_prazo', k + 'º aditivo de prazo · Notificação' + (n.numero ? ' nº ' + n.numero : ''),
       'Resposta até ' + X.dataBR(salvo.para) + comHora(n) + ' (antes ' + X.dataBR(de) + ', +' + plural(ad.dias, 'dia útil', 'dias úteis') + ')' + (ad.pedidoEm ? ' · pedido em ' + X.dataBR(ad.pedidoEm) : '') + '\nJustificativa: ' + ad.justificativa,
       { notificacaoId: n.id });
+    if (docsAd.length) await salvarDocsNotif(n, docsAd, 'aditivo');
     toast('Prazo aditado: resposta até ' + X.dataBR(salvo.para) + comHora(n));
     verificarPrazos();
     return true;
@@ -5048,9 +5059,104 @@
   }
   const aplicarAssinatura = (o, a) => { o.assinaturaEm = a.data; o.assinaturaHora = a.hora; if (a.ref) o.assinaturaRef = a.ref; else delete o.assinaturaRef; o.assinaturaPor = email(); delete o.assinaturaDireta; };
   const nomeNotif = (n) => (n.ordinal ? n.ordinal + 'ª notificação' : 'Notificação') + (n.numero ? ' nº ' + n.numero : '');
+  /* ---- 3.18.8: documentos da notificação (assinada, comprovante de envio, pedido de aditivo, resposta, contrarresposta…) ----
+     Ficam em n.documentos[] ({ id, nome, tam, mime, etapa, pasta, driveId, em, por, quemNome }); o arquivo fica no
+     aparelho até a sincronização mandar para o Drive (Documentos/<obra>), como os arquivos dos comentários. */
+  function etapasDocNotif(n) {
+    const daQuem = quemResponde(n.tipo) === 'a prefeitura' ? 'da prefeitura' : 'da empresa';
+    const l = [['assinada', 'Notificação assinada'], ['envio', 'Comprovante de envio'], ['aditivo', 'Pedido de aditivo de prazo'], ['resposta', 'Resposta ' + daQuem]];
+    const rods = n.rodadas || [];
+    rods.forEach((ro, i) => { const k = rods.length > 1 ? ' ' + (i + 1) : ''; l.push(['contra:' + ro.id, 'Contrarresposta' + k]); l.push(['resposta:' + ro.id, 'Resposta à contrarresposta' + k]); });
+    l.push(['outro', 'Outro documento']);
+    return l;
+  }
+  const rotEtapaDoc = (n, e) => (etapasDocNotif(n).find((x) => x[0] === e) || [e, 'Outro documento'])[1];
+  function etapaDocPadrao(n, nome) {
+    if (/assinad/i.test(nome)) return 'assinada';
+    if (/comprovante|recebimento|\bAR\b|e-?mail enviado/i.test(nome)) return 'envio';
+    if (/prorroga|aditivo|dila[cç][aã]o|mais prazo/i.test(nome)) return 'aditivo';
+    const rods = n.rodadas || [], ult = rods[rods.length - 1];
+    if (ult) return ult.respondidaEm ? 'resposta:' + ult.id : 'contra:' + ult.id;
+    if (n.respondidaEm) return 'resposta';
+    if (n.enviadaEm) return /resposta|of[ií]cio|manifesta/i.test(nome) ? 'resposta' : 'envio';
+    return 'assinada';
+  }
+  /* escolher vários arquivos (até 20 MB cada); opts.etapas: cada arquivo escolhe a etapa */
+  function seletorDocs(est, opts) {
+    opts = opts || {};
+    est.arqs = est.arqs || [];
+    const box = h('div', { class: 'anx-esc' });
+    const pintar = () => rc(box, est.arqs.map((x, i) => h('div', { class: 'anx-fc' },
+      h('div', { class: 'anx-fc-l' }, h('span', { class: 'anx-ico ' + corDoc(x.nome) }, (extDoc(x.nome) || 'arq').slice(0, 4).toUpperCase()),
+        h('span', { class: 'anx-n' }, x.nome), h('small', {}, tamDoc(x.tam)),
+        h('button', { type: 'button', class: 'anx-x', 'aria-label': 'Tirar ' + x.nome, onclick: () => { est.arqs.splice(i, 1); pintar(); } }, '✕')),
+      opts.etapas ? h('div', { class: 'anx-fc-s' }, h('select', { 'aria-label': 'Etapa', onchange: (e) => { x.etapa = e.target.value; } },
+        opts.etapas.map(([k, t]) => h('option', { value: k, selected: k === x.etapa ? 'selected' : null }, t)))) : null)));
+    const inp = h('input', { type: 'file', multiple: 'multiple', style: { display: 'none' }, onchange: () => {
+      const grandes = [];
+      for (const f of Array.from(inp.files || [])) {
+        if (f.size > ANEXO_MAX) { grandes.push(f.name); continue; }
+        est.arqs.push({ file: f, nome: f.name, tam: f.size, mime: f.type || '', etapa: opts.padrao ? opts.padrao(f.name) : '' });
+      }
+      inp.value = '';
+      if (grandes.length) toast('Maior que 20 MB (não entrou): ' + grandes.join(', '), true);
+      pintar();
+    } });
+    pintar();
+    return h('div', { class: 'anx-sel' }, h('button', { type: 'button', class: 'btn peq', 'data-acao': 'escolher-docs', onclick: () => inp.click() }, opts.rotulo || '📎 Escolher arquivos'), inp, box);
+  }
+  async function salvarDocsNotif(n, arqs, etapaFixa) {
+    if (!arqs || !arqs.length) return 0;
+    const r = (await DB.get('registros', n.registroId)) || {};
+    const pasta = pastaDocObra(r);
+    const docs = [];
+    for (const x of arqs) {
+      const id = DB.uuid();
+      await DB.arquivoSet('anx_' + id, x.file, { nome: x.nome, em: Date.now() });
+      docs.push({ id, nome: x.nome, tam: x.tam, mime: x.mime, etapa: etapaFixa || x.etapa || 'outro', pasta, em: new Date().toISOString(), por: email(), quemNome: meuNome() });
+    }
+    await atualizarCampos('notificacoes', n.id, (o) => { o.documentos = (o.documentos || []).concat(docs); });
+    const etapas = [...new Set(docs.map((d) => rotEtapaDoc(n, d.etapa)))].join(', ');
+    await ativNotif(n, docs.length === 1 ? 'documento anexado' : docs.length + ' documentos anexados', etapas + ' · ' + docs.map((d) => d.nome).join(', '));
+    return docs.length;
+  }
+  async function abrirDocNotif(x, n, redesenhar) {
+    const podeEd = pode.notificar() && (x.por === email() || pode.admin());
+    const sel = h('select', { 'aria-label': 'Etapa' }, etapasDocNotif(n).map(([k, t]) => h('option', { value: k, selected: k === x.etapa ? 'selected' : null }, t)));
+    let remover = false;
+    const corpo = h('div', {}, painelArquivo(x, x.quemNome),
+      h('div', { class: 'sub', style: { marginTop: '10px' } }, rotEtapaDoc(n, x.etapa) + ' · anexado em ' + dataHoraBR(x.em) + (x.quemNome ? ' por ' + x.quemNome : '')),
+      podeEd ? h('div', { style: { marginTop: '12px' } }, campoBloco('Etapa', sel),
+        h('button', { type: 'button', class: 'btn peq perigo', 'data-acao': 'remover-doc', style: { marginTop: '8px' }, onclick: async (e) => {
+          if (!(await confirmar('Tirar este documento da notificação? A cópia que já está no Drive continua na pasta da obra.', 'Tirar', true))) return;
+          remover = true; const f = e.target.closest('.modal-fundo'); const b = f && [...f.querySelectorAll('.modal button')].find((y) => y.textContent === 'Fechar'); if (b) b.click();
+        } }, 'Tirar da notificação')) : null);
+    const v = await modal('Documento', corpo, podeEd ? [{ txt: 'Fechar', valor: false }, { txt: 'Salvar etapa', cls: 'pri', valor: true }] : [{ txt: 'Fechar', valor: false }]);
+    if (remover) {
+      await atualizarCampos('notificacoes', n.id, (o) => { o.documentos = (o.documentos || []).filter((y) => y.id !== x.id); });
+      try { await DB.del('arquivos', 'anx_' + x.id); } catch (e) { /* */ }
+      await ativNotif(n, 'documento retirado', x.nome);
+      toast('Documento retirado'); redesenhar(); return;
+    }
+    if (v && podeEd && sel.value !== x.etapa) {
+      await atualizarCampos('notificacoes', n.id, (o) => { const y = (o.documentos || []).find((z) => z.id === x.id); if (y) y.etapa = sel.value; });
+      toast('Etapa do documento alterada'); redesenhar();
+    }
+  }
+  function listaDocsNotif(n, docs, redesenhar) {
+    if (!docs.length) return null;
+    const semServidor = Sync.habilitado() && Sync.versaoServidor && Sync.versaoServidor < (Sync.ANEXO_MIN_SERVIDOR || 17);
+    return h('div', { class: 'anx-lista nf-docs' }, docs.map((x) => h('button', { type: 'button', class: 'anx-item', title: x.nome, 'data-doc': x.id, onclick: () => abrirDocNotif(x, n, redesenhar) },
+      h('span', { class: 'anx-ico ' + corDoc(x.nome) }, (extDoc(x.nome) || 'arq').slice(0, 4).toUpperCase()),
+      h('span', { class: 'anx-c' }, h('span', { class: 'anx-n' }, x.nome),
+        h('small', {}, x.driveId ? tamDoc(x.tam) + ' · no Drive' : x.por === email() ? tamDoc(x.tam) + (semServidor ? ' · neste aparelho (servidor precisa ser atualizado)' : ' · neste aparelho, aguardando envio') : 'ainda não enviado pelo aparelho de ' + (x.quemNome || 'quem anexou'))))));
+  }
   const ativNotif = (n, titulo, texto) => registrarAtividade(n.registroId, 'notif_etapa', nomeNotif(n) + ' · ' + titulo, texto || '', { notificacaoId: n.id }).catch(() => {});
   function cartaoEnvio(n, r, redesenhar) {
     const sit = situacaoNotif(n);
+    const todosDocs = n.documentos || [];
+    const conhecidas = new Set(etapasDocNotif(n).map((x) => x[0]));
+    const docsDe = (etapa) => listaDocsNotif(n, todosDocs.filter((x) => (conhecidas.has(x.etapa) ? x.etapa : 'outro') === etapa), redesenhar);
     const quem = quemResponde(n.tipo || r.tipo);
     const dias = +(n.prazoDiasEnvio || n.prazo_dias) || 3;
     const pf = n.enviadaEm ? prazoOriginal(n) : null;
@@ -5065,9 +5171,10 @@
       h('span', { class: nc('b') }, est === 'feito' ? ico('ok') : String(numero)),
       h('div', { class: nc('c') }, h('b', {}, t), sub ? h('div', { class: 'sub' }, sub) : null, extra || null));
     const registrarEnvio = pode.notificar() ? h('button', { class: 'btn pri peq', onclick: async () => {
-      const envio = await pedirDataEnvio(n);
+      const envio = await pedirDataEnvio(n, null, { docs: true });
       if (!envio) return;
       await atualizarCampos('notificacoes', n.id, (o) => aplicarEnvio(o, envio.data, envio.hora));
+      if (envio.docs.arqs.length) await salvarDocsNotif(n, envio.docs.arqs.map((x) => Object.assign(x, { etapa: /assinad/i.test(x.nome) ? 'assinada' : 'envio' })));
       await ativNotif(n, 'enviada', X.dataBR(envio.data) + ' às ' + envio.hora + (n.assinaturaEm ? '' : ' · registrada direto (já assinada)'));
       toast('Envio registrado — prazo até ' + X.dataBR(prazoFinalUteis(envio.data, (+n.prazo_dias || 3) + diasAditados(n))) + ' às ' + envio.hora);
       verificarPrazos(); redesenhar();
@@ -5077,6 +5184,7 @@
       if (!resp) return;
       await atualizarCampos('notificacoes', n.id, (o) => { o.respondidaEm = resp.data; o.respostaObs = resp.obs.trim(); o.respondidaPor = email(); });
       await ativNotif(n, 'respondida', X.dataBR(resp.data) + (resp.obs.trim() ? ' · ' + resp.obs.trim() : ''));
+      if (resp.docs.arqs.length) await salvarDocsNotif(n, resp.docs.arqs, 'resposta');
       toast('Resposta registrada'); verificarPrazos(); redesenhar();
     } }, '✅ Registrar resposta') : null;
     // contador de dias úteis
@@ -5112,15 +5220,16 @@
           if (!resp) return;
           await atualizarCampos('notificacoes', n.id, (o) => { o.rodadas = (o.rodadas || []).map((x) => (x.id === ro.id ? Object.assign({}, x, { respondidaEm: resp.data, respostaObs: resp.obs.trim(), respondidaPor: email() }) : x)); });
           await ativNotif(n, 'resposta à contrarresposta' + k, X.dataBR(resp.data) + (resp.obs.trim() ? ' · ' + resp.obs.trim() : ''));
+          if (resp.docs.arqs.length) await salvarDocsNotif(n, resp.docs.arqs, 'resposta:' + ro.id);
           toast('Resposta registrada'); verificarPrazos(); redesenhar();
         } }, '✅ Registrar resposta') : null;
         return [
           passo('feito', 6 + i * 2, 'Contrarresposta' + k + ' enviada', X.dataBR(ro.enviadaEm) + (hh ? ' às ' + hh : '') + ' · prazo de ' + plural(dias, 'dia útil', 'dias úteis') + (ro.por ? ' · registrado por ' + nomeDe(ro.por) : ''),
-            ro.obs ? h('div', { class: nc('adp-just') }, ro.obs) : null),
+            [ro.obs ? h('div', { class: nc('adp-just') }, ro.obs) : null, docsDe('contra:' + ro.id)]),
           passo(ro.respondidaEm ? 'feito' : 'agora', 7 + i * 2, ro.respondidaEm ? 'Respondida' : 'Resposta ' + daQuem + ' à contrarresposta',
             ro.respondidaEm ? X.dataBR(ro.respondidaEm) + (ro.respondidaEm > fim ? ' (fora do prazo)' : '') + (ro.respondidaPor ? ' · registrado por ' + nomeDe(ro.respondidaPor) : '') + (ro.respostaObs ? ' · ' + ro.respostaObs : '')
               : (sit.k === 'vencida' ? 'Terminou em ' : 'Vence em ') + DIAS_L[dataD(fim).getDay()] + ', ' + X.dataBR(fim) + (hh ? ' às ' + hh : ''),
-            aberta ? [contadorDe(sit, dias, hh), h('div', { class: 'acoes', style: { marginTop: '10px' } }, btResp)] : null),
+            [docsDe('resposta:' + ro.id), aberta ? [contadorDe(sit, dias, hh), h('div', { class: 'acoes', style: { marginTop: '10px' } }, btResp)] : null]),
         ];
       });
     }
@@ -5132,7 +5241,7 @@
           n.assinaturaEm ? X.dataBR(n.assinaturaEm) + (n.assinaturaHora ? ' às ' + n.assinaturaHora : '') + (n.assinaturaPor ? ' · registrado por ' + nomeDe(n.assinaturaPor) : '')
             : n.enviadaEm ? (n.assinaturaDireta ? 'Já estava assinada: o envio foi registrado direto.' : 'Não registrada (envio registrado antes desta etapa).')
             : 'Baixe o Word e coloque para assinatura (no sistema ou em papel). Registre aqui quando inserir.',
-          n.assinaturaEm && n.assinaturaRef ? h('span', { class: nc('ref-doc') }, '📄 ' + n.assinaturaRef)
+          [docsDe('assinada'), n.assinaturaEm && n.assinaturaRef ? h('span', { class: nc('ref-doc') }, '📄 ' + n.assinaturaRef)
             : !n.assinaturaEm && !n.enviadaEm && pode.notificar() ? h('div', { class: 'acoes', style: { marginTop: '8px', alignItems: 'center' } },
               h('button', { class: 'btn pri peq', 'data-acao': 'assinatura', onclick: async () => {
                 const a = await pedirAssinatura(n);
@@ -5142,24 +5251,40 @@
                 toast('Registrado: inserida para assinatura'); verificarPrazos(); redesenhar();
               } }, '✍️ Inserida para assinatura'),
               h('button', { type: 'button', class: nc('lk') + ' lk-envio-direto', 'data-acao': 'envio-direto', onclick: () => registrarEnvio && registrarEnvio.click() }, 'Já foi assinada? Registrar o envio direto'))
-            : null),
+            : null]),
         passo(n.enviadaEm ? 'feito' : n.assinaturaEm ? 'agora' : '', 3, n.enviadaEm ? 'Enviada' : 'Enviar a ' + quem.replace(/^a /, ''),
           n.enviadaEm ? X.dataBR(n.enviadaEm) + (horaEnv0(n) ? ' às ' + horaEnv0(n) : '') + (n.enviadaPor ? ' · registrado por ' + nomeDe(n.enviadaPor) : '')
             : n.assinaturaEm ? 'Depois de assinada, envie e registre aqui a data e o horário do envio: o prazo conta a partir desse momento.' : 'Fica disponível depois da assinatura.',
-          n.enviadaEm || !n.assinaturaEm ? null : registrarEnvio),
+          [docsDe('envio'), n.enviadaEm || !n.assinaturaEm ? null : registrarEnvio]),
         passo(n.respondidaEm ? 'feito' : n.enviadaEm ? 'agora' : '', 4, 'Prazo de ' + dias + (dias === 1 ? ' dia útil' : ' dias úteis') + (adits.length ? ' (' + diasOrig + ' + ' + (dias - diasOrig) + ' aditados)' : ''),
           pf ? (sit.k === 'vencida' ? 'Terminou em ' : 'Vence em ') + DIAS_L[dataD(pf).getDay()] + ', ' + X.dataBR(pf) + (horaEnv0(n) ? ' às ' + horaEnv0(n) : '') + (horaEnv0(n) ? ' (contado a partir do envio, às ' + horaEnv0(n) + '; fins de semana e feriados não contam)' : ' (fins de semana e feriados não contam)') : 'Conta a partir da data e do horário do envio',
-          [contador, listaAdits, btAditar ? h('div', { class: 'acoes', style: { marginTop: '10px' } }, btAditar) : null]),
+          [contador, listaAdits, docsDe('aditivo'), btAditar ? h('div', { class: 'acoes', style: { marginTop: '10px' } }, btAditar) : null]),
         passo(n.respondidaEm ? 'feito' : '', 5, n.respondidaEm ? 'Respondida' : 'Resposta ' + (quem === 'a prefeitura' ? 'da prefeitura' : 'da empresa'),
           n.respondidaEm ? X.dataBR(n.respondidaEm) + (n.respondidaEm > pf ? ' (fora do prazo)' : '') + (n.respondidaPor ? ' · registrado por ' + nomeDe(n.respondidaPor) : '') + (n.respostaObs ? ' · ' + n.respostaObs : '') : 'Registre quando ' + quem + ' responder.',
-          registrarResp),
-        passosContra()));
+          [docsDe('resposta'), registrarResp]),
+        passosContra(),
+        todosDocs.some((x) => !conhecidas.has(x.etapa) || x.etapa === 'outro') ? h('div', { class: nc('rp') }, h('span', { class: nc('b') }, '📎'), h('div', { class: nc('c') }, h('b', {}, 'Outros documentos'), docsDe('outro'))) : null));
+    // anexar documentos em qualquer etapa (vários de uma vez; cada um escolhe a etapa)
+    if (pode.notificar()) {
+      ap(card, h('div', { class: 'acoes' }, h('button', { class: 'btn peq', 'data-acao': 'anexar-docs', onclick: async () => {
+        const est = { arqs: [] };
+        const ok = await modal('📎 Anexar documentos', h('div', {},
+          h('p', { class: 'sub', style: { marginTop: 0 } }, 'Notificação assinada, comprovante de envio, pedido de aditivo, resposta, contrarresposta… Escolha um ou vários arquivos (até 20 MB cada) e confira a etapa de cada um. Eles vão para o Drive na sincronização.'),
+          seletorDocs(est, { etapas: etapasDocNotif(n), padrao: (nome) => etapaDocPadrao(n, nome) })),
+        [{ txt: 'Cancelar', valor: false }, { txt: 'Anexar', cls: 'pri', valor: true, antes: () => { if (!est.arqs.length) { toast('Escolha pelo menos um arquivo.', true); return false; } return true; } }]);
+        if (!ok) return;
+        const k = await salvarDocsNotif(n, est.arqs);
+        toast(plural(k, 'documento anexado', 'documentos anexados')); redesenhar();
+      } }, '📎 Anexar documentos' + (todosDocs.length ? ' (' + todosDocs.length + ')' : ''))));
+    }
     if (pode.notificar() && n.respondidaEm && !rodadaAberta(n)) {
       ap(card, h('div', { class: 'acoes' }, h('button', { class: 'btn pri peq', 'data-acao': 'contrarresposta', onclick: async () => {
         const c = await pedirContra(n);
         if (!c) return;
+        const docsC = c.docs || []; delete c.docs;
         const ro = Object.assign({ id: DB.uuid(), por: email(), em: new Date().toISOString() }, c);
         await atualizarCampos('notificacoes', n.id, (o) => { o.rodadas = (o.rodadas || []).concat(ro); });
+        if (docsC.length) await salvarDocsNotif(n, docsC, 'contra:' + ro.id);
         const k = (n.rodadas || []).length + 1;
         await ativNotif(n, (k > 1 ? k + 'ª ' : '') + 'contrarresposta enviada', X.dataBR(c.enviadaEm) + ' às ' + c.enviadaHora + ' · prazo de ' + plural(c.prazoDias, 'dia útil', 'dias úteis') + ' (até ' + X.dataBR(prazoFinalUteis(c.enviadaEm, c.prazoDias)) + ' às ' + c.enviadaHora + ')' + (c.obs ? '\n' + c.obs : ''));
         toast('Contrarresposta registrada — prazo até ' + X.dataBR(prazoFinalUteis(c.enviadaEm, c.prazoDias)) + ' às ' + c.enviadaHora);
@@ -7066,7 +7191,7 @@
     // a partir de "Aparência e câmera", cada seção vira uma lista suspensa (fechada; lembra as abertas)
     const iniSecoes = cards.findIndex((c) => c.querySelector && (c.querySelector(':scope > h2') || {}).textContent === 'Aparência e câmera');
     if (iniSecoes >= 0) for (let i = iniSecoes; i < cards.length; i++) cards[i] = secaoRecolhivel(cards[i]);
-    cards.push(h('p', { class: 'dica', style: { textAlign: 'center' } }, 'Fiscalização de Obras · v3.18.7 · dados salvos no aparelho' + (Sync.habilitado() ? ' e no Google Drive do administrador' : '') + ' · ', h('a', { href: 'privacidade.html' }, 'Política de privacidade')));
+    cards.push(h('p', { class: 'dica', style: { textAlign: 'center' } }, 'Fiscalização de Obras · v3.18.8 · dados salvos no aparelho' + (Sync.habilitado() ? ' e no Google Drive do administrador' : '') + ' · ', h('a', { href: 'privacidade.html' }, 'Política de privacidade')));
     rcT(tk, ...cards);
   }
 
@@ -7325,7 +7450,7 @@
   /* ================================================================== */
   /* 3.18.6: com internet fraca o navegador pode juntar arquivos de duas versões do app (um novo, outro guardado).
      Se isso acontecer, pede a versão nova inteira ao service worker e recarrega (uma vez por sessão). */
-  const VERSAO_APP = '3.18.7';
+  const VERSAO_APP = '3.18.8';
   function conferirVersaoArquivos() {
     const vj = self.VERSOES_JS || {};
     const dif = ['db', 'sync', 'docgen'].filter((k) => vj[k] !== VERSAO_APP);

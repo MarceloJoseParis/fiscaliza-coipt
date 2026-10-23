@@ -948,3 +948,8 @@ body.nf-doc-aberto { overflow: hidden; }
 .anx-chip.on { background: var(--pri-bg); color: var(--pri); border-color: var(--pri); font-weight: 700; }
 .anx-busca { width: 100%; margin-top: 8px; }
 @media (max-width: 560px) { .anx-lista { grid-template-columns: minmax(0, 1fr); } .anx-dica { display: none; } .anx-fc-s { padding-left: 0; } }
+/* 3.18.8: documentos da notificação */
+.anx-sel .anx-esc { margin-top: 8px; }
+.anx-sel > .btn { align-self: flex-start; }
+.nf-docs { margin-top: 8px; }
+.modal .anx-fc-s { padding-left: 0; }

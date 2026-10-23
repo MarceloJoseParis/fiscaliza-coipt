@@ -1,5 +1,5 @@
 /* Login Google + sincronizacao com o backend (Google Apps Script) */
-try { (self.VERSOES_JS = self.VERSOES_JS || {}).sync = '3.18.7'; } catch (e) { /* fora do navegador */ }
+try { (self.VERSOES_JS = self.VERSOES_JS || {}).sync = '3.18.8'; } catch (e) { /* fora do navegador */ }
 (function (root) {
   const ENTIDADES = ['pessoas', 'registros', 'visitas', 'notificacoes', 'fotos', 'config', 'medicoes', 'atividades'];
   // medições só sincronizam com o servidor versão 11 ou mais nova (o antigo ignoraria e elas se perderiam da equipe);
@@ -466,14 +466,17 @@ try { (self.VERSOES_JS = self.VERSOES_JS || {}).sync = '3.18.7'; } catch (e) { /
     if (perfilAtual() === 'consulta') return;
     if (!((Sync.versaoServidor || 0) >= Sync.ANEXO_MIN_SERVIDOR)) return; // fica no aparelho até o servidor ser atualizado
     const lista = [];
-    for (const a of await DB.all('atividades')) {
-      if (a.excluido || !Array.isArray(a.arquivos)) continue;
-      for (const x of a.arquivos) if (x && x.id && !x.driveId) lista.push({ a, x });
+    // comentários da obra (arquivos) e notificações (documentos: assinada, comprovante, resposta… — 3.18.8)
+    for (const [store, campo] of [['atividades', 'arquivos'], ['notificacoes', 'documentos']]) {
+      for (const a of await DB.all(store)) {
+        if (a.excluido || !Array.isArray(a[campo])) continue;
+        for (const x of a[campo]) if (x && x.id && !x.driveId) lista.push({ a, x, store, campo });
+      }
     }
     if (!lista.length) return;
     const controle = await DB.kvGet('falhasAnexos', {}) || {};
     let n = 0;
-    for (const { a, x } of lista) {
+    for (const { a, x, store, campo } of lista) {
       const c = controle[x.id];
       if (c && c.proxima > Date.now()) continue;
       let blob = null;
@@ -487,14 +490,14 @@ try { (self.VERSOES_JS = self.VERSOES_JS || {}).sync = '3.18.7'; } catch (e) { /
         if (!repetida) { controle[x.id] = { tentando: true }; await DB.kvSet('falhasAnexos', controle); }
         const j = await Sync.chamar('enviarAnexo', { id: x.id, base64: b64, mime: blob.type || x.mime || 'application/octet-stream', nome: x.nome, pasta: x.pasta, repetida });
         if (!j.driveId) throw new Error('Resposta inesperada do servidor ao enviar o arquivo.');
-        await DB.atualizar('atividades', a.id, (o) => {
-          if (!o || !Array.isArray(o.arquivos)) return undefined;
-          const antes = jsn(o.arquivos);
-          const alvo = o.arquivos.find((y) => y.id === x.id); if (!alvo) return undefined;
+        await DB.atualizar(store, a.id, (o) => {
+          if (!o || !Array.isArray(o[campo])) return undefined;
+          const antes = jsn(o[campo]);
+          const alvo = o[campo].find((y) => y.id === x.id); if (!alvo) return undefined;
           alvo.driveId = j.driveId;
           // como uma edição: os outros aparelhos recebem o endereço do arquivo
           if (!o._pendente) { o._campos = {}; o._base = {}; o._versaoBase = o.atualizadoEm; }
-          if (o._campos) { if (!('arquivos' in (o._base || {}))) o._base = Object.assign({}, o._base, { arquivos: antes }); o._campos.arquivos = DB.carimbo(o.atualizadoEm); }
+          if (o._campos) { if (!(campo in (o._base || {}))) o._base = Object.assign({}, o._base, { [campo]: antes }); o._campos[campo] = DB.carimbo(o.atualizadoEm); }
           o.atualizadoEm = DB.carimbo(o.atualizadoEm); o._pendente = true;
           pedidoDurante = true;
           return o;
