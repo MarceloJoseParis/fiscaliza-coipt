@@ -908,3 +908,43 @@ body.nf-doc-aberto { overflow: hidden; }
 .rt-mini .rt-bar button { width: 34px; height: 28px; font-size: 14px; }
 .rt-mini .rt-ed { min-height: 44px; padding: 7px 10px; }
 .nf-item-ta { margin-top: 4px; }
+
+/* 3.18.7: arquivos nos comentários da obra */
+.n-com-box.anx-box { display: block; }
+.anx-lin { display: flex; gap: 10px; align-items: flex-start; }
+.anx-col { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
+.anx-col textarea { width: 100%; }
+.anx-esc { display: flex; flex-direction: column; gap: 6px; }
+.anx-esc:empty { display: none; }
+.anx-fc { border: 1px solid var(--linha); border-radius: 10px; padding: 6px 8px; background: var(--sup2); font-size: 13px; }
+.anx-fc-l { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.anx-fc-l .anx-n { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.anx-fc-l small { color: var(--txt2); flex: none; }
+.anx-x { border: 0; background: none; color: var(--txt2); font-size: 16px; padding: 2px 6px; cursor: pointer; }
+.anx-fc-s { display: flex; gap: 6px; margin-top: 6px; padding-left: 38px; }
+.anx-fc-s select { flex: 1; min-width: 0; padding: 5px 6px; font-size: 13px; }
+.anx-bar { display: flex; align-items: center; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+.anx-dica { flex: 1; font-size: 12px; color: var(--txt2); min-width: 120px; }
+.anx-ico { width: 30px; height: 30px; border-radius: 8px; display: grid; place-items: center; flex: none; font-size: 9.5px; font-weight: 800; letter-spacing: .2px; background: var(--sup2); color: var(--txt2); }
+.anx-ico.pdf { background: var(--erro-bg); color: var(--erro); }
+.anx-ico.doc { background: var(--pri-bg); color: var(--pri); }
+.anx-ico.xls { background: var(--ok-bg); color: var(--ok); }
+.anx-ico.img { background: var(--alerta-bg, #fdf4e3); color: var(--alerta, #b45309); }
+.anx-lista { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 6px; margin-top: 8px; }
+.anx-item { display: flex; align-items: center; gap: 8px; text-align: left; width: 100%; min-width: 0; border: 1px solid var(--linha); border-radius: 10px; padding: 7px 8px; background: var(--sup2); color: inherit; font: inherit; font-size: 13px; cursor: pointer; }
+.anx-item:hover { border-color: var(--pri); }
+.anx-c { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.anx-n { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+.anx-c small { color: var(--txt2); font-size: 11.5px; }
+.anx-etqs { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 3px; }
+.anx-etq { font-size: 11px; padding: 1px 8px; border-radius: 99px; background: var(--pri-bg); color: var(--pri); }
+.anx-etq.d { background: var(--ok-bg); color: var(--ok); }
+.anx-subf { margin-top: 10px; }
+.anx-filtros { display: flex; flex-direction: column; gap: 6px; }
+.anx-fl { display: flex; gap: 6px; align-items: center; overflow-x: auto; padding-bottom: 2px; scrollbar-width: none; }
+.anx-fl::-webkit-scrollbar { display: none; }
+.anx-fl-rot { font-size: 12px; color: var(--txt2); flex: none; min-width: 64px; }
+.anx-chip { flex: none; border: 1px solid var(--linha); background: var(--sup); color: inherit; font: inherit; font-size: 12.5px; padding: 5px 11px; border-radius: 99px; cursor: pointer; }
+.anx-chip.on { background: var(--pri-bg); color: var(--pri); border-color: var(--pri); font-weight: 700; }
+.anx-busca { width: 100%; margin-top: 8px; }
+@media (max-width: 560px) { .anx-lista { grid-template-columns: minmax(0, 1fr); } .anx-dica { display: none; } .anx-fc-s { padding-left: 0; } }

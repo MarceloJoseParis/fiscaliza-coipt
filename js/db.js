@@ -1,5 +1,5 @@
 /* Banco local (IndexedDB) - funciona 100% offline */
-try { (self.VERSOES_JS = self.VERSOES_JS || {}).db = '3.18.6'; } catch (e) { /* fora do navegador */ }
+try { (self.VERSOES_JS = self.VERSOES_JS || {}).db = '3.18.7'; } catch (e) { /* fora do navegador */ }
 (function (root) {
   const NOME = 'notificacoes-app';
   const VERSAO = 4;

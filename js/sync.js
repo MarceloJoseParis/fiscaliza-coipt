@@ -1,5 +1,5 @@
 /* Login Google + sincronizacao com o backend (Google Apps Script) */
-try { (self.VERSOES_JS = self.VERSOES_JS || {}).sync = '3.18.6'; } catch (e) { /* fora do navegador */ }
+try { (self.VERSOES_JS = self.VERSOES_JS || {}).sync = '3.18.7'; } catch (e) { /* fora do navegador */ }
 (function (root) {
   const ENTIDADES = ['pessoas', 'registros', 'visitas', 'notificacoes', 'fotos', 'config', 'medicoes', 'atividades'];
   // medições só sincronizam com o servidor versão 11 ou mais nova (o antigo ignoraria e elas se perderiam da equipe);
@@ -151,7 +151,7 @@ try { (self.VERSOES_JS = self.VERSOES_JS || {}).sync = '3.18.6'; } catch (e) { /
   /* ---------------- Chamada ao backend ---------------- */
   // tipo de aparelho (aparece para o administrador em "último acesso"); tablet conta como celular
   Sync.dispositivo = (() => { try { const ua = navigator.userAgent || ''; return /Android|iPhone|iPad|iPod|Mobile/i.test(ua) || (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1) ? 'celular' : 'computador'; } catch (e) { return ''; } })();
-  Sync.TEMPO_LIMITE = { padrao: 120000, enviarFoto: 180000, baixarArquivo: 180000, enviarArquivo: 180000 };
+  Sync.TEMPO_LIMITE = { padrao: 120000, enviarFoto: 180000, baixarArquivo: 300000, enviarArquivo: 180000, enviarAnexo: 360000 };
   // falhas passageiras do Google (planilha/Drive ocupados, tempo esgotado etc.): vale tentar de novo
   const TEMPORARIO = /timed out|tempo limite|Service|Servi[çc]o|temporar|try again|tente novamente|Internal|interno|busy|ocupad|Exceeded|excedid|Limit|Too many|Lock|bloqueio|Rate|unavailable|indispon/i;
   Sync.chamar = async function (acao, dados, tentativa) {
@@ -164,7 +164,7 @@ try { (self.VERSOES_JS = self.VERSOES_JS || {}).sync = '3.18.6'; } catch (e) { /
       if (!repetir) throw e;
       Sync.log('repetindo', acao + ': ' + e.message);
       // a foto pode ter sido gravada mesmo com a resposta perdida: na nova tentativa o servidor procura a duplicata
-      if (acao === 'enviarFoto' && dados && dados.repetida === false) dados = Object.assign({}, dados, { repetida: true });
+      if ((acao === 'enviarFoto' || acao === 'enviarAnexo') && dados && !dados.repetida) dados = Object.assign({}, dados, { repetida: true });
       await new Promise((r) => setTimeout(r, 2500 * ((tentativa || 0) + 1)));
       return Sync.chamar(acao, dados, (tentativa || 0) + 1);
     }
@@ -319,6 +319,8 @@ try { (self.VERSOES_JS = self.VERSOES_JS || {}).sync = '3.18.6'; } catch (e) { /
         // 3) fotos (grandes); o endereço no Drive vai sendo enviado durante o envio
         let fotos = { falhas: [], grave: null };
         try { fotos = await enviarFotos(); } catch (e) { guardar(e); }
+        // 3b) arquivos anexados aos comentários das obras (projetos, TRD, TRP…)
+        try { await enviarAnexos(); } catch (e) { guardar(e); }
         // 4) endereço das fotos no Drive (o que faltou)
         try { await enviarAlteracoes(); } catch (e) { guardar(e); }
         if (primeiroErro) throw primeiroErro;
@@ -456,6 +458,59 @@ try { (self.VERSOES_JS = self.VERSOES_JS || {}).sync = '3.18.6'; } catch (e) { /
     return res;
   }
 
+  /* 3.18.7: arquivos dos comentários (atividades.arquivos[]): o arquivo fica no aparelho até ir
+     para o Drive (store "arquivos", chave "anx_<id>"); o endereço (driveId) entra no comentário e chega aos outros aparelhos. Servidor 17 ou mais novo. */
+  Sync.ANEXO_MIN_SERVIDOR = 17;
+  const ESPERA_ANEXO = [60, 300, 1800, 7200];
+  async function enviarAnexos() {
+    if (perfilAtual() === 'consulta') return;
+    if (!((Sync.versaoServidor || 0) >= Sync.ANEXO_MIN_SERVIDOR)) return; // fica no aparelho até o servidor ser atualizado
+    const lista = [];
+    for (const a of await DB.all('atividades')) {
+      if (a.excluido || !Array.isArray(a.arquivos)) continue;
+      for (const x of a.arquivos) if (x && x.id && !x.driveId) lista.push({ a, x });
+    }
+    if (!lista.length) return;
+    const controle = await DB.kvGet('falhasAnexos', {}) || {};
+    let n = 0;
+    for (const { a, x } of lista) {
+      const c = controle[x.id];
+      if (c && c.proxima > Date.now()) continue;
+      let blob = null;
+      try { const r = await DB.arquivoGet('anx_' + x.id); blob = r ? r.blob : null; } catch (e) { blob = null; }
+      if (!blob) continue; // arquivo de outro aparelho: quem anexou envia
+      n++;
+      emitir('sincronizando', { detalhe: 'Enviando arquivo ' + n + ' (' + (x.nome || '') + ')…' });
+      try {
+        const b64 = await Foto.blobParaBase64(blob);
+        const repetida = !!(c && (c.tentando || c.n));
+        if (!repetida) { controle[x.id] = { tentando: true }; await DB.kvSet('falhasAnexos', controle); }
+        const j = await Sync.chamar('enviarAnexo', { id: x.id, base64: b64, mime: blob.type || x.mime || 'application/octet-stream', nome: x.nome, pasta: x.pasta, repetida });
+        if (!j.driveId) throw new Error('Resposta inesperada do servidor ao enviar o arquivo.');
+        await DB.atualizar('atividades', a.id, (o) => {
+          if (!o || !Array.isArray(o.arquivos)) return undefined;
+          const antes = jsn(o.arquivos);
+          const alvo = o.arquivos.find((y) => y.id === x.id); if (!alvo) return undefined;
+          alvo.driveId = j.driveId;
+          // como uma edição: os outros aparelhos recebem o endereço do arquivo
+          if (!o._pendente) { o._campos = {}; o._base = {}; o._versaoBase = o.atualizadoEm; }
+          if (o._campos) { if (!('arquivos' in (o._base || {}))) o._base = Object.assign({}, o._base, { arquivos: antes }); o._campos.arquivos = DB.carimbo(o.atualizadoEm); }
+          o.atualizadoEm = DB.carimbo(o.atualizadoEm); o._pendente = true;
+          pedidoDurante = true;
+          return o;
+        });
+        try { await DB.del('arquivos', 'anx_' + x.id); } catch (e) { /* fica no aparelho; sem problema */ }
+        delete controle[x.id]; await DB.kvSet('falhasAnexos', controle);
+      } catch (e) {
+        if (e.codigo === 'TOKEN' || e.codigo === 'SEM_ACESSO' || e.codigo === 'PERFIL' || e.semRede || /redirecionado|pediu login/.test(e.message)) throw e;
+        if (e.tempoEsgotado || e.rede || passageira(e)) { Sync.log('arquivo', 'Envio de arquivos interrompido: ' + e.message); return; }
+        const k = ((controle[x.id] || {}).n || 0) + 1;
+        controle[x.id] = { n: k, proxima: Date.now() + ESPERA_ANEXO[Math.min(k - 1, ESPERA_ANEXO.length - 1)] * 1000, msg: e.message };
+        await DB.kvSet('falhasAnexos', controle);
+        Sync.log('arquivo', (x.nome || x.id) + ' (tentativa ' + k + '): ' + e.message);
+      }
+    }
+  }
   function igualAoEnviado(a, o) {
     const c = Object.assign({}, a); for (const k of DB.CAMPOS_LOCAIS) delete c[k]; delete c._vb;
     const e = Object.assign({}, o); delete e._vb;

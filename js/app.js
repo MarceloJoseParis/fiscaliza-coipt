@@ -1359,7 +1359,82 @@
     for (const a of x.atividades) ev.push({ k: a.tipo, id: a.id, a, q: new Date(a.em || a.criadoEm || 0), quem: a.quemNome || nomeDe(a.criadoPor), ic: a.tipo === 'comentario' ? 'resp' : a.tipo === 'aditivo' ? 'doc' : a.tipo === 'aditivo_prazo' ? 'relogio' : a.tipo === 'notif_etapa' ? 'sino' : 'lapis', c: a.tipo === 'aditivo' ? 'acc' : a.tipo === 'aditivo_prazo' ? 'al' : a.tipo === 'notif_etapa' ? 'in' : '', t: a.titulo || (a.tipo === 'comentario' ? 'Comentário' : 'Alteração'), s: a.texto, href: a.tipo === 'comentario' ? null : a.notificacaoId ? '#/notificacao/' + a.notificacaoId : '#/registro/' + r.id + '/dados' });
     return ev.sort((a, b) => b.q - a.q);
   }
-  function linhaTempo(lista, aoMudar) {
+  /* ---- 3.18.7: arquivos nos comentários da obra (projetos, TRD, TRP…) ---- */
+  const TIPOS_DOC = ['Projeto', 'TRD', 'TRP', 'Memorial', 'ART/RRT', 'Planilha', 'Outro'];
+  const DISC_DOC = ['Arquitetônico', 'Estrutural', 'Fundação', 'Elétrico', 'SPDA', 'Hidrossanitário', 'Incêndio (PPCI)', 'Climatização', 'Lógica e dados', 'Implantação/terraplenagem'];
+  const ANEXO_MAX = 20 * 1024 * 1024;
+  const tipoDocDe = (n) => (/^\s*TRD\b/i.test(n) ? 'TRD' : /^\s*TRP\b/i.test(n) ? 'TRP' : /memorial/i.test(n) ? 'Memorial' : /^\s*(ART|RRT)\b/i.test(n) ? 'ART/RRT'
+    : /projeto|planta|prancha|\.(dwg|dxf)$/i.test(n) ? 'Projeto' : /planilha|or[çc]ament|\.(xlsx?|ods)$/i.test(n) ? 'Planilha' : 'Outro');
+  const discDocDe = (n) => (/spda|para.?raio/i.test(n) ? 'SPDA' : /inc[eê]ndio|ppci|bombeiro/i.test(n) ? 'Incêndio (PPCI)' : /el[eé]tric|quadro de cargas|luminot/i.test(n) ? 'Elétrico'
+    : /hidr|sanit|esgoto|pluvia/i.test(n) ? 'Hidrossanitário' : /funda[cç]/i.test(n) ? 'Fundação' : /estrutur/i.test(n) ? 'Estrutural' : /climatiz|ar.condicion/i.test(n) ? 'Climatização'
+      : /l[oó]gica|cabeamento|\bdados\b|cftv/i.test(n) ? 'Lógica e dados' : /implanta|terrapl|drenag/i.test(n) ? 'Implantação/terraplenagem' : /arquitet|planta baixa|layout|fachada/i.test(n) ? 'Arquitetônico' : '');
+  const extDoc = (n) => { const m = /\.([a-z0-9]{1,5})$/i.exec(n || ''); return m ? m[1].toLowerCase() : ''; };
+  const corDoc = (n) => { const x = extDoc(n); return x === 'pdf' ? 'pdf' : /^docx?$|^odt$|^rtf$/.test(x) ? 'doc' : /^xlsx?$|^ods$|^csv$/.test(x) ? 'xls' : /^(jpe?g|png|heic|webp|gif)$/.test(x) ? 'img' : 'out'; };
+  const tamDoc = (b) => (b >= 1048576 ? (b / 1048576).toFixed(1).replace('.', ',') + ' MB' : Math.max(1, Math.round((b || 0) / 1024)) + ' KB');
+  const pastaDocObra = (r) => (r.tipo === 'convenio' ? 'Conv' : 'Contr') + '-' + String(r.numero || r.apelido || 'sem-numero').replace(/[\\/:*?"<>|]+/g, '-').trim();
+  const rascAnexos = new Map(); // arquivos escolhidos e ainda não publicados (por obra): sobrevivem ao redesenho da tela
+  const cacheAnexos = new Map(); // arquivos baixados do Drive nesta sessão
+  async function blobAnexo(x) {
+    const loc = await DB.arquivoGet('anx_' + x.id).catch(() => null);
+    if (loc && loc.blob) return loc.blob;
+    if (cacheAnexos.has(x.id)) return cacheAnexos.get(x.id);
+    if (!x.driveId) return null;
+    const j = await Sync.chamar('baixarArquivo', { driveId: x.driveId });
+    const bin = atob(j.base64); const u8 = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
+    const b = new Blob([u8], { type: j.mime || x.mime || 'application/octet-stream' });
+    cacheAnexos.set(x.id, b);
+    return b;
+  }
+  async function abrirAnexo(x, a, aoMudar) {
+    const podeEd = a && (a.criadoPor === email() || pode.admin()) && !a.excluido && pode.coletar();
+    const st = h('div', { class: 'sub', style: { margin: '6px 0 10px' } });
+    let blob = null;
+    const carregar = async () => {
+      if (blob) return blob;
+      rc(st, h('span', { class: 'carregando' }), ' Baixando o arquivo…');
+      try { blob = await blobAnexo(x); } catch (e) { rc(st, '⚠️ Não foi possível baixar: ' + e.message); return null; }
+      if (!blob) { rc(st, 'O arquivo ainda não chegou ao Drive (está no aparelho de ' + ((a && a.quemNome) || 'quem anexou') + ').'); return null; }
+      rc(st, 'Pronto · ' + tamDoc(blob.size)); return blob;
+    };
+    const abrir = async () => {
+      const w = /^(pdf|img)$/.test(corDoc(x.nome)) ? window.open('', '_blank') : null; // abre a aba já no toque (o iPhone bloqueia depois)
+      const b = await carregar(); if (!b) { if (w) w.close(); return; }
+      if (w) { w.location.href = URL.createObjectURL(b); } else baixarBlob(b, x.nome);
+    };
+    const tipoSel = h('select', { 'aria-label': 'Tipo' }, TIPOS_DOC.map((t) => h('option', { selected: t === x.tipo ? 'selected' : null }, t)));
+    const discSel = h('select', { 'aria-label': 'Disciplina' }, h('option', { value: '' }, '— sem disciplina —'), DISC_DOC.map((t) => h('option', { selected: t === x.disc ? 'selected' : null }, t)));
+    const corpo = h('div', {},
+      h('div', { class: 'anx-item', style: { cursor: 'default' } }, h('span', { class: 'anx-ico ' + corDoc(x.nome) }, (extDoc(x.nome) || 'arq').slice(0, 4).toUpperCase()),
+        h('div', { class: 'anx-c' }, h('div', { class: 'anx-n', style: { whiteSpace: 'normal' } }, x.nome), h('small', {}, tamDoc(x.tam) + (x.driveId ? ' · no Drive' : ' · ainda não está no Drive')))),
+      st,
+      h('div', { class: 'acoes', style: { marginTop: 0 } },
+        h('button', { class: 'btn pri', type: 'button', onclick: abrir }, 'Abrir'),
+        h('button', { class: 'btn', type: 'button', onclick: async () => { const b = await carregar(); if (b) baixarBlob(b, x.nome); } }, '⬇️ Baixar'),
+        navigator.canShare ? h('button', { class: 'btn', type: 'button', onclick: async () => {
+          const b = await carregar(); if (!b) return;
+          const f = new File([b], x.nome, { type: b.type });
+          try { if (navigator.canShare({ files: [f] })) await navigator.share({ files: [f], title: x.nome }); else baixarBlob(b, x.nome); } catch (e) { /* cancelado */ }
+        } }, '📤 Compartilhar') : null),
+      podeEd ? h('div', { style: { marginTop: '14px' } }, h('div', { class: 'grade2' }, campo('Tipo', tipoSel), campo('Disciplina', discSel))) : null);
+    const v = await modal('Arquivo', corpo, podeEd ? [{ txt: 'Fechar', valor: false }, { txt: 'Salvar tipo', cls: 'pri', valor: true }] : [{ txt: 'Fechar', valor: false }]);
+    if (v && podeEd && (tipoSel.value !== x.tipo || (discSel.value || '') !== (x.disc || ''))) {
+      await atualizarCampos('atividades', a.id, (o) => { const y = (o.arquivos || []).find((z) => z.id === x.id); if (y) { y.tipo = tipoSel.value; y.disc = discSel.value || ''; } });
+      toast('Tipo do arquivo alterado'); if (aoMudar) aoMudar();
+    }
+  }
+  function listaAnexos(arqs, a, locais, aoMudar, total) {
+    if (!arqs || !arqs.length) return null;
+    const semServidor = Sync.habilitado() && Sync.versaoServidor && Sync.versaoServidor < (Sync.ANEXO_MIN_SERVIDOR || 17);
+    return h('div', { class: 'anx-lista' }, arqs.map((x) => {
+      const aqui = locais && locais.has('anx_' + x.id);
+      const situ = x.driveId ? tamDoc(x.tam) + ' · no Drive' : aqui ? tamDoc(x.tam) + (semServidor ? ' · neste aparelho (servidor precisa ser atualizado)' : ' · neste aparelho, aguardando envio') : 'ainda não enviado pelo aparelho de ' + ((a && a.quemNome) || 'quem anexou');
+      return h('button', { type: 'button', class: 'anx-item', title: x.nome, onclick: () => abrirAnexo(x, a, aoMudar) },
+        h('span', { class: 'anx-ico ' + corDoc(x.nome) }, (extDoc(x.nome) || 'arq').slice(0, 4).toUpperCase()),
+        h('span', { class: 'anx-c' }, h('span', { class: 'anx-n' }, x.nome), h('small', {}, situ),
+          h('span', { class: 'anx-etqs' }, h('span', { class: 'anx-etq' }, x.tipo || 'Outro'), x.disc ? h('span', { class: 'anx-etq d' }, x.disc) : null)));
+    }), total && total > arqs.length ? h('div', { class: 'sub', style: { fontSize: '12px' } }, (total - arqs.length) + ' outro(s) arquivo(s) deste comentário fora do filtro') : null);
+  }
+  function linhaTempo(lista, aoMudar, locais) {
     if (!lista.length) return h('div', { class: nc('vazio'), style: { textAlign: 'left' } }, 'Nada por aqui ainda.');
     return h('div', { class: nc('tl') }, lista.map((e) => {
       if (e.k === 'comentario') {
@@ -1369,11 +1444,15 @@
           h('div', { class: nc('card') },
             h('div', { class: nc('ev-top') }, h('b', {}, e.quem || '—'),
               meu ? h('button', { class: nc('ev-del'), 'aria-label': 'Apagar comentário', title: 'Apagar comentário', onclick: async () => {
-                if (!(await confirmar('Apagar este comentário?', 'Apagar', true))) return;
-                await DB.excluir('atividades', e.id, email()); aoMudar();
+                const nArq = (e.a.arquivos || []).length;
+                if (!(await confirmar(nArq ? 'Apagar este comentário e ' + plural(nArq, 'o arquivo anexado', 'os ' + nArq + ' arquivos anexados') + '? Eles também vão para a lixeira do Drive.' : 'Apagar este comentário?', 'Apagar', true))) return;
+                await DB.excluir('atividades', e.id, email());
+                for (const x of e.a.arquivos || []) { try { await DB.del('arquivos', 'anx_' + x.id); } catch (err) { /* */ } }
+                aoMudar();
               } }, ico('lixo')) : null),
-            h('div', { class: nc('ev-txt') }, String(e.s || '').split('\n').map((l, i) => [i ? h('br') : null, l])),
-            h('div', { class: nc('ev-meta') }, 'Comentário · ' + quandoTxt(e.q))));
+            e.s ? h('div', { class: nc('ev-txt') }, String(e.s || '').split('\n').map((l, i) => [i ? h('br') : null, l])) : null,
+            listaAnexos(e.arqVis || e.a.arquivos, e.a, locais, aoMudar, e.arqVis ? (e.a.arquivos || []).length : 0),
+            h('div', { class: nc('ev-meta') }, ((e.a.arquivos || []).length ? plural(e.a.arquivos.length, 'arquivo', 'arquivos') + ' · ' : 'Comentário · ') + quandoTxt(e.q))));
       }
       const mini = e.fotos && e.fotos.length ? h('div', { class: nc('mini') }, e.fotos.map((f) => { const i = h('i'); urlFoto(f).then((u) => { if (u) i.style.backgroundImage = 'url("' + u + '")'; }); return i; })) : null;
       const corpo = [h('div', { class: nc('t') }, e.t), e.s ? h('div', { class: nc('d') }, String(e.s).split('\n').map((l, i) => [i ? h('br') : null, l])) : null, mini, h('div', { class: nc('ev-meta') }, quandoTxt(e.q) + (e.quem ? ' · ' + e.quem : ''))];
@@ -1461,20 +1540,91 @@
     const ev = eventosObra(r, { visitas, notifs, medicoes, fotos, atividades });
     if (aba === 'atividade') {
       const filtro = sessionStorage.getItem('filtro_ativ') || 'tudo';
+      const rasc = rascAnexos.get(id) || { txt: '', arqs: [] };
+      rascAnexos.set(id, rasc);
       const txt = h('textarea', { class: nc('txt'), rows: '1', placeholder: 'Comentar…', 'aria-label': 'Comentário',
-        oninput: () => { txt.style.height = 'auto'; txt.style.height = Math.min(220, txt.scrollHeight) + 'px'; } });
+        oninput: () => { rasc.txt = txt.value; txt.style.height = 'auto'; txt.style.height = Math.min(220, txt.scrollHeight) + 'px'; } });
+      txt.value = rasc.txt || '';
+      // arquivos escolhidos (ainda não publicados): tipo e disciplina sugeridos pelo nome, editáveis
+      const chipsBox = h('div', { class: 'anx-esc' });
+      const pintarEscolhidos = () => rc(chipsBox, rasc.arqs.map((x, i) => h('div', { class: 'anx-fc' },
+        h('div', { class: 'anx-fc-l' }, h('span', { class: 'anx-ico ' + corDoc(x.nome) }, (extDoc(x.nome) || 'arq').slice(0, 4).toUpperCase()),
+          h('span', { class: 'anx-n' }, x.nome), h('small', {}, tamDoc(x.tam)),
+          h('button', { type: 'button', class: 'anx-x', 'aria-label': 'Tirar ' + x.nome, onclick: () => { rasc.arqs.splice(i, 1); pintarEscolhidos(); } }, '✕')),
+        h('div', { class: 'anx-fc-s' },
+          h('select', { 'aria-label': 'Tipo do arquivo', onchange: (e) => { x.tipo = e.target.value; } }, TIPOS_DOC.map((t) => h('option', { selected: t === x.tipo ? 'selected' : null }, t))),
+          h('select', { 'aria-label': 'Disciplina', onchange: (e) => { x.disc = e.target.value; } }, h('option', { value: '' }, 'Disciplina: —'), DISC_DOC.map((t) => h('option', { selected: t === x.disc ? 'selected' : null }, t)))))));
+      pintarEscolhidos();
+      const inpArq = h('input', { type: 'file', multiple: 'multiple', style: { display: 'none' }, onchange: () => {
+        const grandes = [];
+        for (const f of Array.from(inpArq.files || [])) {
+          if (f.size > ANEXO_MAX) { grandes.push(f.name); continue; }
+          rasc.arqs.push({ file: f, nome: f.name, tam: f.size, mime: f.type || '', tipo: tipoDocDe(f.name), disc: discDocDe(f.name) });
+        }
+        inpArq.value = '';
+        if (grandes.length) toast('Maior que 20 MB (não entrou): ' + grandes.join(', '), true);
+        pintarEscolhidos();
+      } });
+      let publicando = false;
       const publicar = async () => {
+        if (publicando) return;
         const t = txt.value.trim();
-        if (!t) { txt.focus(); return; }
-        await registrarAtividade(id, 'comentario', 'Comentário', t);
-        toast('Comentário publicado');
-        redesenhar();
+        if (!t && !rasc.arqs.length) { txt.focus(); toast('Escreva um comentário ou anexe um arquivo.', true); return; }
+        publicando = true;
+        try {
+          const pasta = pastaDocObra(r);
+          const arquivos = [];
+          for (const x of rasc.arqs) {
+            const aid = DB.uuid();
+            await DB.arquivoSet('anx_' + aid, x.file, { nome: x.nome, em: Date.now() });
+            arquivos.push({ id: aid, nome: x.nome, tam: x.tam, mime: x.mime, tipo: x.tipo, disc: x.disc || '', pasta });
+          }
+          await registrarAtividade(id, 'comentario', 'Comentário', t, arquivos.length ? { arquivos } : null);
+          rascAnexos.delete(id);
+          toast(arquivos.length ? 'Publicado · ' + plural(arquivos.length, 'arquivo vai', 'arquivos vão') + ' para o Drive na sincronização' : 'Comentário publicado');
+          redesenhar();
+        } catch (e) { toast('Não foi possível publicar: ' + e.message, true); } finally { publicando = false; }
       };
-      const caixa = pode.coletar() ? h('div', { class: nc('card com-box') }, h('span', { class: nc('ic av') }, iniciais(meuNome())), txt, h('button', { class: 'btn pri peq', onclick: publicar }, 'Publicar')) : null;
-      const fBt = (k, t) => h('button', { class: nc('chip' + (filtro === k ? ' on' : '')), onclick: () => { sessionStorage.setItem('filtro_ativ', k); redesenhar(); } }, t);
-      const lista = ev.filter((e) => filtro === 'tudo' || (filtro === 'comentario' && e.k === 'comentario') || (filtro === 'aditivo' && (e.k === 'aditivo' || e.k === 'aditivo_prazo' || e.k === 'edicao')));
-      ap(conteudo, caixa, h('div', { class: nc('chips'), style: { margin: '12px 0 0' } }, fBt('tudo', 'Tudo'), fBt('comentario', 'Comentários'), fBt('aditivo', 'Aditivos e edições')), linhaTempo(lista, redesenhar),
-        Sync.habilitado() && Sync.versaoServidor && Sync.versaoServidor < 14 && atividades.some((a) => a._pendente) ? h('div', { class: 'aviso', style: { marginTop: '10px' } }, '⚠️ Comentários e histórico ficam neste aparelho até o administrador atualizar o servidor (Code.gs versão 14).') : null);
+      const caixa = pode.coletar() ? h('div', { class: nc('card com-box') + ' anx-box' },
+        h('div', { class: 'anx-lin' }, h('span', { class: nc('ic av') }, iniciais(meuNome())), h('div', { class: 'anx-col' }, txt, chipsBox)),
+        h('div', { class: 'anx-bar' }, h('button', { type: 'button', class: 'btn peq', 'data-acao': 'anexar', onclick: () => inpArq.click() }, '📎 Anexar arquivos'), inpArq,
+          h('span', { class: 'anx-dica' }, 'Projetos, TRD, TRP… até 20 MB cada'), h('button', { class: 'btn pri peq', 'data-acao': 'publicar', onclick: publicar }, 'Publicar'))) : null;
+      const fBt = (k, t) => h('button', { class: nc('chip' + (filtro === k ? ' on' : '')), 'data-f': k, onclick: () => { sessionStorage.setItem('filtro_ativ', k); redesenhar(); } }, t);
+      const comArq = ev.filter((e) => e.k === 'comentario' && (e.a.arquivos || []).length);
+      const nArq = comArq.reduce((t, e) => t + e.a.arquivos.length, 0);
+      const locais = new Set((await DB.chaves('arquivos').catch(() => [])).filter((k) => /^anx_/.test(String(k))));
+      const listaBox = h('div');
+      let subf = null;
+      if (filtro === 'arquivos') {
+        // filtro por tipo, disciplina e nome (a lista é redesenhada sem perder o foco da busca)
+        const fl = { tipo: sessionStorage.getItem('filtro_anx_tipo') || '', disc: sessionStorage.getItem('filtro_anx_disc') || '', busca: '' };
+        const linhaF = h('div', { class: 'anx-filtros' });
+        const busca = h('input', { type: 'search', class: 'anx-busca', placeholder: 'Buscar pelo nome do arquivo', 'aria-label': 'Buscar arquivo', oninput: () => { fl.busca = busca.value.trim().toLowerCase(); pintarFiltro(); } });
+        const passa = (x) => (!fl.tipo || x.tipo === fl.tipo) && (!fl.disc || x.disc === fl.disc) && (!fl.busca || String(x.nome || '').toLowerCase().includes(fl.busca));
+        const todos = comArq.flatMap((e) => e.a.arquivos);
+        const conta = (arr, campo, ordem) => { const m = new Map(); arr.forEach((x) => { if (x[campo]) m.set(x[campo], (m.get(x[campo]) || 0) + 1); }); return ordem.filter((k) => m.has(k)).map((k) => [k, m.get(k)]); };
+        const linha = (rot, lista, atual, todosTxt, fn) => h('div', { class: 'anx-fl' }, h('span', { class: 'anx-fl-rot' }, rot),
+          h('button', { type: 'button', class: 'anx-chip' + (atual ? '' : ' on'), onclick: () => fn('') }, todosTxt),
+          lista.map(([k, n]) => h('button', { type: 'button', class: 'anx-chip' + (k === atual ? ' on' : ''), 'data-v': k, onclick: () => fn(k) }, k + ' (' + n + ')')));
+        const pintarFiltro = () => {
+          if (fl.tipo && !todos.some((x) => x.tipo === fl.tipo)) fl.tipo = '';
+          const dl = conta(todos.filter((x) => !fl.tipo || x.tipo === fl.tipo), 'disc', DISC_DOC);
+          if (fl.disc && !dl.some(([k]) => k === fl.disc)) fl.disc = '';
+          rc(linhaF,
+            linha('Tipo', conta(todos, 'tipo', TIPOS_DOC), fl.tipo, 'Todos (' + todos.length + ')', (v) => { fl.tipo = v; fl.disc = ''; sessionStorage.setItem('filtro_anx_tipo', v); sessionStorage.setItem('filtro_anx_disc', ''); pintarFiltro(); }),
+            dl.length ? linha('Disciplina', dl, fl.disc, 'Todas', (v) => { fl.disc = v; sessionStorage.setItem('filtro_anx_disc', v); pintarFiltro(); }) : null);
+          const vis = comArq.map((e) => Object.assign({}, e, { arqVis: e.a.arquivos.filter(passa) })).filter((e) => e.arqVis.length);
+          rc(listaBox, vis.length ? linhaTempo(vis, redesenhar, locais) : h('div', { class: nc('vazio'), style: { textAlign: 'left' } }, todos.length ? 'Nenhum arquivo neste filtro.' : 'Nenhum arquivo anexado ainda. Use “📎 Anexar arquivos” no comentário.'));
+        };
+        subf = todos.length ? h('div', { class: 'anx-subf' }, linhaF, busca) : null;
+        pintarFiltro();
+      } else {
+        const lista = ev.filter((e) => filtro === 'tudo' || (filtro === 'comentario' && e.k === 'comentario') || (filtro === 'aditivo' && (e.k === 'aditivo' || e.k === 'aditivo_prazo' || e.k === 'edicao')));
+        ap(listaBox, linhaTempo(lista, redesenhar, locais));
+      }
+      ap(conteudo, caixa, h('div', { class: nc('chips'), style: { margin: '12px 0 0' } }, fBt('tudo', 'Tudo'), fBt('comentario', 'Comentários'), fBt('arquivos', 'Arquivos' + (nArq ? ' (' + nArq + ')' : '')), fBt('aditivo', 'Aditivos e edições')), subf, listaBox,
+        Sync.habilitado() && Sync.versaoServidor && Sync.versaoServidor < 14 && atividades.some((a) => a._pendente) ? h('div', { class: 'aviso', style: { marginTop: '10px' } }, '⚠️ Comentários e histórico ficam neste aparelho até o administrador atualizar o servidor (Code.gs versão 14).') : null,
+        Sync.habilitado() && Sync.versaoServidor && Sync.versaoServidor >= 14 && Sync.versaoServidor < 17 && atividades.some((a) => (a.arquivos || []).some((x) => !x.driveId)) ? h('div', { class: 'aviso', style: { marginTop: '10px' } }, '⚠️ Os arquivos anexados ficam neste aparelho até o administrador atualizar o servidor (Code.gs versão 17).') : null);
     } else if (aba === 'visitas') {
       ap(conteudo, h('div', { style: { height: '12px' } }), ...(visitas.length ? visitas.map((v) => {
         const fv = fotos.filter((f) => f.visitaId === v.id);
@@ -6612,7 +6762,7 @@
         h('div', { class: 'sub' }, u ? u.email : ''),
         h('div', { class: 'sub' }, 'Última sincronização: ' + (ult ? dataHoraBR(ult) : 'nunca')),
         Sync.versaoServidor && Sync.versaoServidor < 11 && medPend ? h('div', { class: 'aviso', style: { marginTop: '8px' } }, '⚠️ ' + medPend + ' medição(ões) aguardando: o servidor (Code.gs) precisa ser atualizado para a versão 3.11 para as medições irem para a equipe. Até lá, elas ficam guardadas neste aparelho.') : null,
-        Sync.versaoServidor && Sync.versaoServidor >= 5 && Sync.versaoServidor < 16 && perfil() === 'admin' ? h('div', { class: 'aviso', style: { marginTop: '8px' } }, 'ℹ️ Há uma versão nova do servidor (Code.gs versão 16, com correções no envio das fotos ao Drive). Atualize no Apps Script quando puder.') : null,
+        Sync.versaoServidor && Sync.versaoServidor >= 5 && Sync.versaoServidor < 17 && perfil() === 'admin' ? h('div', { class: 'aviso', style: { marginTop: '8px' } }, 'ℹ️ Há uma versão nova do servidor (Code.gs versão 17: arquivos nos comentários e correções no envio das fotos ao Drive). Atualize no Apps Script quando puder.') : null,
         Sync.versaoServidor && Sync.versaoServidor < 5 ? h('div', { class: 'aviso', style: { marginTop: '8px' } }, '⚠️ O servidor (Code.gs) está numa versão antiga, sujeita a perda de sincronismo. O administrador deve colar o Code.gs novo no Apps Script e publicar como nova versão (Guia de publicação, Parte G).') : null,
         Sync.estado === 'erro' ? h('div', { class: 'aviso', style: { marginTop: '8px' } }, Sync.erro) : null,
         Sync.estado === 'sem_acesso' ? h('div', { class: 'aviso', style: { marginTop: '8px' } }, 'Seu e-mail não está autorizado. Peça ao administrador para incluí-lo.') : null,
@@ -6916,7 +7066,7 @@
     // a partir de "Aparência e câmera", cada seção vira uma lista suspensa (fechada; lembra as abertas)
     const iniSecoes = cards.findIndex((c) => c.querySelector && (c.querySelector(':scope > h2') || {}).textContent === 'Aparência e câmera');
     if (iniSecoes >= 0) for (let i = iniSecoes; i < cards.length; i++) cards[i] = secaoRecolhivel(cards[i]);
-    cards.push(h('p', { class: 'dica', style: { textAlign: 'center' } }, 'Fiscalização de Obras · v3.18.6 · dados salvos no aparelho' + (Sync.habilitado() ? ' e no Google Drive do administrador' : '') + ' · ', h('a', { href: 'privacidade.html' }, 'Política de privacidade')));
+    cards.push(h('p', { class: 'dica', style: { textAlign: 'center' } }, 'Fiscalização de Obras · v3.18.7 · dados salvos no aparelho' + (Sync.habilitado() ? ' e no Google Drive do administrador' : '') + ' · ', h('a', { href: 'privacidade.html' }, 'Política de privacidade')));
     rcT(tk, ...cards);
   }
 
@@ -7175,7 +7325,7 @@
   /* ================================================================== */
   /* 3.18.6: com internet fraca o navegador pode juntar arquivos de duas versões do app (um novo, outro guardado).
      Se isso acontecer, pede a versão nova inteira ao service worker e recarrega (uma vez por sessão). */
-  const VERSAO_APP = '3.18.6';
+  const VERSAO_APP = '3.18.7';
   function conferirVersaoArquivos() {
     const vj = self.VERSOES_JS || {};
     const dif = ['db', 'sync', 'docgen'].filter((k) => vj[k] !== VERSAO_APP);
