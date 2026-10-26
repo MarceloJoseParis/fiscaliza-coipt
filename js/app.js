@@ -6887,7 +6887,7 @@
         h('div', { class: 'sub' }, u ? u.email : ''),
         h('div', { class: 'sub' }, 'Última sincronização: ' + (ult ? dataHoraBR(ult) : 'nunca')),
         Sync.versaoServidor && Sync.versaoServidor < 11 && medPend ? h('div', { class: 'aviso', style: { marginTop: '8px' } }, '⚠️ ' + medPend + ' medição(ões) aguardando: o servidor (Code.gs) precisa ser atualizado para a versão 3.11 para as medições irem para a equipe. Até lá, elas ficam guardadas neste aparelho.') : null,
-        Sync.versaoServidor && Sync.versaoServidor >= 5 && Sync.versaoServidor < 17 && perfil() === 'admin' ? h('div', { class: 'aviso', style: { marginTop: '8px' } }, 'ℹ️ Há uma versão nova do servidor (Code.gs versão 17: arquivos nos comentários e correções no envio das fotos ao Drive). Atualize no Apps Script quando puder.') : null,
+        Sync.versaoServidor && Sync.versaoServidor >= 5 && Sync.versaoServidor < 18 && perfil() === 'admin' ? h('div', { class: 'aviso', style: { marginTop: '8px' } }, 'ℹ️ Há uma versão nova do servidor (Code.gs versão 18: excluir usuários desativados' + (Sync.versaoServidor < 17 ? ', arquivos nos comentários e nas notificações e correções no envio das fotos ao Drive' : '') + '). Atualize no Apps Script quando puder.') : null,
         Sync.versaoServidor && Sync.versaoServidor < 5 ? h('div', { class: 'aviso', style: { marginTop: '8px' } }, '⚠️ O servidor (Code.gs) está numa versão antiga, sujeita a perda de sincronismo. O administrador deve colar o Code.gs novo no Apps Script e publicar como nova versão (Guia de publicação, Parte G).') : null,
         Sync.estado === 'erro' ? h('div', { class: 'aviso', style: { marginTop: '8px' } }, Sync.erro) : null,
         Sync.estado === 'sem_acesso' ? h('div', { class: 'aviso', style: { marginTop: '8px' } }, 'Seu e-mail não está autorizado. Peça ao administrador para incluí-lo.') : null,
@@ -7166,7 +7166,13 @@
               h('div', { class: 'usr-info' }, h('div', { class: 'usr-nome' }, us.nome || us.email), h('div', { class: 'sub usr-email' }, us.email + (us.ativo ? '' : ' · desativado')), acessoDe(us)),
               sel(us),
               h('button', { class: 'btn peq', onclick: async () => { await Sync.chamar('salvarUsuario', { usuario: us }); toast('Salvo'); } }, 'Salvar'),
-              h('button', { class: 'btn peq ' + (us.ativo ? 'perigo' : ''), onclick: async () => { us.ativo = !us.ativo; await Sync.chamar('salvarUsuario', { usuario: us }); telaConfig(); } }, us.ativo ? 'Desativar' : 'Ativar'))),
+              h('button', { class: 'btn peq ' + (us.ativo ? 'perigo' : ''), onclick: async () => { us.ativo = !us.ativo; await Sync.chamar('salvarUsuario', { usuario: us }); telaConfig(); } }, us.ativo ? 'Desativar' : 'Ativar'),
+              // 3.18.9: e-mail desativado pode ser excluído da lista (os registros feitos por ele continuam)
+              us.ativo ? null : h('button', { class: 'btn peq perigo', 'data-acao': 'excluir-usuario', onclick: async () => {
+                if ((Sync.versaoServidor || 0) < 18) { toast('Atualize o servidor (Code.gs versão 18) para excluir usuários.', true); return; }
+                if (!(await confirmar('Excluir ' + (us.nome || us.email) + ' (' + us.email + ') da lista de usuários? O que essa pessoa registrou continua no app, com o nome dela. Para dar acesso de novo, é só adicionar o e-mail outra vez.', 'Excluir', true))) return;
+                try { await Sync.chamar('excluirUsuario', { email: us.email }); toast('Usuário excluído'); telaConfig(); } catch (e) { toast(e.message, true); }
+              } }, 'Excluir'))),
             h('h3', {}, 'Adicionar'),
             h('div', { class: 'grade2' }, campo('E-mail (conta Google)', inputTxt(novo, 'email', { type: 'email' })), campo('Nome', inputTxt(novo, 'nome'))),
             campo('Perfil', sel(novo)),
@@ -7191,7 +7197,7 @@
     // a partir de "Aparência e câmera", cada seção vira uma lista suspensa (fechada; lembra as abertas)
     const iniSecoes = cards.findIndex((c) => c.querySelector && (c.querySelector(':scope > h2') || {}).textContent === 'Aparência e câmera');
     if (iniSecoes >= 0) for (let i = iniSecoes; i < cards.length; i++) cards[i] = secaoRecolhivel(cards[i]);
-    cards.push(h('p', { class: 'dica', style: { textAlign: 'center' } }, 'Fiscalização de Obras · v3.18.8 · dados salvos no aparelho' + (Sync.habilitado() ? ' e no Google Drive do administrador' : '') + ' · ', h('a', { href: 'privacidade.html' }, 'Política de privacidade')));
+    cards.push(h('p', { class: 'dica', style: { textAlign: 'center' } }, 'Fiscalização de Obras · v3.18.9 · dados salvos no aparelho' + (Sync.habilitado() ? ' e no Google Drive do administrador' : '') + ' · ', h('a', { href: 'privacidade.html' }, 'Política de privacidade')));
     rcT(tk, ...cards);
   }
 
@@ -7450,7 +7456,7 @@
   /* ================================================================== */
   /* 3.18.6: com internet fraca o navegador pode juntar arquivos de duas versões do app (um novo, outro guardado).
      Se isso acontecer, pede a versão nova inteira ao service worker e recarrega (uma vez por sessão). */
-  const VERSAO_APP = '3.18.8';
+  const VERSAO_APP = '3.18.9';
   function conferirVersaoArquivos() {
     const vj = self.VERSOES_JS || {};
     const dif = ['db', 'sync', 'docgen'].filter((k) => vj[k] !== VERSAO_APP);

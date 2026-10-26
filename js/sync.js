@@ -1,5 +1,5 @@
 /* Login Google + sincronizacao com o backend (Google Apps Script) */
-try { (self.VERSOES_JS = self.VERSOES_JS || {}).sync = '3.18.8'; } catch (e) { /* fora do navegador */ }
+try { (self.VERSOES_JS = self.VERSOES_JS || {}).sync = '3.18.9'; } catch (e) { /* fora do navegador */ }
 (function (root) {
   const ENTIDADES = ['pessoas', 'registros', 'visitas', 'notificacoes', 'fotos', 'config', 'medicoes', 'atividades'];
   // medições só sincronizam com o servidor versão 11 ou mais nova (o antigo ignoraria e elas se perderiam da equipe);
@@ -236,6 +236,9 @@ try { (self.VERSOES_JS = self.VERSOES_JS || {}).sync = '3.18.8'; } catch (e) { /
   Sync.guardarEquipe = function (lista) {
     const m = {};
     for (const u of lista || []) if (u && u.email && u.nome && String(u.nome).trim()) m[String(u.email).toLowerCase().trim()] = String(u.nome).trim();
+    // 3.18.9: quem saiu da lista de usuários continua com o nome nos registros antigos
+    let ant = equipeNomes; if (!ant) { try { ant = JSON.parse(localStorage.getItem('equipeNomes') || '{}') || {}; } catch (e) { ant = {}; } }
+    for (const k of Object.keys(ant || {})) if (!m[k] && ant[k]) m[k] = ant[k];
     equipeNomes = m;
     try { localStorage.setItem('equipeNomes', JSON.stringify(m)); } catch (e) { /* */ }
   };

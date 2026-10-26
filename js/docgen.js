@@ -10,7 +10,7 @@
  *                            -> repete (ou remove) a linha inteira da tabela
  *   Dentro do laco {#fotos}, a imagem modelo (media/foto_modelo.png) e trocada pela foto.
  */
-try { (self.VERSOES_JS = self.VERSOES_JS || {}).docgen = '3.18.8'; } catch (e) { /* fora do navegador */ }
+try { (self.VERSOES_JS = self.VERSOES_JS || {}).docgen = '3.18.9'; } catch (e) { /* fora do navegador */ }
 (function (root) {
   const W = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';
   const R = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships';

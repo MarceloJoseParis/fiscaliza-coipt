@@ -953,3 +953,7 @@ body.nf-doc-aberto { overflow: hidden; }
 .anx-sel > .btn { align-self: flex-start; }
 .nf-docs { margin-top: 8px; }
 .modal .anx-fc-s { padding-left: 0; }
+/* 3.18.9: botão "Excluir" nos usuários desativados (mesma linha dos outros botões) */
+.usr-linha:has([data-acao=excluir-usuario]) { grid-template-columns: minmax(0, 1fr) auto auto auto auto; }
+@container (max-width: 620px) { .usr-linha:has([data-acao=excluir-usuario]) { grid-template-columns: auto auto auto auto; } }
+@container (max-width: 400px) { .usr-linha:has([data-acao=excluir-usuario]) { grid-template-columns: auto auto auto; } }
