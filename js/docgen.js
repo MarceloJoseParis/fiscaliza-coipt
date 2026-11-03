@@ -10,7 +10,7 @@
  *                            -> repete (ou remove) a linha inteira da tabela
  *   Dentro do laco {#fotos}, a imagem modelo (media/foto_modelo.png) e trocada pela foto.
  */
-try { (self.VERSOES_JS = self.VERSOES_JS || {}).docgen = '3.18.9'; } catch (e) { /* fora do navegador */ }
+try { (self.VERSOES_JS = self.VERSOES_JS || {}).docgen = '3.19.0'; } catch (e) { /* fora do navegador */ }
 (function (root) {
   const W = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';
   const R = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships';
@@ -70,6 +70,39 @@ try { (self.VERSOES_JS = self.VERSOES_JS || {}).docgen = '3.18.9'; } catch (e) {
     }
     ts.forEach((t, i) => { if (t.textContent !== texts[i]) setText(t, texts[i]); });
   }
+
+  /* 3.19: prazo em horas — o modelo traz "{prazo_extenso} ({prazo_num}) dias úteis": nos parágrafos que citam o
+     prazo, "dias úteis"/"dia útil" vira "horas"/"hora" (o texto pode estar quebrado em vários pedaços do Word) */
+  function trocarNoParagrafo(p, re, repl) {
+    const ts = textNodesOfParagraph(p);
+    if (!ts.length) return 0;
+    const texts = ts.map((t) => t.textContent);
+    const full = texts.join('');
+    const pos = []; texts.forEach((x, i) => { for (let k = 0; k < x.length; k++) pos.push([i, k]); });
+    const ms = []; let m; re.lastIndex = 0;
+    while ((m = re.exec(full))) { ms.push([m.index, m.index + m[0].length, typeof repl === 'function' ? repl(m) : repl]); if (!m[0].length) re.lastIndex++; }
+    for (let k = ms.length - 1; k >= 0; k--) {
+      const [a, b, novo] = ms[k];
+      const [ti, oi] = pos[a]; const [tj, oj] = pos[b - 1];
+      if (ti === tj) texts[ti] = texts[ti].slice(0, oi) + novo + texts[ti].slice(oj + 1);
+      else { texts[ti] = texts[ti].slice(0, oi) + novo; for (let q = ti + 1; q < tj; q++) texts[q] = ''; texts[tj] = texts[tj].slice(oj + 1); }
+    }
+    ts.forEach((t, i) => { if (t.textContent !== texts[i]) setText(t, texts[i]); });
+    return ms.length;
+  }
+  function ajustarPrazoHoras(body, data) {
+    if (!data || data.prazo_unidade !== 'horas') return;
+    const num = String(data.prazo_num || ''), ext = String(data.prazo_extenso || '');
+    const un = +data.prazo_num === 1 ? 'hora' : 'horas';
+    for (const p of byTag(body, W, 'p')) {
+      const t = paraText(p);
+      if (!/dias?\s+[úu]te?is?/i.test(t)) continue;
+      if (!(num && t.indexOf(num) >= 0) && !(ext && t.toLowerCase().indexOf(ext.toLowerCase()) >= 0)) continue;
+      trocarNoParagrafo(p, /dias\s+[úu]teis|dia\s+[úu]til/gi, un);
+    }
+  }
+  // extenso no feminino (horas): "uma", "duas", "duzentas"…
+  const feminino = (t) => String(t || '').replace(/\bum\b/g, 'uma').replace(/\bdois\b/g, 'duas').replace(/\b(duz|trez|quatroc|quinh|seisc|setec|oitoc|novec)entos\b/g, '$1entas');
 
   function lookup(name, scopes) {
     if (name === '.') return scopes[scopes.length - 1]['.'];
@@ -441,6 +474,7 @@ try { (self.VERSOES_JS = self.VERSOES_JS || {}).docgen = '3.18.9'; } catch (e) {
     let protoMarcador = null;
     if (opts.secoes) { const pm = byTag(body, W, 'p').find((p) => temNum(p) && /\{\s*texto\s*\}/.test(paraText(p))); if (pm) protoMarcador = pm.cloneNode(true); }
     renderChildren(ctx, body, [dadosRender]);
+    ajustarPrazoHoras(body, data);
     if (opts.secoes) aplicarSecoes(doc, opts.secoes, protoMarcador);
 
     // remove ids de paragrafo duplicados (clonados)
@@ -545,6 +579,7 @@ try { (self.VERSOES_JS = self.VERSOES_JS || {}).docgen = '3.18.9'; } catch (e) {
     const ctx = { doc, applyPhoto() {}, applyTagged() {}, inserir() {} };
     const body = byTag(doc, W, 'body')[0];
     renderChildren(ctx, body, [d]);
+    ajustarPrazoHoras(body, d);
     const { ps, idx } = acharSecoes(body);
     // okProv: o fim das Providências é o título "Possíveis sanções" — modelo sem ele: Providências ficam como antes
     const out = { fatosAntes: '', fatosDepois: '', prov: '', ok: idx.fatos != null && idx.prov != null, okProv: idx.sanc != null && idx.sanc > idx.prov };
@@ -757,7 +792,9 @@ try { (self.VERSOES_JS = self.VERSOES_JS || {}).docgen = '3.18.9'; } catch (e) {
       itens: (notif.itens || []).filter((t) => t && t.trim()).map((t) => ({ texto: t.trim() })),
       providencias: notif.providencias || '',
       prazo_num: String(prazo).padStart(2, '0'),
-      prazo_extenso: X.inteiro(prazo),
+      prazo_extenso: notif.prazo_unidade === 'horas' ? feminino(X.inteiro(prazo)) : X.inteiro(prazo),
+      prazo_unidade: notif.prazo_unidade === 'horas' ? 'horas' : 'dias',
+      prazo_unidade_texto: notif.prazo_unidade === 'horas' ? (prazo === 1 ? 'hora' : 'horas') : (prazo === 1 ? 'dia útil' : 'dias úteis'),
       fiscais_pares: pares,
       fiscal_central: central ? [{ c_nome: central.nome, c_cargo: central.cargo || '', c_funcao: central.funcao || '', c_lotacao: central.lotacao || '' }] : [],
       coordenadores: coords.map((c, i) => ({ nome: c.nome, cargo: c.cargo || '', lotacao: c.lotacao || '', extra: c.extra || '', nao_ultimo: i < coords.length - 1 })),

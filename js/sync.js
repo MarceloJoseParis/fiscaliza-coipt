@@ -1,5 +1,5 @@
 /* Login Google + sincronizacao com o backend (Google Apps Script) */
-try { (self.VERSOES_JS = self.VERSOES_JS || {}).sync = '3.18.9'; } catch (e) { /* fora do navegador */ }
+try { (self.VERSOES_JS = self.VERSOES_JS || {}).sync = '3.19.0'; } catch (e) { /* fora do navegador */ }
 (function (root) {
   const ENTIDADES = ['pessoas', 'registros', 'visitas', 'notificacoes', 'fotos', 'config', 'medicoes', 'atividades'];
   // medições só sincronizam com o servidor versão 11 ou mais nova (o antigo ignoraria e elas se perderiam da equipe);

@@ -377,18 +377,45 @@
   const nomeFeriado = (iso) => { const m = mapaFeriados(); const v = m.get(iso) || m.get(String(iso).slice(5)); return v ? v.nome : ''; };
   function ehDiaUtil(d, fer) { const w = d.getDay(), iso = isoDe(d); return w !== 0 && w !== 6 && !fer.has(iso) && !fer.has(iso.slice(5)); }
   /* prazo final sempre recalculado (um feriado cadastrado depois do envio passa a contar) */
-  const prazoOriginal = (n) => (n.enviadaEm ? prazoFinalUteis(n.enviadaEm, n.prazoDiasEnvio || n.prazo_dias) : n.prazoFinal);
+  /* 3.19: o prazo pode ser em HORAS (corridas, a partir da data e do horário do envio — ex.: 4 horas) além de dias úteis.
+     prazo_unidade: 'horas' na notificação (e na contrarresposta); sem o campo = dias úteis (como antes). */
+  const unidadeDe = (o) => (o && o.prazo_unidade === 'horas' ? 'horas' : 'dias');
+  const extensoPrazo = (q, un) => { const t = X.inteiro ? X.inteiro(q) : String(q); return un === 'horas' ? String(t).replace(/\bum\b/g, 'uma').replace(/\bdois\b/g, 'duas').replace(/\b(duz|trez|quatroc|quinh|seisc|setec|oitoc|novec)entos\b/g, '$1entas') : t; };
+  const txtPrazo = (q, un) => (un === 'horas' ? plural(+q, 'hora', 'horas') : plural(+q, 'dia útil', 'dias úteis'));
+  const hmDe = (d) => String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
+  // fim do prazo: { data, hora, ms } — em horas: envio + N horas; em dias úteis: último dia útil, no horário do envio
+  function fimPrazo(isoEnvio, hora, qtd, un) {
+    if (!isoEnvio) return { data: '', hora: '', ms: 0 };
+    const hh = horaValida(hora);
+    if (un === 'horas') {
+      const d = new Date(String(isoEnvio).slice(0, 10) + 'T' + (hh || '00:00') + ':00');
+      d.setTime(d.getTime() + Math.max(1, +qtd || 1) * 3600000);
+      return { data: isoDe(d), hora: hmDe(d), ms: d.getTime() };
+    }
+    const data = prazoFinalUteis(isoEnvio, qtd);
+    return { data, hora: hh, ms: new Date(data + 'T' + (hh || '23:59') + ':59').getTime() };
+  }
+  const fimOriginal = (n) => fimPrazo(n.enviadaEm, n.enviadaHora, n.prazoDiasEnvio || n.prazo_dias, unidadeDe(n));
+  const fimRodada = (ro) => fimPrazo(ro.enviadaEm, ro.enviadaHora, ro.prazoDias || 3, unidadeDe(ro));
+  const prazoOriginal = (n) => (n.enviadaEm ? fimOriginal(n).data : n.prazoFinal);
   /* 3.18.6: contrarresposta — depois da resposta, a nossa réplica com novo prazo. Enquanto a última não for
      respondida, é o prazo dela que vale (Prazos, Início, avisos). */
   const rodadaAberta = (n) => { const l = (n && n.rodadas) || []; const u = l[l.length - 1]; return n && n.respondidaEm && u && u.enviadaEm && !u.respondidaEm ? u : null; };
-  const prazoDe = (n) => { const ro = rodadaAberta(n); return ro ? prazoFinalUteis(ro.enviadaEm, ro.prazoDias || 3) : prazoOriginal(n); };
+  const prazoDe = (n) => { const ro = rodadaAberta(n); return ro ? fimRodada(ro).data : prazoOriginal(n); };
+  // prazo que está valendo (contrarresposta aberta ou o da notificação): { data, hora, ms, un }
+  const fimAtivo = (n) => { const ro = rodadaAberta(n); const f = ro ? fimRodada(ro) : fimOriginal(n); return Object.assign({ un: unidadeDe(ro || n) }, f); };
+  // duração legível: "3 h 20 min", "45 min", "2 dias e 4 h"
+  const duracaoTxt = (ms) => { const m = Math.max(0, Math.round(ms / 60000)); const d = Math.floor(m / 1440), hh = Math.floor((m % 1440) / 60), mm = m % 60;
+    return d ? plural(d, 'dia', 'dias') + (hh ? ' e ' + hh + ' h' : '') : hh ? hh + ' h' + (mm ? ' ' + mm + ' min' : '') : mm + ' min'; };
   /* 3.18.2: o prazo conta a partir da data E do horário do envio — vence no último dia útil do prazo, no mesmo horário.
      Notificações registradas antes (sem horário) continuam vencendo no fim do dia. */
   const horaValida = (x) => (/^\d\d:\d\d$/.test(String(x || '')) ? x : '');
   const horaEnvio = (n) => { if (!n) return ''; const ro = rodadaAberta(n); return horaValida(ro ? ro.enviadaHora : n.enviadaHora); };
   const horaEnv0 = (n) => horaValida(n && n.enviadaHora); // horário do envio da notificação (não da contrarresposta)
   const agoraHM = () => { const d = new Date(); return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0'); };
-  const comHora = (n) => (horaEnvio(n) ? ' às ' + horaEnvio(n) : '');
+  // horário em que o prazo termina (em dias úteis é o horário do envio; em horas, envio + N horas)
+  const horaFimPrazo = (n) => { if (!n || !n.enviadaEm) return ''; return fimAtivo(n).hora || ''; };
+  const comHora = (n) => (horaFimPrazo(n) ? ' às ' + horaFimPrazo(n) : '');
   function prazoFinalUteis(isoEnvio, dias) {
     const fer = feriados();
     const d = new Date(String(isoEnvio).slice(0, 10) + 'T12:00:00');
@@ -421,8 +448,15 @@
     }
     const pf = prazoDe(n);
     const r = uteisRestantes(pf);
-    const hh = horaEnvio(n);
+    const hh = horaFimPrazo(n);
     const pre = ro ? 'Contrarresposta: ' : '';
+    const fa = fimAtivo(n);
+    if (fa.un === 'horas') {
+      const falta = fa.ms - Date.now(), hojeF = fa.data === X.hojeISO();
+      const quando = (hojeF ? 'hoje' : 'em ' + X.dataBR(fa.data)) + ' às ' + fa.hora;
+      if (falta <= 0) return { k: 'vencida', contra: !!ro, horas: true, txt: pre + 'Prazo encerrado ' + quando + ' (há ' + duracaoTxt(-falta) + ')', cls: 'perigo', ordem: 0, restante: Math.min(0, r), hoje: hojeF, restMs: falta };
+      return { k: 'aguardando', contra: !!ro, horas: true, txt: pre + 'Faltam ' + duracaoTxt(falta) + ' · até ' + (hojeF ? '' : X.dataBR(fa.data) + ' ') + fa.hora, cls: 'alerta', ordem: 1, restante: Math.max(0, r), restMs: falta };
+    }
     if (r < 0) return { k: 'vencida', contra: !!ro, txt: pre + 'Prazo encerrado em ' + X.dataBR(pf) + comHora(n) + ' (há ' + -r + (r === -1 ? ' dia)' : ' dias)'), cls: 'perigo', ordem: 0, restante: r };
     if (r === 0 && hh && pf === X.hojeISO() && agoraHM() >= hh) return { k: 'vencida', contra: !!ro, txt: pre + 'Prazo encerrado hoje às ' + hh, cls: 'perigo', ordem: 0, restante: 0, hoje: true };
     return { k: 'aguardando', contra: !!ro, txt: pre + (r === 0 ? 'Prazo termina hoje' + comHora(n) : r === 1 ? 'Falta 1 dia útil' : 'Faltam ' + r + ' dias úteis'), cls: r <= 1 ? 'alerta' : 'info', ordem: 1, restante: r };
@@ -4617,12 +4651,12 @@
         resumo: ROTULO[r.tipo] + ' nº ' + (r.numero || '—') + ' · Nº ' + (n.numero || (n.status === 'emitida' ? '—' : 'a definir na emissão')) + (n.status === 'emitida' ? ' · emitida em ' + dataLocalBR(n.emitidaEm || n.data) : ' · rascunho'),
         prazos: [n.enviadaEm && !n.respondidaEm
           ? { rot: 'Prazo de resposta', data: dataCurta(prazoDe(n)) + comHora(n), cls: sit.k === 'vencida' ? 'perigo' : sit.restante <= 1 ? 'alerta' : 'info',
-            txt: sit.hoje ? 'encerrado hoje às ' + horaEnvio(n) : sit.k === 'vencida' ? 'encerrado há ' + -sit.restante + (sit.restante === -1 ? ' dia' : ' dias') : sit.restante === 0 ? 'termina hoje' : sit.restante === 1 ? 'falta 1 dia útil' : 'faltam ' + sit.restante + ' dias úteis' }
+            txt: sit.horas ? (sit.k === 'vencida' ? 'encerrado há ' + duracaoTxt(-sit.restMs) : 'faltam ' + duracaoTxt(sit.restMs)) : sit.hoje ? 'encerrado hoje às ' + horaFimPrazo(n) : sit.k === 'vencida' ? 'encerrado há ' + -sit.restante + (sit.restante === -1 ? ' dia' : ' dias') : sit.restante === 0 ? 'termina hoje' : sit.restante === 1 ? 'falta 1 dia útil' : 'faltam ' + sit.restante + ' dias úteis' }
           : { rot: n.status === 'emitida' ? 'Emitida em' : 'Criada em', data: dataCurtaLocal(n.emitidaEm || n.data), cls: '' }],
         chips: [repetidos.has(n.id) ? etq('nº repetido', 'perigo') : null, sit.k === 'vencida' || sit.k === 'aguardando' ? null : etq(sit.txt, sit.cls), n.enviadaEm ? etq('enviada ' + X.dataBR(n.enviadaEm), '') : null],
       })))
         : h('div', { class: 'vazio' }, g[0] === 'pendentes' ? 'Nenhuma notificação aguardando resposta. 👍' : 'Nada por aqui.'),
-      h('p', { class: 'dica' }, 'O prazo conta em dias úteis a partir da data e do horário do envio e vence no último dia, no mesmo horário (sábados, domingos e os feriados cadastrados em Ajustes › Padrões não contam). Para registrar envio ou resposta, abra a notificação.'));
+      h('p', { class: 'dica' }, 'O prazo conta em dias úteis a partir da data e do horário do envio e vence no último dia, no mesmo horário (sábados, domingos e os feriados cadastrados em Ajustes › Padrões não contam). Prazo em horas: horas corridas a partir do envio. Para registrar envio ou resposta, abra a notificação.'));
     App._atualizarTela = () => telaNotificacoes();
   }
 
@@ -4906,7 +4940,7 @@
     if (hora) o.enviadaHora = hora; else delete o.enviadaHora;
     if (!o.assinaturaEm) o.assinaturaDireta = true; // 3.18.3: envio registrado direto (já estava assinada)
     o.prazoDiasEnvio = (+o.prazo_dias || 3) + diasAditados(o); // 3.18.1: os aditivos de prazo continuam valendo
-    o.prazoFinal = prazoFinalUteis(dataISO, o.prazoDiasEnvio);
+    o.prazoFinal = fimPrazo(dataISO, hora, o.prazoDiasEnvio, unidadeDe(o)).data;
     o.enviadaPor = email();
   }
   async function pedirDataEnvio(n, inicial, opts) {
@@ -4917,12 +4951,12 @@
     const info = h('p', { class: 'sub' });
     const prev = () => {
       if (!d.data) { rc(info, ''); return; }
-      const fim = prazoFinalUteis(d.data, dias);
-      rc(info, 'Prazo de ' + plural(dias, 'dia útil', 'dias úteis') + ' para ' + quemResponde(n.tipo) + ' responder: até ', h('b', {}, DIAS_L[dataD(fim).getDay()] + ', ' + X.dataBR(fim) + (d.hora ? ' às ' + d.hora : '')), '.');
+      const f = fimPrazo(d.data, d.hora, dias, unidadeDe(n));
+      rc(info, 'Prazo de ' + txtPrazo(dias, unidadeDe(n)) + ' para ' + quemResponde(n.tipo) + ' responder: até ', h('b', {}, DIAS_L[dataD(f.data).getDay()] + ', ' + X.dataBR(f.data) + (f.hora ? ' às ' + f.hora : '')), '.');
     };
     prev();
     const ok = await modal('📨 Registrar envio', h('div', {},
-      h('p', {}, 'Data e horário em que a notificação foi enviada. O prazo em dias úteis conta a partir desse momento: vence no último dia do prazo, no mesmo horário do envio.'),
+      h('p', {}, unidadeDe(n) === 'horas' ? 'Data e horário em que a notificação foi enviada. O prazo em horas conta a partir desse momento (horas corridas).' : 'Data e horário em que a notificação foi enviada. O prazo em dias úteis conta a partir desse momento: vence no último dia do prazo, no mesmo horário do envio.'),
       h('div', { class: 'grade2' }, campo('Data do envio', inp), campo('Horário do envio', inpH)), info,
       opts && opts.docs ? campoBloco('Documentos (opcional)', seletorDocs(d.docs, { rotulo: '📎 Anexar notificação assinada / comprovante' })) : null),
     [{ txt: 'Cancelar', valor: false }, { txt: 'Registrar envio', cls: 'pri', valor: true, antes: () => {
@@ -4948,31 +4982,34 @@
     return ok ? d : null;
   }
   async function pedirContra(n) {
-    const d = { data: X.hojeISO(), hora: agoraHM(), dias: +(CONFIG || {}).prazo_padrao || 3, obs: '', docs: { arqs: [] } };
+    const d = { data: X.hojeISO(), hora: agoraHM(), dias: +(CONFIG || {}).prazo_padrao || 3, obs: '', docs: { arqs: [] }, un: 'dias' };
     const quem = quemResponde(n.tipo);
+    const segUn = h('div', { class: 'seg prazo-un', role: 'group', 'aria-label': 'Unidade do prazo' });
+    const pintarUn = () => rc(segUn, [['dias', 'Dias úteis'], ['horas', 'Horas']].map(([k, t]) => h('button', { type: 'button', 'data-un': k, class: d.un === k ? 'ativo' : null,
+      onclick: () => { if (d.un === k) return; d.un = k; d.dias = k === 'horas' ? 4 : (+(CONFIG || {}).prazo_padrao || 3); inN.value = d.dias; inN.max = String(MAX_PRAZO[k]); pintarUn(); prev(); } }, t)));
     const inD = h('input', { type: 'date', value: d.data, max: X.hojeISO(), min: n.respondidaEm || null, oninput: (e) => { d.data = e.target.value; prev(); } });
     const inH = h('input', { type: 'time', value: d.hora, step: '60', 'aria-label': 'Horário', oninput: (e) => { d.hora = e.target.value; prev(); } });
-    const inN = h('input', { type: 'number', min: '1', max: '365', value: d.dias, inputmode: 'numeric', 'aria-label': 'Dias úteis', oninput: (e) => { d.dias = Math.max(1, Math.min(365, parseInt(e.target.value, 10) || 0)); prev(); } });
+    const inN = h('input', { type: 'number', min: '1', max: '365', value: d.dias, inputmode: 'numeric', 'aria-label': 'Prazo', oninput: (e) => { d.dias = Math.max(1, Math.min(MAX_PRAZO[d.un], parseInt(e.target.value, 10) || 0)); prev(); } });
     const info = h('p', { class: 'sub' });
     const prev = () => {
       if (!d.data || !d.dias) { rc(info, ''); return; }
-      const fim = prazoFinalUteis(d.data, d.dias);
-      rc(info, 'Prazo para ' + quem + ' responder à contrarresposta: até ', h('b', {}, DIAS_L[dataD(fim).getDay()] + ', ' + X.dataBR(fim) + (d.hora ? ' às ' + d.hora : '')), ' (fins de semana e feriados não contam).');
+      const f = fimPrazo(d.data, d.hora, d.dias, d.un);
+      rc(info, 'Prazo para ' + quem + ' responder à contrarresposta (' + txtPrazo(d.dias, d.un) + '): até ', h('b', {}, DIAS_L[dataD(f.data).getDay()] + ', ' + X.dataBR(f.data) + (f.hora ? ' às ' + f.hora : '')), d.un === 'horas' ? ' (horas corridas).' : ' (fins de semana e feriados não contam).');
     };
-    prev();
+    pintarUn(); prev();
     const ok = await modal('↩️ Registrar contrarresposta', h('div', {},
       h('p', {}, 'Nossa resposta à manifestação ' + (quem === 'a prefeitura' ? 'da prefeitura' : 'da empresa') + ', com um novo prazo para ' + quem + ' responder. Informe quando foi enviada.'),
       h('div', { class: 'grade2' }, campo('Data do envio', inD), campo('Horário do envio', inH)),
-      campo('Prazo para responder (dias úteis)', inN), info,
+      campoBloco('Prazo para responder', h('div', {}, segUn, h('div', { style: { marginTop: '8px' } }, inN))), info,
       campo('Resumo / documento (opcional)', inputArea(d, 'obs', { placeholder: 'Ex.: Ofício nº 45/2026 — não aceitamos a justificativa; pedimos o cronograma de troca.' })),
       campoBloco('Documentos (opcional)', seletorDocs(d.docs, { rotulo: '📎 Anexar a contrarresposta' }))),
     [{ txt: 'Cancelar', valor: false }, { txt: 'Registrar', cls: 'pri', valor: true, antes: () => {
       if (!d.data || !/^\d\d:\d\d$/.test(d.hora || '')) { toast('Informe a data e o horário do envio.', true); return false; }
       if (d.data > X.hojeISO() || (d.data === X.hojeISO() && d.hora > agoraHM())) { toast('A data e o horário não podem ser futuros.', true); return false; }
       if (n.respondidaEm && d.data < n.respondidaEm) { toast('A contrarresposta não pode ser anterior à resposta (' + X.dataBR(n.respondidaEm) + ').', true); return false; }
-      if (!(d.dias >= 1)) { toast('Informe o prazo em dias úteis.', true); return false; }
+      if (!(d.dias >= 1)) { toast('Informe o prazo.', true); return false; }
     } }]);
-    return ok ? { enviadaEm: d.data, enviadaHora: d.hora, prazoDias: d.dias, obs: d.obs.trim(), docs: d.docs.arqs } : null;
+    return ok ? Object.assign({ enviadaEm: d.data, enviadaHora: d.hora, prazoDias: d.dias, obs: d.obs.trim(), docs: d.docs.arqs }, d.un === 'horas' ? { prazo_unidade: 'horas' } : {}) : null;
   }
   /* Acompanhamento da notificação emitida: emitida → enviada → prazo (dias úteis) → resposta */
   /* 3.18.1: aditivo de prazo para responder a notificação (pedido da prefeitura/empresa). Soma dias úteis ao prazo
@@ -4980,32 +5017,36 @@
      Fica no histórico da notificação e na Atividade da obra. Aparelhos com versões antigas já veem o prazo novo. */
   async function dialogoAditivoPrazo(n, r) {
     const pfAtual = prazoDe(n);
-    const st = { dias: 5 };
+    const u = unidadeDe(n), H = u === 'horas';
+    const fAtual = fimOriginal(n);
+    const st = { dias: H ? 4 : 5 };
     const quem = quemResponde(n.tipo || r.tipo);
-    const inp = h('input', { type: 'number', inputmode: 'numeric', min: '1', max: '365', value: st.dias, class: nc('num'), 'aria-label': 'Dias úteis a mais' });
+    const inp = h('input', { type: 'number', inputmode: 'numeric', min: '1', max: String(MAX_PRAZO[u]), value: st.dias, class: nc('num'), 'aria-label': H ? 'Horas a mais' : 'Dias úteis a mais' });
+    const rotQ = h('span', {});
     const novo = h('div', { class: nc('adp-novo') });
     const sugs = h('div', { class: nc('sugs'), style: { justifyContent: 'center', margin: '12px 0 4px' } });
     const pedido = h('input', { type: 'date', max: X.hojeISO() });
     const just = h('textarea', { rows: 4, placeholder: 'Ex.: A Prefeitura solicitou, pelo Ofício nº 123/2026, mais prazo para apresentar o cronograma corrigido, alegando…' });
     const pintar = () => {
-      const fim = prazoFinalUteis(n.enviadaEm, (+n.prazoDiasEnvio || +n.prazo_dias || 3) + st.dias);
-      rc(novo, h('span', { class: 'sub' }, 'Novo prazo'), h('b', {}, DIAS_L[dataD(fim).getDay()] + ', ' + X.dataBR(fim) + comHora(n)),
-        h('span', { class: 'sub' }, 'antes: ' + X.dataBR(pfAtual) + ' · +' + plural(st.dias, 'dia útil', 'dias úteis')));
-      rc(sugs, [5, 10, 15, 30].map((x) => h('button', { type: 'button', class: st.dias === x ? nc('on') : null, onclick: () => definir(x) }, '+' + x)));
+      const f = fimPrazo(n.enviadaEm, n.enviadaHora, (+n.prazoDiasEnvio || +n.prazo_dias || 3) + st.dias, u);
+      rc(rotQ, H ? (st.dias === 1 ? 'hora' : 'horas') : (st.dias === 1 ? 'dia útil' : 'dias úteis'));
+      rc(novo, h('span', { class: 'sub' }, 'Novo prazo'), h('b', {}, DIAS_L[dataD(f.data).getDay()] + ', ' + X.dataBR(f.data) + (f.hora ? ' às ' + f.hora : '')),
+        h('span', { class: 'sub' }, 'antes: ' + X.dataBR(fAtual.data) + (fAtual.hora ? ' às ' + fAtual.hora : '') + ' · +' + txtPrazo(st.dias, u)));
+      rc(sugs, (H ? [1, 2, 4, 8, 24] : [5, 10, 15, 30]).map((x) => h('button', { type: 'button', class: st.dias === x ? nc('on') : null, onclick: () => definir(x) }, '+' + x)));
     };
-    const definir = (x) => { st.dias = Math.max(1, Math.min(365, Math.round(x) || 1)); inp.value = st.dias; pintar(); };
-    inp.addEventListener('input', () => { const x = parseInt(inp.value, 10); if (x >= 1) { st.dias = Math.min(365, x); pintar(); } });
+    const definir = (x) => { st.dias = Math.max(1, Math.min(MAX_PRAZO[u], Math.round(x) || 1)); inp.value = st.dias; pintar(); };
+    inp.addEventListener('input', () => { const x = parseInt(inp.value, 10); if (x >= 1) { st.dias = Math.min(MAX_PRAZO[u], x); pintar(); } });
     pintar();
     const sit = situacaoNotif(n);
     const conteudo = h('div', { class: nc('adp') },
-      h('div', { class: nc('adp-atual') }, ico('relogio'), h('div', {}, h('b', {}, 'Prazo atual: ' + DIAS_L[dataD(pfAtual).getDay()] + ', ' + X.dataBR(pfAtual) + comHora(n)),
-        h('div', { class: 'sub' }, plural(+n.prazoDiasEnvio || +n.prazo_dias || 3, 'dia útil', 'dias úteis') + ' desde o envio em ' + X.dataBR(n.enviadaEm) + ' · ' + sit.txt.toLowerCase()))),
-      h('div', { class: 'campo-bloco' }, h('span', {}, 'Dias úteis a mais para ' + quem + ' responder'),
+      h('div', { class: nc('adp-atual') }, ico('relogio'), h('div', {}, h('b', {}, 'Prazo atual: ' + DIAS_L[dataD(fAtual.data).getDay()] + ', ' + X.dataBR(fAtual.data) + (fAtual.hora ? ' às ' + fAtual.hora : '')),
+        h('div', { class: 'sub' }, txtPrazo(+n.prazoDiasEnvio || +n.prazo_dias || 3, u) + ' desde o envio em ' + X.dataBR(n.enviadaEm) + (horaEnv0(n) ? ' às ' + horaEnv0(n) : '') + ' · ' + sit.txt.toLowerCase()))),
+      h('div', { class: 'campo-bloco' }, h('span', {}, (H ? 'Horas' : 'Dias úteis') + ' a mais para ' + quem + ' responder'),
         h('div', { class: nc('card prazo-n'), style: { background: 'var(--sup2)', boxShadow: 'none' } },
           h('div', { class: nc('mm') },
-            h('button', { type: 'button', 'aria-label': 'Um dia a menos', onclick: () => definir(st.dias - 1) }, '−'),
-            h('label', { class: nc('pz') }, inp, h('span', {}, 'dias úteis')),
-            h('button', { type: 'button', 'aria-label': 'Um dia a mais', onclick: () => definir(st.dias + 1) }, '+')),
+            h('button', { type: 'button', 'aria-label': H ? 'Uma hora a menos' : 'Um dia a menos', onclick: () => definir(st.dias - 1) }, '−'),
+            h('label', { class: nc('pz') }, inp, rotQ),
+            h('button', { type: 'button', 'aria-label': H ? 'Uma hora a mais' : 'Um dia a mais', onclick: () => definir(st.dias + 1) }, '+')),
           sugs, novo)),
       campo('Data do pedido d' + quem + ' (opcional)', pedido),
       campo('Justificativa (obrigatória)', just, 'Aparece na Atividade da obra e no histórico desta notificação.'),
@@ -5021,22 +5062,23 @@
     if (!ad0) return false;
     const docsAd = ad0.docs || [];
     const ad = Object.assign({}, ad0); delete ad.docs; // os arquivos vão para n.documentos (etapa "aditivo")
-    const de = prazoDe(n);
-    let salvo = null;
+    const de = prazoDe(n), u = unidadeDe(n), f0 = fimOriginal(n);
+    let salvo = null, f1 = null;
     await atualizarCampos('notificacoes', n.id, (o) => {
       o.aditivosPrazo = (o.aditivosPrazo || []).slice();
       o.prazoDiasEnvio = (+o.prazoDiasEnvio || +o.prazo_dias || 3) + ad.dias;
-      o.prazoFinal = prazoFinalUteis(o.enviadaEm, o.prazoDiasEnvio);
-      salvo = Object.assign({ id: DB.uuid(), de, para: o.prazoFinal, em: new Date().toISOString(), por: email(), quemNome: meuNome() }, ad);
+      f1 = fimPrazo(o.enviadaEm, o.enviadaHora, o.prazoDiasEnvio, u);
+      o.prazoFinal = f1.data;
+      salvo = Object.assign({ id: DB.uuid(), de, para: o.prazoFinal, em: new Date().toISOString(), por: email(), quemNome: meuNome() }, u === 'horas' ? { deHora: f0.hora, paraHora: f1.hora } : {}, ad);
       o.aditivosPrazo.push(salvo);
     });
     if (!salvo) return false;
     const k = (n.aditivosPrazo || []).length + 1;
     await registrarAtividade(r.id, 'aditivo_prazo', k + 'º aditivo de prazo · Notificação' + (n.numero ? ' nº ' + n.numero : ''),
-      'Resposta até ' + X.dataBR(salvo.para) + comHora(n) + ' (antes ' + X.dataBR(de) + ', +' + plural(ad.dias, 'dia útil', 'dias úteis') + ')' + (ad.pedidoEm ? ' · pedido em ' + X.dataBR(ad.pedidoEm) : '') + '\nJustificativa: ' + ad.justificativa,
+      'Resposta até ' + X.dataBR(salvo.para) + (f1.hora ? ' às ' + f1.hora : '') + ' (antes ' + X.dataBR(de) + (u === 'horas' && f0.hora ? ' às ' + f0.hora : '') + ', +' + txtPrazo(ad.dias, u) + ')' + (ad.pedidoEm ? ' · pedido em ' + X.dataBR(ad.pedidoEm) : '') + '\nJustificativa: ' + ad.justificativa,
       { notificacaoId: n.id });
     if (docsAd.length) await salvarDocsNotif(n, docsAd, 'aditivo');
-    toast('Prazo aditado: resposta até ' + X.dataBR(salvo.para) + comHora(n));
+    toast('Prazo aditado: resposta até ' + X.dataBR(salvo.para) + (f1.hora ? ' às ' + f1.hora : ''));
     verificarPrazos();
     return true;
   }
@@ -5159,12 +5201,23 @@
     const docsDe = (etapa) => listaDocsNotif(n, todosDocs.filter((x) => (conhecidas.has(x.etapa) ? x.etapa : 'outro') === etapa), redesenhar);
     const quem = quemResponde(n.tipo || r.tipo);
     const dias = +(n.prazoDiasEnvio || n.prazo_dias) || 3;
+    const unN = unidadeDe(n), HN = unN === 'horas';
+    const f0 = n.enviadaEm ? fimOriginal(n) : null;
     const pf = n.enviadaEm ? prazoOriginal(n) : null;
+    // 3.19: prazo em horas — contador em horas e minutos e barra do tempo já passado
+    const msDe = (iso, hm) => new Date(String(iso).slice(0, 10) + 'T' + (horaValida(hm) || '00:00') + ':00').getTime();
+    const contadorHoras = (fimMs, iniMs) => {
+      const agora = Date.now(), venc = agora >= fimMs;
+      const frac = Math.max(0, Math.min(1, (agora - iniMs) / Math.max(1, fimMs - iniMs)));
+      return h('div', { 'data-contador': 'horas' },
+        h('div', { class: nc('contador') }, h('b', { class: nc('num'), style: { color: 'var(--' + (venc ? 'er' : 'al') + ')' } }, duracaoTxt(Math.abs(fimMs - agora))), h('span', { class: 'sub' }, venc ? 'de atraso' : 'restantes')),
+        h('div', { class: nc('barra ' + (venc ? 'er' : 'al')), style: { marginTop: '8px', height: '8px' } }, h('i', { style: { width: Math.round(100 * (venc ? 1 : frac)) + '%' } })));
+    };
     const adits = n.aditivosPrazo || [];
     const diasOrig = dias - diasAditados(n);
     const btAditar = pode.notificar() && n.enviadaEm && !n.respondidaEm ? h('button', { class: 'btn peq', 'data-acao': 'aditar-prazo', onclick: async () => { if (await aditarPrazoNotif(n, r)) redesenhar(); } }, '⏩ Aditar prazo') : null;
     const listaAdits = adits.length ? h('div', { class: nc('adp-lista') }, adits.map((a, i) => h('div', { class: nc('adp-item') },
-      h('b', {}, (i + 1) + 'º aditivo · +' + plural(+a.dias, 'dia útil', 'dias úteis') + ' · ' + X.dataBR(a.de) + ' → ' + X.dataBR(a.para)),
+      h('b', {}, (i + 1) + 'º aditivo · +' + txtPrazo(+a.dias, unN) + ' · ' + X.dataBR(a.de) + (a.deHora ? ' ' + a.deHora : '') + ' → ' + X.dataBR(a.para) + (a.paraHora ? ' ' + a.paraHora : '')),
       h('div', { class: 'sub' }, (a.pedidoEm ? 'Pedido em ' + X.dataBR(a.pedidoEm) + ' · ' : '') + 'registrado em ' + dataHoraBR(a.em) + (a.quemNome ? ' por ' + a.quemNome : '')),
       h('div', { class: nc('adp-just') }, a.justificativa)))) : null;
     const passo = (est, numero, t, sub, extra) => h('div', { class: nc('rp ' + est) },
@@ -5176,7 +5229,7 @@
       await atualizarCampos('notificacoes', n.id, (o) => aplicarEnvio(o, envio.data, envio.hora));
       if (envio.docs.arqs.length) await salvarDocsNotif(n, envio.docs.arqs.map((x) => Object.assign(x, { etapa: /assinad/i.test(x.nome) ? 'assinada' : 'envio' })));
       await ativNotif(n, 'enviada', X.dataBR(envio.data) + ' às ' + envio.hora + (n.assinaturaEm ? '' : ' · registrada direto (já assinada)'));
-      toast('Envio registrado — prazo até ' + X.dataBR(prazoFinalUteis(envio.data, (+n.prazo_dias || 3) + diasAditados(n))) + ' às ' + envio.hora);
+      { const fe = fimPrazo(envio.data, envio.hora, (+n.prazo_dias || 3) + diasAditados(n), unidadeDe(n)); toast('Envio registrado — prazo até ' + X.dataBR(fe.data) + (fe.hora ? ' às ' + fe.hora : '')); }
       verificarPrazos(); redesenhar();
     } }, '📨 Registrar envio') : null;
     const registrarResp = pode.notificar() && n.enviadaEm && !n.respondidaEm ? h('button', { class: 'btn ok peq', onclick: async () => {
@@ -5198,7 +5251,8 @@
         dias <= 20 ? h('div', { class: nc('dias-u') }, Array.from({ length: dias }, (_, i) => h('i', { class: i < (venc ? dias : usados) ? nc(venc ? 'v' : 'p') : null })))
           : h('div', { class: nc('barra ' + (venc ? 'er' : 'al')), style: { marginTop: '8px', height: '8px' } }, h('i', { style: { width: Math.round(100 * (venc ? dias : usados) / dias) + '%' } })));
     };
-    if (n.enviadaEm && !n.respondidaEm) {
+    if (n.enviadaEm && !n.respondidaEm && HN) contador = contadorHoras(f0.ms, msDe(n.enviadaEm, n.enviadaHora));
+    else if (n.enviadaEm && !n.respondidaEm) {
       const venc = sit.k === 'vencida';
       const rest = venc ? -sit.restante : sit.restante;
       const usados = Math.max(0, Math.min(dias, dias - (venc ? 0 : sit.restante)));
@@ -5213,7 +5267,7 @@
       const daQuem = quem === 'a prefeitura' ? 'da prefeitura' : 'da empresa';
       return rods.map((ro, i) => {
         const k = rods.length > 1 ? ' ' + (i + 1) : '';
-        const dias = +ro.prazoDias || 3, fim = prazoFinalUteis(ro.enviadaEm, dias), hh = horaValida(ro.enviadaHora);
+        const dias = +ro.prazoDias || 3, fR = fimRodada(ro), fim = fR.data, hh = horaValida(ro.enviadaHora), uR = unidadeDe(ro);
         const aberta = !ro.respondidaEm && i === rods.length - 1;
         const btResp = aberta && pode.notificar() ? h('button', { class: 'btn ok peq', 'data-acao': 'resposta-contra', onclick: async () => {
           const resp = await pedirResposta({ tipo: n.tipo, enviadaEm: ro.enviadaEm });
@@ -5224,12 +5278,12 @@
           toast('Resposta registrada'); verificarPrazos(); redesenhar();
         } }, '✅ Registrar resposta') : null;
         return [
-          passo('feito', 6 + i * 2, 'Contrarresposta' + k + ' enviada', X.dataBR(ro.enviadaEm) + (hh ? ' às ' + hh : '') + ' · prazo de ' + plural(dias, 'dia útil', 'dias úteis') + (ro.por ? ' · registrado por ' + nomeDe(ro.por) : ''),
+          passo('feito', 6 + i * 2, 'Contrarresposta' + k + ' enviada', X.dataBR(ro.enviadaEm) + (hh ? ' às ' + hh : '') + ' · prazo de ' + txtPrazo(dias, uR) + (ro.por ? ' · registrado por ' + nomeDe(ro.por) : ''),
             [ro.obs ? h('div', { class: nc('adp-just') }, ro.obs) : null, docsDe('contra:' + ro.id)]),
           passo(ro.respondidaEm ? 'feito' : 'agora', 7 + i * 2, ro.respondidaEm ? 'Respondida' : 'Resposta ' + daQuem + ' à contrarresposta',
             ro.respondidaEm ? X.dataBR(ro.respondidaEm) + (ro.respondidaEm > fim ? ' (fora do prazo)' : '') + (ro.respondidaPor ? ' · registrado por ' + nomeDe(ro.respondidaPor) : '') + (ro.respostaObs ? ' · ' + ro.respostaObs : '')
-              : (sit.k === 'vencida' ? 'Terminou em ' : 'Vence em ') + DIAS_L[dataD(fim).getDay()] + ', ' + X.dataBR(fim) + (hh ? ' às ' + hh : ''),
-            [docsDe('resposta:' + ro.id), aberta ? [contadorDe(sit, dias, hh), h('div', { class: 'acoes', style: { marginTop: '10px' } }, btResp)] : null]),
+              : (sit.k === 'vencida' ? 'Terminou em ' : 'Vence em ') + DIAS_L[dataD(fim).getDay()] + ', ' + X.dataBR(fim) + (fR.hora ? ' às ' + fR.hora : ''),
+            [docsDe('resposta:' + ro.id), aberta ? [uR === 'horas' ? contadorHoras(fR.ms, msDe(ro.enviadaEm, ro.enviadaHora)) : contadorDe(sit, dias, hh), h('div', { class: 'acoes', style: { marginTop: '10px' } }, btResp)] : null]),
         ];
       });
     }
@@ -5256,8 +5310,9 @@
           n.enviadaEm ? X.dataBR(n.enviadaEm) + (horaEnv0(n) ? ' às ' + horaEnv0(n) : '') + (n.enviadaPor ? ' · registrado por ' + nomeDe(n.enviadaPor) : '')
             : n.assinaturaEm ? 'Depois de assinada, envie e registre aqui a data e o horário do envio: o prazo conta a partir desse momento.' : 'Fica disponível depois da assinatura.',
           [docsDe('envio'), n.enviadaEm || !n.assinaturaEm ? null : registrarEnvio]),
-        passo(n.respondidaEm ? 'feito' : n.enviadaEm ? 'agora' : '', 4, 'Prazo de ' + dias + (dias === 1 ? ' dia útil' : ' dias úteis') + (adits.length ? ' (' + diasOrig + ' + ' + (dias - diasOrig) + ' aditados)' : ''),
-          pf ? (sit.k === 'vencida' ? 'Terminou em ' : 'Vence em ') + DIAS_L[dataD(pf).getDay()] + ', ' + X.dataBR(pf) + (horaEnv0(n) ? ' às ' + horaEnv0(n) : '') + (horaEnv0(n) ? ' (contado a partir do envio, às ' + horaEnv0(n) + '; fins de semana e feriados não contam)' : ' (fins de semana e feriados não contam)') : 'Conta a partir da data e do horário do envio',
+        passo(n.respondidaEm ? 'feito' : n.enviadaEm ? 'agora' : '', 4, 'Prazo de ' + txtPrazo(dias, unN) + (adits.length ? ' (' + diasOrig + ' + ' + (dias - diasOrig) + ' aditad' + (HN ? 'as' : 'os') + ')' : ''),
+          HN ? (f0 ? (Date.now() >= f0.ms && !n.respondidaEm ? 'Terminou em ' : 'Vence em ') + DIAS_L[dataD(f0.data).getDay()] + ', ' + X.dataBR(f0.data) + ' às ' + f0.hora + ' (horas corridas, contadas a partir do envio' + (horaEnv0(n) ? ', às ' + horaEnv0(n) : '') + ')' : 'Conta a partir da data e do horário do envio (horas corridas)')
+          : pf ? (sit.k === 'vencida' ? 'Terminou em ' : 'Vence em ') + DIAS_L[dataD(pf).getDay()] + ', ' + X.dataBR(pf) + (horaEnv0(n) ? ' às ' + horaEnv0(n) : '') + (horaEnv0(n) ? ' (contado a partir do envio, às ' + horaEnv0(n) + '; fins de semana e feriados não contam)' : ' (fins de semana e feriados não contam)') : 'Conta a partir da data e do horário do envio',
           [contador, listaAdits, docsDe('aditivo'), btAditar ? h('div', { class: 'acoes', style: { marginTop: '10px' } }, btAditar) : null]),
         passo(n.respondidaEm ? 'feito' : '', 5, n.respondidaEm ? 'Respondida' : 'Resposta ' + (quem === 'a prefeitura' ? 'da prefeitura' : 'da empresa'),
           n.respondidaEm ? X.dataBR(n.respondidaEm) + (n.respondidaEm > pf ? ' (fora do prazo)' : '') + (n.respondidaPor ? ' · registrado por ' + nomeDe(n.respondidaPor) : '') + (n.respostaObs ? ' · ' + n.respostaObs : '') : 'Registre quando ' + quem + ' responder.',
@@ -5286,8 +5341,9 @@
         await atualizarCampos('notificacoes', n.id, (o) => { o.rodadas = (o.rodadas || []).concat(ro); });
         if (docsC.length) await salvarDocsNotif(n, docsC, 'contra:' + ro.id);
         const k = (n.rodadas || []).length + 1;
-        await ativNotif(n, (k > 1 ? k + 'ª ' : '') + 'contrarresposta enviada', X.dataBR(c.enviadaEm) + ' às ' + c.enviadaHora + ' · prazo de ' + plural(c.prazoDias, 'dia útil', 'dias úteis') + ' (até ' + X.dataBR(prazoFinalUteis(c.enviadaEm, c.prazoDias)) + ' às ' + c.enviadaHora + ')' + (c.obs ? '\n' + c.obs : ''));
-        toast('Contrarresposta registrada — prazo até ' + X.dataBR(prazoFinalUteis(c.enviadaEm, c.prazoDias)) + ' às ' + c.enviadaHora);
+        const fc = fimRodada(ro);
+        await ativNotif(n, (k > 1 ? k + 'ª ' : '') + 'contrarresposta enviada', X.dataBR(c.enviadaEm) + ' às ' + c.enviadaHora + ' · prazo de ' + txtPrazo(c.prazoDias, unidadeDe(ro)) + ' (até ' + X.dataBR(fc.data) + (fc.hora ? ' às ' + fc.hora : '') + ')' + (c.obs ? '\n' + c.obs : ''));
+        toast('Contrarresposta registrada — prazo até ' + X.dataBR(fc.data) + (fc.hora ? ' às ' + fc.hora : ''));
         verificarPrazos(); redesenhar();
       } }, '↩️ Registrar contrarresposta')));
     }
@@ -5336,11 +5392,11 @@
         } }, 'Desfazer envio') : null,
         adits.length && !n.respondidaEm ? h('button', { class: 'btn peq', onclick: async () => {
           const ult = adits[adits.length - 1];
-          if (!(await confirmar('Desfazer o ' + adits.length + 'º aditivo de prazo (+' + plural(+ult.dias, 'dia útil', 'dias úteis') + ')? O prazo volta para ' + X.dataBR(ult.de) + '.', 'Desfazer'))) return;
+          if (!(await confirmar('Desfazer o ' + adits.length + 'º aditivo de prazo (+' + txtPrazo(+ult.dias, unidadeDe(n)) + ')? O prazo volta para ' + X.dataBR(ult.de) + (ult.deHora ? ' às ' + ult.deHora : '') + '.', 'Desfazer'))) return;
           await atualizarCampos('notificacoes', n.id, (o) => {
             o.aditivosPrazo = (o.aditivosPrazo || []).filter((a) => a.id !== ult.id);
             o.prazoDiasEnvio = Math.max(1, (+o.prazoDiasEnvio || 0) - (+ult.dias || 0));
-            o.prazoFinal = prazoFinalUteis(o.enviadaEm, o.prazoDiasEnvio);
+            o.prazoFinal = fimPrazo(o.enviadaEm, o.enviadaHora, o.prazoDiasEnvio, unidadeDe(o)).data;
           });
           await registrarAtividade(r.id, 'aditivo_prazo', 'Aditivo de prazo desfeito · Notificação' + (n.numero ? ' nº ' + n.numero : ''), 'Resposta volta a ser até ' + X.dataBR(ult.de) + ' (era ' + X.dataBR(ult.para) + ')', { notificacaoId: n.id });
           verificarPrazos(); redesenhar();
@@ -5350,27 +5406,44 @@
     return card;
   }
 
-  /* Prazo para resposta: qualquer quantidade de dias úteis (+ e −, digitar, atalhos) e a data em que vence */
+  /* Prazo para resposta: dias úteis OU horas (3.19), com + e −, digitar, atalhos e quando vence */
+  const MAX_PRAZO = { dias: 365, horas: 720 };
+  function vencePrevia(qtd, un, longo) {
+    if (un === 'horas') {
+      const f = new Date(Date.now() + Math.max(1, +qtd || 1) * 3600000);
+      const dia = isoDe(f) === X.hojeISO() ? 'hoje' : DIAS_L[f.getDay()] + ', ' + X.dataBR(isoDe(f));
+      return 'se enviada agora, vence ' + dia + ' às ' + hmDe(f) + (longo ? ' (horas corridas, contadas a partir do horário do envio).' : '');
+    }
+    const fim = prazoFinalUteis(X.hojeISO(), qtd);
+    return longo ? 'Se enviada hoje, vence em ' + DIAS_L[dataD(fim).getDay()] + ', ' + X.dataBR(fim) + ' (fins de semana e feriados de Ajustes não contam).' : 'se enviada hoje, vence em ' + X.dataBR(fim);
+  }
   function campoPrazoDias(n, ro, aoMudar) {
-    const inp = h('input', { type: 'number', inputmode: 'numeric', min: '1', max: '365', value: n.prazo_dias, readonly: ro, class: nc('num'), 'aria-label': 'Dias úteis para resposta' });
+    const un = () => unidadeDe(n);
+    const inp = h('input', { type: 'number', inputmode: 'numeric', min: '1', max: String(MAX_PRAZO[un()]), value: n.prazo_dias, readonly: ro, class: nc('num'), 'aria-label': 'Prazo para resposta' });
+    const rotUn = h('span', {});
     const vence = h('div', { class: 'sub', style: { textAlign: 'center' } });
     const sugs = h('div', { class: nc('sugs'), style: { justifyContent: 'center', margin: '12px 0 4px' } });
+    const seg = h('div', { class: 'seg prazo-un', role: 'group', 'aria-label': 'Unidade do prazo' });
     const pintar = () => {
-      const d = +n.prazo_dias || 0;
-      if (d >= 1) { const fim = prazoFinalUteis(X.hojeISO(), d); rc(vence, 'Se enviada hoje, vence em ' + DIAS_L[dataD(fim).getDay()] + ', ' + X.dataBR(fim) + ' (fins de semana e feriados de Ajustes não contam).'); }
-      else rc(vence, 'Informe ao menos 1 dia útil.');
-      rc(sugs, ro ? null : [3, 5, 10, 15, 30].map((x) => h('button', { type: 'button', class: d === x ? nc('on') : null, onclick: () => definir(x) }, String(x))));
+      const d = +n.prazo_dias || 0, u = un();
+      rc(rotUn, u === 'horas' ? (d === 1 ? 'hora' : 'horas') : (d === 1 ? 'dia útil' : 'dias úteis'));
+      inp.max = String(MAX_PRAZO[u]);
+      rc(vence, d >= 1 ? vencePrevia(d, u, true).replace(/^s/, 'S') : 'Informe ao menos ' + (u === 'horas' ? '1 hora.' : '1 dia útil.'));
+      rc(sugs, ro ? null : (u === 'horas' ? [1, 2, 4, 8, 24, 48] : [3, 5, 10, 15, 30]).map((x) => h('button', { type: 'button', class: d === x ? nc('on') : null, onclick: () => definir(x) }, String(x))));
+      rc(seg, [['dias', 'Dias úteis'], ['horas', 'Horas']].map(([k, t]) => h('button', { type: 'button', 'data-un': k, class: u === k ? 'ativo' : null, disabled: ro || null,
+        onclick: () => { if (un() === k) return; if (k === 'horas') n.prazo_unidade = 'horas'; else delete n.prazo_unidade; definir(k === 'horas' ? 4 : (+((CONFIG || {}).prazo_padrao) || 3)); } }, t)));
     };
-    const definir = (x) => { n.prazo_dias = Math.max(1, Math.min(365, Math.round(x) || 1)); inp.value = n.prazo_dias; pintar(); aoMudar(); };
-    inp.addEventListener('input', () => { const x = parseInt(inp.value, 10); if (x >= 1) { n.prazo_dias = Math.min(365, x); aoMudar(); } pintar(); });
-    inp.addEventListener('change', () => { if (!(parseInt(inp.value, 10) >= 1)) definir(+n.prazo_dias || 3); else if (+inp.value > 365) definir(365); });
+    const definir = (x) => { n.prazo_dias = Math.max(1, Math.min(MAX_PRAZO[un()], Math.round(x) || 1)); inp.value = n.prazo_dias; pintar(); aoMudar(); };
+    inp.addEventListener('input', () => { const x = parseInt(inp.value, 10); if (x >= 1) { n.prazo_dias = Math.min(MAX_PRAZO[un()], x); aoMudar(); } pintar(); });
+    inp.addEventListener('change', () => { if (!(parseInt(inp.value, 10) >= 1)) definir(+n.prazo_dias || 3); else if (+inp.value > MAX_PRAZO[un()]) definir(MAX_PRAZO[un()]); });
     pintar();
-    return h('div', { class: 'campo-bloco' }, h('span', {}, 'Prazo para manifestação (dias úteis)'),
+    return h('div', { class: 'campo-bloco' }, h('span', {}, 'Prazo para manifestação'),
+      seg,
       h('div', { class: nc('card prazo-n'), style: { background: 'var(--sup2)', boxShadow: 'none' } },
         h('div', { class: nc('mm') },
-          ro ? null : h('button', { type: 'button', 'aria-label': 'Um dia a menos', onclick: () => definir((+n.prazo_dias || 1) - 1) }, '−'),
-          h('label', { class: nc('pz') }, inp, h('span', {}, 'dias úteis')),
-          ro ? null : h('button', { type: 'button', 'aria-label': 'Um dia a mais', onclick: () => definir((+n.prazo_dias || 0) + 1) }, '+')),
+          ro ? null : h('button', { type: 'button', 'aria-label': 'Um a menos', onclick: () => definir((+n.prazo_dias || 1) - 1) }, '−'),
+          h('label', { class: nc('pz') }, inp, rotUn),
+          ro ? null : h('button', { type: 'button', 'aria-label': 'Um a mais', onclick: () => definir((+n.prazo_dias || 0) + 1) }, '+')),
         sugs, vence));
   }
 
@@ -5772,7 +5845,7 @@
         const envio = await pedirDataEnvio(original);
         if (!envio) return;
         await atualizarCampos('notificacoes', id, (o) => aplicarEnvio(o, envio.data, envio.hora));
-        toast('Envio registrado — prazo até ' + X.dataBR(prazoFinalUteis(envio.data, +original.prazo_dias || 3)) + ' às ' + envio.hora);
+        { const fe = fimPrazo(envio.data, envio.hora, (+original.prazo_dias || 3) + diasAditados(original), unidadeDe(original)); toast('Envio registrado — prazo até ' + X.dataBR(fe.data) + (fe.hora ? ' às ' + fe.hora : '')); }
         verificarPrazos(); telaNotificacao(id);
       } }, '📨 Enviado') : null),
       h('div', { class: 'acoes' },
@@ -5847,13 +5920,13 @@
       const nomesF = () => snapshotAssinantes(edFiscais, pessoas, true).map((f) => f.nome).filter(Boolean);
       const nomesC = () => snapshotAssinantes(edCoord, pessoas, false).map((c) => c.nome).filter(Boolean);
       const pintarDados = () => {
-        const d = +n.prazo_dias || 3, fim = prazoFinalUteis(X.hojeISO(), d);
-        const passo = (k) => h('button', { type: 'button', class: 'nf-mm', 'aria-label': k > 0 ? 'Um dia a mais' : 'Um dia a menos', onclick: (e) => { e.stopPropagation(); n.prazo_dias = Math.max(1, Math.min(365, (+n.prazo_dias || 3) + k)); marcar(); pintarDados(); } }, k > 0 ? '+' : '−');
+        const d = +n.prazo_dias || 3, unP = unidadeDe(n);
+        const passo = (k) => h('button', { type: 'button', class: 'nf-mm', 'aria-label': k > 0 ? (unP === 'horas' ? 'Uma hora a mais' : 'Um dia a mais') : (unP === 'horas' ? 'Uma hora a menos' : 'Um dia a menos'), onclick: (e) => { e.stopPropagation(); n.prazo_dias = Math.max(1, Math.min(MAX_PRAZO[unP], (+n.prazo_dias || 3) + k)); marcar(); pintarDados(); } }, k > 0 ? '+' : '−');
         const nf = nomesF(), ncs = nomesC();
         rc(cardDados,
           linhaD('doc', 'Número', n.numero || (seqAuto ? 'Automático ao emitir' : 'Não informado'), n.ordinal + 'ª notificação desta obra', editarNumero, null, 'numero'),
           linhaD('cal', 'Datas', 'Notificação ' + (X.dataBR(n.data) || '—'), 'Vistoria em ' + (X.dataBR(n.data_vistoria) || '—'), editarDatas, null, 'datas'),
-          linhaD('relogio', 'Prazo para ' + quem + ' responder', plural(d, 'dia útil', 'dias úteis'), 'se enviada hoje, vence em ' + X.dataBR(fim), editarPrazo,
+          linhaD('relogio', 'Prazo para ' + quem + ' responder', txtPrazo(d, unP), vencePrevia(d, unP), editarPrazo,
             h('span', { class: 'nf-step', onclick: (e) => e.stopPropagation() }, passo(-1), h('b', { class: nc('num') }, String(d)), passo(1)), 'prazo'),
           linhaD('pessoas', 'Assinam', nf.length ? nf.join(', ') : 'Escolha o fiscal', ncs.length ? 'Coordenação: ' + ncs.join(', ') : (nf.length ? 'sem coordenador' : 'obrigatório'), editarAssinantes, null, 'assinam'));
         if (!nf.length) cardDados.lastChild.classList.add('nf-falta');
@@ -6063,8 +6136,8 @@
           itens.length ? h('ul', {}, itens.map((t, i) => { const sl = fs.filter((x) => x.naLista)[i]; return h('li', {}, cmp(t, sl ? 'foto:' + sl.fotoId : 'extras')); })) : h('p', { class: 'falta' }, '(nenhum item na lista)'),
           h('h4', {}, 'PROVIDÊNCIAS A SEREM ADOTADAS'),
           r.tipo === 'contrato'
-            ? h('p', {}, 'Diante das constatadas divergências/irregularidades…, devendo no prazo de ', cmp(d + ' (' + (X.inteiro ? X.inteiro(d) : d) + ')', 'prazo'), ' dias úteis, apresentar manifestação sobre as medidas que serão adotadas…', n.providencias ? [h('br'), cmp(n.providencias, 'providencias')] : null)
-            : h('p', {}, cmp(n.providencias || '', 'providencias'), ' Deverá, ainda, no prazo de ', cmp(d + ' (' + (X.inteiro ? X.inteiro(d) : d) + ')', 'prazo'), ' dias úteis, manifestar-se acerca das medidas adotadas…'),
+            ? h('p', {}, 'Diante das constatadas divergências/irregularidades…, devendo no prazo de ', cmp(d + ' (' + extensoPrazo(d, unidadeDe(n)) + ')', 'prazo'), (unidadeDe(n) === 'horas' ? ' horas' : ' dias úteis') + ', apresentar manifestação sobre as medidas que serão adotadas…', n.providencias ? [h('br'), cmp(n.providencias, 'providencias')] : null)
+            : h('p', {}, cmp(n.providencias || '', 'providencias'), ' Deverá, ainda, no prazo de ', cmp(d + ' (' + extensoPrazo(d, unidadeDe(n)) + ')', 'prazo'), (unidadeDe(n) === 'horas' ? ' horas' : ' dias úteis') + ', manifestar-se acerca das medidas adotadas…'),
           h('h4', {}, 'POSSÍVEIS SANÇÕES ADMINISTRATIVAS'), h('p', { class: 'cinza' }, '(texto do modelo)'),
           fs.length ? [h('h4', {}, 'ANEXOS'), h('div', { class: 'nf-imgs' }, imgs)] : null,
           h('div', { class: 'nf-ass' }, (nomesF().length ? nomesF() : ['Fiscal']).concat(nomesC()).map((x) => h('div', {}, x))));
@@ -6139,13 +6212,13 @@
         const opc = (k, titulo, corpo) => h('div', { class: 'nf-opc' + (st2.modo === k ? ' on' : ''), role: 'radio', 'aria-checked': String(st2.modo === k), 'data-opc': k,
           onclick: (e) => { if (e.target.tagName === 'INPUT') return; if (st2.modo !== k) { st2.modo = k; pintarOpc(); } } }, h('span', { class: 'r' }), h('div', {}, h('b', {}, titulo), corpo));
         const pintarOpc = () => {
-          const fim = st2.data ? prazoFinalUteis(st2.data, d) : null;
+          const fE = st2.data ? fimPrazo(st2.data, st2.hora, d, unidadeDe(n)) : null, fim = fE && fE.data;
           rc(opcs,
             opc('ass', 'Emitir e registrar que foi para assinatura', st2.modo === 'ass'
               ? [quando('Inserida em '), rAss, h('span', { class: 'sub', style: { display: 'block' } }, 'O envio é registrado depois; o prazo só começa no envio.')]
               : h('span', {}, 'Data e horário de agora (dá para mudar). O envio é registrado depois.')),
             opc('envio', 'Emitir e registrar o envio', st2.modo === 'envio'
-              ? [quando('Enviada em '), h('span', { class: 'sub', style: { display: 'block' } }, fim ? 'Já assinada e enviada: o prazo de ' + plural(d, 'dia útil', 'dias úteis') + ' conta a partir do envio e vence em ' + DIAS_L[dataD(fim).getDay()] + ', ' + X.dataBR(fim) + (st2.hora ? ' às ' + st2.hora : '') + '.' : 'Informe a data do envio.')]
+              ? [quando('Enviada em '), h('span', { class: 'sub', style: { display: 'block' } }, fim ? 'Já assinada e enviada: o prazo de ' + txtPrazo(d, unidadeDe(n)) + ' conta a partir do envio e vence em ' + DIAS_L[dataD(fim).getDay()] + ', ' + X.dataBR(fim) + (fE.hora ? ' às ' + fE.hora : '') + '.' : 'Informe a data do envio.')]
               : h('span', {}, 'Já assinada e enviada: informe a data e o horário do envio; o prazo começa a contar.')),
             opc('so', 'Só emitir', h('span', {}, 'Registro a assinatura e o envio depois.')));
         };
@@ -6157,7 +6230,7 @@
           li(nf.length ? 'ok' : 'er', nf.length ? 'Assina' + (nf.length > 1 ? 'm' : '') + ' ' + nf.join(', ') : 'Escolha quem assina'),
           !n.numero && !seqAuto ? li('er', 'Informe o número') : null,
           pend.length ? li('al', plural(pend.length, 'irregularidade pendente da obra ficou de fora', 'irregularidades pendentes da obra ficaram de fora')) : null,
-          n.provTexto != null && !new RegExp('(^|\\D)0?' + d + '(\\D|$)').test(n.provTexto) ? li('al', 'O texto das providências (editado) não cita o prazo de ' + plural(d, 'dia útil', 'dias úteis') + ' — confira.') : null,
+          n.provTexto != null && !new RegExp('(^|\\D)0?' + d + '(\\D|$)').test(n.provTexto) ? li('al', 'O texto das providências (editado) não cita o prazo de ' + txtPrazo(d, unidadeDe(n)) + ' — confira.') : null,
           erros.length ? null : opcs,
           erros.length ? null : h('div', { class: 'nota' }, 'O número é reservado agora e o conteúdo fica bloqueado.')),
           erros.length ? [{ txt: 'Voltar', valor: false }] : [{ txt: 'Cancelar', valor: false }, { txt: 'Emitir e baixar o Word', cls: 'pri', valor: true, antes: () => {
@@ -6224,7 +6297,7 @@
             li(!!(n.data && n.data_vistoria), 'Notificação de ' + (X.dataBR(n.data) || '—') + ' · vistoria em ' + (X.dataBR(n.data_vistoria) || '—')),
             li(itens.length > 0, plural(itens.length, 'item', 'itens') + ' na lista de irregularidades'),
             li((n.fotos || []).length > 0, plural((n.fotos || []).length, 'foto anexa', 'fotos anexas')),
-            li(true, 'Prazo de ' + d + (d === 1 ? ' dia útil' : ' dias úteis') + ' · se enviada hoje, vence em ' + X.dataBR(fim)),
+            li(true, 'Prazo de ' + txtPrazo(d, unidadeDe(n)) + ' · ' + vencePrevia(d, unidadeDe(n))),
             li(!!(edFiscais.length || (n.fiscais || []).length), 'Assinam: ' + (snapshotAssinantes(edFiscais, pessoas, true).map((f) => f.nome).join(', ') || '—'))),
           h('div', { class: 'dica' }, 'Baixe o Word para conferir o documento. Ao emitir, o número é reservado e o conteúdo fica bloqueado.'));
       };
@@ -7197,7 +7270,7 @@
     // a partir de "Aparência e câmera", cada seção vira uma lista suspensa (fechada; lembra as abertas)
     const iniSecoes = cards.findIndex((c) => c.querySelector && (c.querySelector(':scope > h2') || {}).textContent === 'Aparência e câmera');
     if (iniSecoes >= 0) for (let i = iniSecoes; i < cards.length; i++) cards[i] = secaoRecolhivel(cards[i]);
-    cards.push(h('p', { class: 'dica', style: { textAlign: 'center' } }, 'Fiscalização de Obras · v3.18.9 · dados salvos no aparelho' + (Sync.habilitado() ? ' e no Google Drive do administrador' : '') + ' · ', h('a', { href: 'privacidade.html' }, 'Política de privacidade')));
+    cards.push(h('p', { class: 'dica', style: { textAlign: 'center' } }, 'Fiscalização de Obras · v3.19.0 · dados salvos no aparelho' + (Sync.habilitado() ? ' e no Google Drive do administrador' : '') + ' · ', h('a', { href: 'privacidade.html' }, 'Política de privacidade')));
     rcT(tk, ...cards);
   }
 
@@ -7456,7 +7529,7 @@
   /* ================================================================== */
   /* 3.18.6: com internet fraca o navegador pode juntar arquivos de duas versões do app (um novo, outro guardado).
      Se isso acontecer, pede a versão nova inteira ao service worker e recarrega (uma vez por sessão). */
-  const VERSAO_APP = '3.18.9';
+  const VERSAO_APP = '3.19.0';
   function conferirVersaoArquivos() {
     const vj = self.VERSOES_JS || {};
     const dif = ['db', 'sync', 'docgen'].filter((k) => vj[k] !== VERSAO_APP);

@@ -957,3 +957,5 @@ body.nf-doc-aberto { overflow: hidden; }
 .usr-linha:has([data-acao=excluir-usuario]) { grid-template-columns: minmax(0, 1fr) auto auto auto auto; }
 @container (max-width: 620px) { .usr-linha:has([data-acao=excluir-usuario]) { grid-template-columns: auto auto auto auto; } }
 @container (max-width: 400px) { .usr-linha:has([data-acao=excluir-usuario]) { grid-template-columns: auto auto auto; } }
+/* 3.19: prazo em dias úteis ou horas */
+.seg.prazo-un { margin: 6px 0 10px; max-width: 320px; }
