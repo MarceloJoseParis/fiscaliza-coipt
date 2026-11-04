@@ -959,3 +959,5 @@ body.nf-doc-aberto { overflow: hidden; }
 @container (max-width: 400px) { .usr-linha:has([data-acao=excluir-usuario]) { grid-template-columns: auto auto auto; } }
 /* 3.19: prazo em dias úteis ou horas */
 .seg.prazo-un { margin: 6px 0 10px; max-width: 320px; }
+/* 3.19.1: na câmera do app, os ícones giram com o celular (mostram se a foto sai em pé ou deitada) */
+.cv .cv-ic svg { transform: rotate(var(--cv-giro, 0deg)); transition: transform .25s ease; }

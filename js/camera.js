@@ -311,23 +311,36 @@
          (a câmera quase sempre abre assim) — antes a regra fixa do Android estava invertida e a foto deitada
          saía de cabeça para baixo. */
       let sinalY = 0;
+      /* 3.19.1: posição decidida pela gravidade no PLANO da tela (como a câmera do celular): com o celular deitado e
+         inclinado para fotografar algo na mesa, quase toda a gravidade fica "para dentro" da tela e o eixo x tinha
+         pouco mais da metade — a regra antiga (x > 6) achava que estava em pé e a foto saía em pé. Agora basta o
+         lado dominante (com folga para não trocar à toa perto de 45°); quase deitado na mesa (sem lado definido),
+         vale a última posição em que o celular esteve. */
+      let posGrav = 'pe'; // 'pe' | 'esq' (topo do celular à esquerda) | 'dir'
       function aoMovimento(e) {
         const a = e.accelerationIncludingGravity;
         if (!a || a.x === null || a.x === undefined) return;
         gravidade = { x: a.x, y: a.y };
         if (Math.abs(a.y) > 7 && Math.abs(a.x) < 3) sinalY = Math.max(-20, Math.min(20, sinalY + (a.y > 0 ? 1 : -1)));
+        const ax = Math.abs(a.x), ay = Math.abs(a.y);
+        if (Math.hypot(a.x, a.y) < 2.2) return; // praticamente na horizontal (tela para cima/baixo): mantém a última posição
+        if (posGrav === 'pe' ? ax > ay * 1.25 : ax * 1.25 >= ay) {
+          const conv = sinalY < 0 ? -1 : 1;
+          posGrav = a.x * conv > 0 ? 'esq' : 'dir';
+        } else if (ay > ax * 1.25) posGrav = 'pe';
+        // ícones giram como na câmera do celular: mostra como a foto vai sair
+        const g = posGrav === 'esq' ? '90deg' : posGrav === 'dir' ? '-90deg' : '0deg';
+        if (ov.style.getPropertyValue('--cv-giro') !== g) ov.style.setProperty('--cv-giro', g);
       }
       window.addEventListener('devicemotion', aoMovimento);
+      Camera._posGrav = () => posGrav; // para testes
+      Camera._simularGravidade = (x, y) => aoMovimento({ accelerationIncludingGravity: { x, y, z: Math.sqrt(Math.max(0, 96 - x * x - y * y)) } });
       function anguloAtual() {
         let ang = 0;
         if (screen.orientation && typeof screen.orientation.angle === 'number') ang = screen.orientation.angle;
         else if (typeof window.orientation === 'number') ang = (window.orientation + 360) % 360;
-        if (ang === 0 && gravidade && Math.abs(gravidade.x) > 6 && Math.abs(gravidade.x) > Math.abs(gravidade.y) * 1.3) {
-          // tela travada em retrato, mas o celular esta deitado: no padrão, x positivo = topo do celular à esquerda
-          const conv = sinalY < 0 ? -1 : 1;
-          const topoEsquerda = gravidade.x * conv > 0;
-          ang = topoEsquerda ? 90 : 270;
-        }
+        // tela travada em retrato (ou o sistema não girou a tela por estar quase deitado), mas o celular está na horizontal
+        if (ang === 0 && gravidade && posGrav !== 'pe') ang = posGrav === 'esq' ? 90 : 270;
         return ang;
       }
 
