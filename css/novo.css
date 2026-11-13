@@ -961,3 +961,15 @@ body.nf-doc-aberto { overflow: hidden; }
 .seg.prazo-un { margin: 6px 0 10px; max-width: 320px; }
 /* 3.19.1: na câmera do app, os ícones giram com o celular (mostram se a foto sai em pé ou deitada) */
 .cv .cv-ic svg { transform: rotate(var(--cv-giro, 0deg)); transition: transform .25s ease; }
+/* 3.19.2: tela inteira no computador */
+@media (min-width: 1024px) {
+  body[data-tela] main, body[data-tela="notificacao"][data-foco] main { max-width: none; }
+  .n-pag, .n-pag.n-larga, body[data-tela="visita"] .n-pag, body[data-tela="editar"] .n-pag, body[data-tela="novo"] .n-pag { max-width: none; }
+  .n-md .n-col-r .n-pad { max-width: none; }
+  .n-md2 { grid-template-columns: 420px minmax(0, 1fr); }
+  .n-md2 .n-acoes { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+}
+/* telas menores de computador: a lista fica um pouco mais estreita para sobrar espaço à direita */
+@media (min-width: 1024px) and (max-width: 1279px) { .n-md2 { grid-template-columns: 300px minmax(0, 1fr); } }
+@media (min-width: 1100px) and (max-width: 1399px) { .nf-cols { grid-template-columns: minmax(0, 1fr) minmax(0, 1.05fr); } }
+@media (min-width: 1400px) { .nf-cols { grid-template-columns: minmax(440px, 1fr) minmax(520px, 1.15fr); } }

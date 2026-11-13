@@ -893,7 +893,7 @@
     return { regs, porId, notifs: notifs.filter(ok), visitas: visitas.filter(ok), medicoes: medicoes.filter(ok) };
   }
   // visitas abertas por mim (a mais recente primeiro)
-  const minhasAbertas = (visitas) => visitas.filter((v) => v.status !== 'concluida' && (!Sync.habilitado() || v.criadoPor === email()))
+  const minhasAbertas = (visitas) => visitas.filter((v) => v.status !== 'concluida' && !v.excluido && (!Sync.habilitado() || v.criadoPor === email() || (v.participantes || []).includes(email())))
     .sort((a, b) => String(b.data + (b.hora_inicio || '')).localeCompare(a.data + (a.hora_inicio || '')));
   async function visitaAbertaMinha() {
     try { return minhasAbertas(await DB.listar('visitas'))[0] || null; } catch (e) { return null; }
@@ -2308,14 +2308,25 @@
       const mapa = new Map(fotos.map((f) => [f.id, f]));
       const visitas = new Map((await DB.all('visitas')).map((v) => [v.id, v]));
       const medicoes = new Map((await DB.all('medicoes')).map((x) => [x.id, x]));
+      // 3.19.2: visita juntada a outra — segue a cadeia até a que ficou
+      const destinoJuntada = (vid) => { let x = visitas.get(vid), k = 0; while (x && x.excluido && x.juntadaA && k++ < 10) x = visitas.get(x.juntadaA) || { id: x.juntadaA }; return x && x.id !== vid ? x.id : null; };
       const valida = (vf) => {
         const fv = vf.fotoId ? mapa.get(vf.fotoId) : null;
         if (fv && fv.excluido) return false;
         const vis = vf.visitaId ? visitas.get(vf.visitaId) : null;
-        return !(vis && vis.excluido);
+        return !(vis && vis.excluido) || !!destinoJuntada(vf.visitaId);
       };
       for (const f of fotos) {
         if (f.excluido) continue;
+        const dJ = f.visitaId ? destinoJuntada(f.visitaId) : null;
+        const vJ = (f.verificacoes || []).some((vf) => vf.visitaId && destinoJuntada(vf.visitaId));
+        if (dJ || vJ) {
+          await atualizarCampos('fotos', f.id, (o) => {
+            const d2 = o.visitaId ? destinoJuntada(o.visitaId) : null; if (d2) o.visitaId = d2;
+            if ((o.verificacoes || []).length) o.verificacoes = o.verificacoes.map((vf) => { const d3 = vf.visitaId ? destinoJuntada(vf.visitaId) : null; return d3 ? Object.assign({}, vf, { visitaId: d3 }) : vf; });
+          });
+          n++; continue;
+        }
         if (f.verificacaoDe) {
           const irr = mapa.get(f.verificacaoDe);
           if (irr && (irr.excluido || !irr.irregular)) {
@@ -3134,12 +3145,98 @@
     if (tk !== rotaSeq) return; // saiu da tela enquanto carregava
     if (abertas.length) {
       const v = abertas[0];
-      const esc = await modal('Visita em andamento', h('p', {}, 'Há uma visita em andamento nesta obra (nº ' + v.numero + ', ' + X.dataBR(v.data) + '). Deseja continuar nela?'),
-        [{ txt: 'Nova visita', valor: 'nova' }, { txt: 'Continuar', cls: 'pri', valor: 'continuar' }]);
-      if (esc === 'continuar') { location.replace('#/visita/' + v.id); return; }
+      const deOutro = Sync.habilitado() && v.criadoPor && v.criadoPor !== email() && !(v.participantes || []).includes(email());
+      const quem = autorVisita(v) || 'outra pessoa';
+      const esc = await modal('Visita em andamento', deOutro
+        ? h('div', {}, h('p', {}, h('b', {}, quem), ' já está com a visita nº ' + v.numero + ' aberta nesta obra (' + X.dataBR(v.data) + (v.hora_inicio ? ', desde ' + v.hora_inicio : '') + ').'),
+          h('p', { class: 'sub' }, 'Entrando nela, as fotos de vocês dois ficam na mesma visita (um relatório só). Abrir outra cria a visita nº ' + (Math.max(0, ...(await visitasDe(registroId)).map((x) => +x.numero || 0)) + 1) + '.'))
+        : h('p', {}, 'Há uma visita em andamento nesta obra (nº ' + v.numero + ', ' + X.dataBR(v.data) + '). Deseja continuar nela?'),
+        [{ txt: deOutro ? 'Abrir outra' : 'Nova visita', valor: 'nova' }, { txt: deOutro ? 'Entrar na visita nº ' + v.numero : 'Continuar', cls: 'pri', valor: 'continuar' }]);
+      if (esc === 'continuar') {
+        if (deOutro) { await atualizarCampos('visitas', v.id, (o) => { o.participantes = [...new Set([...(o.participantes || []), email()])]; }); atualizarNavCam(); }
+        location.replace('#/visita/' + v.id); return;
+      }
       if (esc !== 'nova') { history.back(); return; }
     }
     await criarVisita(r);
+  }
+
+  /* 3.19.2: duas pessoas abriram visitas com o mesmo número na mesma obra (cada uma no seu celular, antes de
+     sincronizar). Concluídas as duas, dá para juntar numa só (fotos, irregularidades, verificações, fiscais, textos)
+     ou renumerar uma delas. A visita que some fica marcada (juntadaA) e o que chegar dela depois vai para a outra. */
+  // quem abriu a visita: nome da equipe (ou o 1º fiscal dela, se o nome não for conhecido neste aparelho)
+  const autorVisita = (v) => { const nm = nomeDe(v.criadoPor) || ''; return nm && !/@/.test(nm) ? nm : ((v.fiscais || [])[0] || {}).nome || nm; };
+  async function visitasRepetidas(v) {
+    return (await visitasDe(v.registroId)).filter((x) => x.id !== v.id && +x.numero === +v.numero);
+  }
+  const juntarTexto = (a, b, nb) => { a = String(a || '').trim(); b = String(b || '').trim(); if (!b || a === b || a.includes(b)) return a; if (!a) return b; return a + '\n' + (nb ? nb + ': ' : '') + b; };
+  async function juntarVisitas(dst, src) {
+    const agora = new Date().toISOString();
+    const nomeSrc = (() => { const nm = autorVisita(src); return /@/.test(nm) ? '' : nm; })();
+    let nFotos = 0, nVer = 0;
+    for (const f of await DB.byIndex('fotos', 'registroId', dst.registroId)) {
+      const muda = f.visitaId === src.id, ver = (f.verificacoes || []).some((x) => x.visitaId === src.id);
+      if (!muda && !ver) continue;
+      await atualizarCampos('fotos', f.id, (o) => {
+        if (o.visitaId === src.id) { o.visitaId = dst.id; if (!o.excluido) nFotos++; }
+        if ((o.verificacoes || []).some((x) => x.visitaId === src.id)) { o.verificacoes = o.verificacoes.map((x) => (x.visitaId === src.id ? Object.assign({}, x, { visitaId: dst.id }) : x)); nVer++; }
+      });
+    }
+    for (const n of await DB.byIndex('notificacoes', 'registroId', dst.registroId)) if (n.visitaId === src.id) await atualizarCampos('notificacoes', n.id, (o) => { o.visitaId = dst.id; });
+    await atualizarCampos('visitas', dst.id, (o) => {
+      const menor = (a, b) => (!a ? b : !b ? a : a < b ? a : b), maior = (a, b) => (!a ? b : !b ? a : a > b ? a : b);
+      o.data = menor(o.data, src.data);
+      o.hora_inicio = menor(o.hora_inicio, src.hora_inicio);
+      o.hora_fim = o.status === 'concluida' && src.status === 'concluida' ? maior(o.hora_fim, src.hora_fim) : o.hora_fim;
+      const fs = (o.fiscais || []).slice();
+      for (const f of src.fiscais || []) if (!fs.some((x) => (x.pessoaId && x.pessoaId === f.pessoaId) || (x.nome && x.nome === f.nome))) fs.push(f);
+      o.fiscais = fs;
+      o.observacoes = juntarTexto(o.observacoes, src.observacoes, nomeSrc);
+      o.servicos = juntarTexto(o.servicos, src.servicos, '');
+      o.acompanhantes = [...new Set([...String(o.acompanhantes || '').split(/\s*[;,]\s*/), ...String(src.acompanhantes || '').split(/\s*[;,]\s*/)].map((x) => x.trim()).filter(Boolean))].join(', ');
+      for (const k of ['equipe', 'objetivo', 'clima', 'trabalhadores', 'avanco_exec', 'avanco_prev', 'lat', 'lng']) if ((o[k] == null || o[k] === '') && src[k] != null && src[k] !== '') o[k] = src[k];
+      o.participantes = [...new Set([...(o.participantes || []), ...(src.participantes || []), src.criadoPor].filter(Boolean))];
+      o.juntadas = (o.juntadas || []).concat({ id: src.id, por: email(), em: agora, de: src.criadoPor || '' });
+    });
+    await atualizarCampos('visitas', src.id, (o) => { o.excluido = true; o.juntadaA = dst.id; o.juntadaEm = agora; o.juntadaPor = email(); });
+    await registrarAtividade(dst.registroId, 'edicao', 'Visita nº ' + src.numero + (nomeSrc ? ' de ' + nomeSrc : '') + ' juntada à visita nº ' + dst.numero + (autorVisita(dst) ? ' de ' + autorVisita(dst) : ''),
+      plural(nFotos, 'foto passou', 'fotos passaram') + ' para a visita' + (nVer ? ' · ' + plural(nVer, 'verificação de pendência', 'verificações de pendências') : '') + '.', { visitaId: dst.id }).catch(() => {});
+    return { nFotos, nVer };
+  }
+  async function renumerarVisita(v) {
+    const novo = Math.max(0, ...(await visitasDe(v.registroId)).map((x) => +x.numero || 0)) + 1;
+    await atualizarCampos('visitas', v.id, (o) => { o.numero = novo; });
+    await registrarAtividade(v.registroId, 'edicao', 'Visita nº ' + v.numero + ' renumerada para nº ' + novo, 'Havia duas visitas com o mesmo número nesta obra.', { visitaId: v.id }).catch(() => {});
+    return novo;
+  }
+  // cartão na tela da visita quando há outra com o mesmo número
+  async function cartaoVisitaRepetida(v, aoMudar) {
+    const outras = await visitasRepetidas(v);
+    if (!outras.length) return null;
+    const o = outras[0];
+    const quem = autorVisita(o) || 'outra pessoa';
+    const ambas = v.status === 'concluida' && o.status === 'concluida';
+    const nO = (await DB.byIndex('fotos', 'registroId', v.registroId)).filter((f) => f.visitaId === o.id && !f.excluido).length;
+    const juntar = async () => {
+      const [dst, src] = String(v.criadoEm || '') <= String(o.criadoEm || '') ? [v, o] : [o, v];
+      if (!(await confirmar('Juntar as duas visitas nº ' + v.numero + ' numa só? Fotos, irregularidades, verificações de pendências e fiscais das duas ficam juntos; observações e serviços ficam um abaixo do outro (confira depois). A visita de ' + (autorVisita(src) || 'outra pessoa') + ' sai da lista.', 'Juntar'))) return;
+      const res = await juntarVisitas(dst, src);
+      toast('Visitas juntadas · ' + plural(res.nFotos, 'foto passou', 'fotos passaram') + ' para a visita nº ' + dst.numero);
+      if (dst.id === v.id) aoMudar(); else location.replace('#/visita/' + dst.id);
+    };
+    const renumerar = async () => {
+      if (!(await confirmar('Mudar o número desta visita (nº ' + v.numero + ') para o próximo número livre?', 'Renumerar'))) return;
+      const novo = await renumerarVisita(v);
+      toast('Esta visita agora é a nº ' + novo); aoMudar();
+    };
+    return h('div', { class: 'aviso visita-repetida', 'data-visita-repetida': o.id, style: { margin: '0 0 12px' } },
+      h('b', {}, '⚠️ Há outra visita nº ' + v.numero + ' nesta obra'), h('br'),
+      quem + ' · ' + X.dataBR(o.data) + (o.hora_inicio ? ' · ' + o.hora_inicio + (o.hora_fim ? '–' + o.hora_fim : '') : '') + ' · ' + plural(nO, 'foto', 'fotos') + ' · ' + (o.status === 'concluida' ? 'concluída' : 'em andamento'),
+      h('div', { class: 'sub', style: { margin: '6px 0' } }, ambas ? 'Dá para juntar as duas numa visita só (um relatório) ou renumerar esta.'
+        : 'Quando as duas estiverem concluídas, dá para juntar numa visita só. ' + (o.status !== 'concluida' ? quem + ' ainda está com a dela aberta.' : 'Conclua esta visita primeiro.')),
+      pode.coletar() ? h('div', { class: 'acoes', style: { marginTop: '4px' } },
+        ambas ? h('button', { class: 'btn pri peq', 'data-acao': 'juntar-visitas', onclick: juntar }, 'Juntar as duas visitas') : null,
+        h('button', { class: 'btn peq', 'data-acao': 'renumerar-visita', onclick: renumerar }, 'Renumerar esta para o próximo nº')) : null);
   }
 
   async function criarVisita(r) {
@@ -3569,7 +3666,9 @@
           podeEd && !aberta ? h('button', { class: 'btn peq', onclick: async () => { v.status = 'andamento'; await salvarVisita(true); atualizarNavCam(); telaVisita(id); } }, 'Reabrir visita') : null,
           excluir));
 
-    rcT(tk, h('div', { class: nc('pag') + ' visita-campo' }, cab, bannerPend, captura, boxFotos, boxIrr,
+    const avisoRepetida = await cartaoVisitaRepetida(v0, () => telaVisita(id)).catch(() => null);
+    if (tk !== rotaSeq) return;
+    rcT(tk, h('div', { class: nc('pag') + ' visita-campo' }, avisoRepetida, cab, bannerPend, captura, boxFotos, boxIrr,
       aberta || String(v.observacoes || '').trim() ? h('div', { class: 'card' }, obs) : null,
       condicoes, h('div', { style: { height: '12px' } }), dados, boxPend,
       aberta && podeEd ? h('div', { class: 'acoes', style: { margin: '4px 2px 0' } }, relatorio, excluir) : null,
@@ -3657,6 +3756,22 @@
       await salvarMudancas('visitas', clonar(v0), v);
       toast('Visita concluída');
       atualizarNavCam();
+      // 3.19.2: outra visita com o mesmo número já concluída por outra pessoa: oferece juntar agora
+      const rep = (await visitasRepetidas(v0)).find((x) => x.status === 'concluida');
+      if (rep && pode.coletar()) {
+        const vAtual = await DB.get('visitas', id);
+        const esc = await modal('Visita nº ' + v0.numero + ' repetida', h('div', {},
+          h('p', {}, (autorVisita(rep) || 'Outra pessoa') + ' também registrou a visita nº ' + rep.numero + ' nesta obra (' + X.dataBR(rep.data) + ').'),
+          h('p', { class: 'sub' }, 'Juntar as duas deixa um relatório só, com as fotos, irregularidades e verificações das duas. Ou renumere esta visita.')),
+          [{ txt: 'Agora não', valor: null }, { txt: 'Renumerar esta', valor: 'ren' }, { txt: 'Juntar as duas', cls: 'pri', valor: 'juntar' }]);
+        if (esc === 'juntar') {
+          const [dst, src] = String(vAtual.criadoEm || '') <= String(rep.criadoEm || '') ? [vAtual, rep] : [rep, vAtual];
+          const res = await juntarVisitas(dst, src);
+          toast('Visitas juntadas · ' + plural(res.nFotos, 'foto passou', 'fotos passaram') + ' para a visita nº ' + dst.numero);
+          location.replace('#/visita/' + dst.id); return;
+        }
+        if (esc === 'ren') { const novo = await renumerarVisita(vAtual); toast('Esta visita agora é a nº ' + novo); }
+      }
       location.replace('#/visita/' + id);
     };
     rcT(tk, h('div', { class: nc('pag') + ' ' + nc('encerrar') },
@@ -7270,7 +7385,7 @@
     // a partir de "Aparência e câmera", cada seção vira uma lista suspensa (fechada; lembra as abertas)
     const iniSecoes = cards.findIndex((c) => c.querySelector && (c.querySelector(':scope > h2') || {}).textContent === 'Aparência e câmera');
     if (iniSecoes >= 0) for (let i = iniSecoes; i < cards.length; i++) cards[i] = secaoRecolhivel(cards[i]);
-    cards.push(h('p', { class: 'dica', style: { textAlign: 'center' } }, 'Fiscalização de Obras · v3.19.1 · dados salvos no aparelho' + (Sync.habilitado() ? ' e no Google Drive do administrador' : '') + ' · ', h('a', { href: 'privacidade.html' }, 'Política de privacidade')));
+    cards.push(h('p', { class: 'dica', style: { textAlign: 'center' } }, 'Fiscalização de Obras · v3.19.2 · dados salvos no aparelho' + (Sync.habilitado() ? ' e no Google Drive do administrador' : '') + ' · ', h('a', { href: 'privacidade.html' }, 'Política de privacidade')));
     rcT(tk, ...cards);
   }
 
@@ -7529,7 +7644,7 @@
   /* ================================================================== */
   /* 3.18.6: com internet fraca o navegador pode juntar arquivos de duas versões do app (um novo, outro guardado).
      Se isso acontecer, pede a versão nova inteira ao service worker e recarrega (uma vez por sessão). */
-  const VERSAO_APP = '3.19.1';
+  const VERSAO_APP = '3.19.2';
   function conferirVersaoArquivos() {
     const vj = self.VERSOES_JS || {};
     const dif = ['db', 'sync', 'docgen'].filter((k) => vj[k] !== VERSAO_APP);
