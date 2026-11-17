@@ -10,7 +10,7 @@
  *                            -> repete (ou remove) a linha inteira da tabela
  *   Dentro do laco {#fotos}, a imagem modelo (media/foto_modelo.png) e trocada pela foto.
  */
-try { (self.VERSOES_JS = self.VERSOES_JS || {}).docgen = '3.19.3'; } catch (e) { /* fora do navegador */ }
+try { (self.VERSOES_JS = self.VERSOES_JS || {}).docgen = '3.19.6'; } catch (e) { /* fora do navegador */ }
 (function (root) {
   const W = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';
   const R = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships';
@@ -968,7 +968,10 @@ try { (self.VERSOES_JS = self.VERSOES_JS || {}).docgen = '3.19.3'; } catch (e) {
       itens: itens.map((it, i) => {
         const hist = (it.historico || []).map((h) => ({
           h_data: h.data || '', h_status: h.status || '', h_descricao: (h.descricao || '').trim() || '—',
-          h_visita: h.visita ? h.visita + ' · ' : '', h_por: h.por || '—', h_img: h.img || null, h_semfoto: h.img ? '' : 'Sem foto nesta verificação.',
+          h_visita: h.visita ? h.visita + ' · ' : '', h_por: h.por || '—', h_img: h.img || null,
+          // 3.19.4: cada foto da verificação, grande, com a sua legenda
+          h_fotos: (h.fotos && h.fotos.length ? h.fotos : (h.img ? [{ img: h.img, legenda: '' }] : [])).map((x) => ({ hf_img: x.img, hf_leg: x.legenda || '' })),
+          h_semfoto: (h.fotos && h.fotos.length) || h.img ? '' : 'Sem foto nesta verificação.',
         }));
         return {
           n: i + 1,
@@ -979,6 +982,8 @@ try { (self.VERSOES_JS = self.VERSOES_JS || {}).docgen = '3.19.3'; } catch (e) {
           constatada_visita: it.constatada_visita ? ' · ' + it.constatada_visita : '',
           constatada_por: it.constatada_por || '—',
           img: it.img || null,
+          // 3.19.4: fotos da constatação, uma por linha (grandes), cada uma com a sua legenda
+          fotos_c: (it.fotos && it.fotos.length ? it.fotos : (it.img ? [{ img: it.img, legenda: '' }] : [])).map((x) => ({ c_img: x.img, c_leg: x.legenda || '' })),
           n_verificacoes: String(hist.length),
           historico: hist,
           tem_historico: hist.length ? [{}] : [],
