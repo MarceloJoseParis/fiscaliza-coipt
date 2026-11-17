@@ -5447,16 +5447,17 @@
     const fmt = (CONFIG.formato_numero || {})[r.tipo] || '';
     const seq = null;
     const pessoas = await pessoasMap();
-    const ultima = notifs[0];
     const provPadrao = ((CONFIG.providencias_padrao || {})[r.tipo] || '').replace(/\{nome_texto\}/g, r.n_nome_texto || r.n_nome || '');
     const n = {
       id: DB.uuid(), registroId, tipo: r.tipo, ordinal, seq, ano,
       numero: usaSequencial(fmt) ? '' : formatarNumero(fmt, { seq, ano, ordinal }),
       data: hoje, data_vistoria: (base && base.data_vistoria) || hoje,
       visitaId: (base && base.visitaId) || null,
-      constatacao: base && base.constatacao !== undefined ? base.constatacao : ((ultima && ultima.constatacao) || (CONFIG.constatacao_padrao || {})[r.tipo] || ''),
+      // 3.19.9: começa com o texto do MODELO (antes copiava o da última notificação). Para repetir o texto da
+      // anterior, há "Usar o texto da Nª notificação" no próprio texto.
+      constatacao: base && base.constatacao !== undefined ? base.constatacao : ((CONFIG.constatacao_padrao || {})[r.tipo] || ''),
       itens: base ? (base.itens || []).slice() : [],
-      providencias: base && base.providencias !== undefined ? base.providencias : (ultima ? ultima.providencias || '' : provPadrao),
+      providencias: base && base.providencias !== undefined ? base.providencias : provPadrao,
       prazo_dias: r.prazo_dias || CONFIG.prazo_padrao || 3,
       equipe: '',
       fiscais: snapshotAssinantes(r.fiscais && r.fiscais.length ? r.fiscais : fiscaisPadrao(r.tipo), pessoas, true),
@@ -6479,6 +6480,8 @@
     const ro = emitida || !pode.notificar();
     titulo(n.ordinal + 'ª Notificação · ' + r.apelido, true);
     const pessoas = await pessoasMap();
+    // 3.19.9: a notificação anterior desta obra (para "Usar o texto da Nª notificação")
+    const anteriorN = ro ? null : (await notificacoesDe(r.id)).filter((x) => x.id !== n.id && !x.excluido && (x.ordinal || 0) < (n.ordinal || 0)).sort((a, b) => (b.ordinal || 0) - (a.ordinal || 0))[0] || null;
     const todasFotos = await fotosDe(r.id);
     const mapaFotos = new Map(todasFotos.map((f) => [f.id, f]));
     const fotosReg = todasFotos.filter((f) => !(f.irregular && situacao(f) === 'sanada') || (n.fotos || []).some((s) => s.fotoId === f.id));
@@ -6928,14 +6931,25 @@
           if (!(await confirmar('Voltar ao texto do modelo? O que foi escrito aqui será substituído.', 'Restaurar'))) return;
           delete n[k]; rt.definir(autoDe(k)); pintar(); marcar();
         } }, 'Restaurar o texto do modelo');
+        // 3.19.9: copiar o texto da notificação anterior (só quando ela tinha um texto diferente)
+        const campoBase = k === 'fatosAntes' ? 'constatacao' : k === 'provTexto' ? 'providencias' : null;
+        const temAnt = () => anteriorN && campoBase && ((anteriorN[k] != null && anteriorN[k] !== n[k]) || (String(anteriorN[campoBase] || '').trim() && anteriorN[campoBase] !== n[campoBase]));
+        const copiar = h('button', { type: 'button', class: 'nf-lk', 'data-acao': 'copiar-anterior-' + k, onclick: async () => {
+          if (!(await confirmar('Usar o texto da ' + anteriorN.ordinal + 'ª notificação? O texto daqui será substituído (confira as datas e os números).', 'Usar'))) return;
+          n[campoBase] = anteriorN[campoBase] || '';
+          if (anteriorN[k] != null) { n[k] = anteriorN[k]; rt.definir(n[k]); } else delete n[k];
+          marcar(); await carregarAuto(); pintar();
+          toast('Texto da ' + anteriorN.ordinal + 'ª notificação aplicado');
+        } }, 'Usar o texto da ' + (anteriorN ? anteriorN.ordinal : '') + 'ª notificação');
         const rt = editorRico({ valor: efTexto(k), rotulo: ROT_SEC[k], attrs: { class: 'rt-ed nf-sec-ta', 'data-sec': k }, aoMudar: (t) => { n[k] = t; pintar(); marcar(); } });
         const ta = rt.ed;
         const pintar = () => {
           const ed = n[k] != null;
           etqEl.textContent = ed ? 'editado' : 'do modelo'; etqEl.className = nc('etq ' + (ed ? 'acc' : ''));
           restaurar.style.display = ed ? '' : 'none';
+          copiar.style.display = temAnt() ? '' : 'none';
         };
-        const el = h('div', { class: 'nf-sec' }, h('div', { class: 'nf-sec-rot' }, h('b', {}, ROT_SEC[k]), etqEl, restaurar), rt);
+        const el = h('div', { class: 'nf-sec' }, h('div', { class: 'nf-sec-rot' }, h('b', {}, ROT_SEC[k]), etqEl, restaurar, copiar), rt);
         blocos[k] = { el, ta, pintar, atualizar: () => { if (n[k] == null && document.activeElement !== ta) rt.definir(autoDe(k)); pintar(); } };
         pintar();
         return el;
@@ -8227,7 +8241,7 @@
     // a partir de "Aparência e câmera", cada seção vira uma lista suspensa (fechada; lembra as abertas)
     const iniSecoes = cards.findIndex((c) => c.querySelector && (c.querySelector(':scope > h2') || {}).textContent === 'Aparência e câmera');
     if (iniSecoes >= 0) for (let i = iniSecoes; i < cards.length; i++) cards[i] = secaoRecolhivel(cards[i]);
-    cards.push(h('p', { class: 'dica', style: { textAlign: 'center' } }, 'Fiscalização de Obras · v3.19.8 · dados salvos no aparelho' + (Sync.habilitado() ? ' e no Google Drive do administrador' : '') + ' · ', h('a', { href: 'privacidade.html' }, 'Política de privacidade')));
+    cards.push(h('p', { class: 'dica', style: { textAlign: 'center' } }, 'Fiscalização de Obras · v3.19.9 · dados salvos no aparelho' + (Sync.habilitado() ? ' e no Google Drive do administrador' : '') + ' · ', h('a', { href: 'privacidade.html' }, 'Política de privacidade')));
     rcT(tk, ...cards);
   }
 
@@ -8486,7 +8500,7 @@
   /* ================================================================== */
   /* 3.18.6: com internet fraca o navegador pode juntar arquivos de duas versões do app (um novo, outro guardado).
      Se isso acontecer, pede a versão nova inteira ao service worker e recarrega (uma vez por sessão). */
-  const VERSAO_APP = '3.19.8';
+  const VERSAO_APP = '3.19.9';
   function conferirVersaoArquivos() {
     const vj = self.VERSOES_JS || {};
     const dif = ['db', 'sync', 'docgen'].filter((k) => vj[k] !== VERSAO_APP);
