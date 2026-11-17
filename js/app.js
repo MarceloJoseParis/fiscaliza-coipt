@@ -1365,8 +1365,11 @@
     return (await DB.byIndex('visitas', 'registroId', registroId)).filter((v) => !v.excluido)
       .sort((a, b) => (b.numero || 0) - (a.numero || 0));
   }
+  // 3.19.11: estes registros automáticos das irregularidades enchiam a Atividade da obra — não são mais gravados
+  // e os que já existem ficam ocultos
+  const ATIV_OCULTAS = new Set(['Irregularidade repetida', 'Irregularidades juntadas', 'Foto separada da irregularidade', 'Foto tirada de uma conferência']);
   async function atividadesDe(registroId) {
-    return (await DB.byIndex('atividades', 'registroId', registroId)).filter((a) => !a.excluido);
+    return (await DB.byIndex('atividades', 'registroId', registroId)).filter((a) => !a.excluido && !(a.tipo === 'edicao' && ATIV_OCULTAS.has(a.titulo)));
   }
   /* Atividade da obra: comentários, termos aditivos e alterações do cadastro, com data, hora e autor.
      (entidade "atividades": sincroniza com o servidor 3.16 / Code.gs versão 14) */
@@ -3951,7 +3954,6 @@
     for (const nt of await DB.listar('notificacoes', (x) => x.status !== 'emitida' && x.registroId === a.registroId)) {
       if ((nt.fotos || []).some((sl) => sl.irrId === a.id || sl.grupoDe === a.id)) await atualizarCampos('notificacoes', nt.id, (o) => { for (const sl of o.fotos || []) { if (sl.irrId === a.id) sl.irrId = b.id; if (sl.grupoDe === a.id) sl.grupoDe = b.id; } });
     }
-    await registrarAtividade(a.registroId, 'edicao', 'Irregularidade repetida', '“' + (a.descricao || '') + '” era a pendência “' + (b.descricao || '') + '”: virou conferência dela (' + (st === 'sanada' ? 'sanada' : 'não sanada') + ').');
     return st;
   }
   /* Revisão das possíveis repetidas, uma por vez, lado a lado */
@@ -4550,7 +4552,6 @@
         await atualizarCampos('notificacoes', nt.id, (o) => { for (const sl of o.fotos || []) if (sl.irrId && idsIrr.has(sl.irrId)) sl.irrId = P.id; });
       }
     }
-    await registrarAtividade(P.registroId, 'edicao', 'Irregularidades juntadas', (irregs.length > 1 ? irregs.length + ' irregularidades viraram uma só' : 'Fotos ligadas à irregularidade') + ' (' + membros.length + ' fotos): “' + String(descricao || P.descricao || '').trim() + '”.');
     return DB.get('fotos', P.id);
   }
   /* Tira uma foto do grupo: vira irregularidade separada (sem histórico) ou foto comum da visita. */
@@ -4588,7 +4589,6 @@
       if (P.capaId === f.id) await atualizarCampos('fotos', P.id, (o) => { delete o.capaId; });
     }
     const principalId = f.id === P.id && resto.length ? resto[0].id : P.id;
-    await registrarAtividade(P.registroId, 'edicao', 'Foto separada da irregularidade', '“' + (P.descricao || '') + '”: 1 foto ' + (modo === 'irr' ? 'virou irregularidade separada.' : 'voltou a ser foto comum da visita.'));
     return { principalId };
   }
   /* Relatórios com uma imagem por irregularidade: as fotos do grupo viram uma imagem só (a capa maior). */
@@ -5066,7 +5066,6 @@
     for (const nt of await DB.listar('notificacoes', (x) => x.status !== 'emitida' && x.registroId === fv.registroId)) {
       if ((nt.fotos || []).some((sl) => sl.fotoId === fotoId)) await atualizarCampos('notificacoes', nt.id, (o) => { for (const sl of o.fotos || []) if (sl.fotoId === fotoId) { delete sl.grupoDe; sl.irrId = fotoId; } });
     }
-    await registrarAtividade(fv.registroId, 'edicao', 'Foto tirada de uma conferência', 'A foto saiu da conferência de “' + ((P && P.descricao) || '') + '” e ficou como irregularidade separada' + (desc ? ': “' + desc + '”' : '') + '.');
     toast('A foto virou uma irregularidade separada');
     return true;
   }
@@ -8284,7 +8283,7 @@
     // a partir de "Aparência e câmera", cada seção vira uma lista suspensa (fechada; lembra as abertas)
     const iniSecoes = cards.findIndex((c) => c.querySelector && (c.querySelector(':scope > h2') || {}).textContent === 'Aparência e câmera');
     if (iniSecoes >= 0) for (let i = iniSecoes; i < cards.length; i++) cards[i] = secaoRecolhivel(cards[i]);
-    cards.push(h('p', { class: 'dica', style: { textAlign: 'center' } }, 'Fiscalização de Obras · v3.19.10 · dados salvos no aparelho' + (Sync.habilitado() ? ' e no Google Drive do administrador' : '') + ' · ', h('a', { href: 'privacidade.html' }, 'Política de privacidade')));
+    cards.push(h('p', { class: 'dica', style: { textAlign: 'center' } }, 'Fiscalização de Obras · v3.19.11 · dados salvos no aparelho' + (Sync.habilitado() ? ' e no Google Drive do administrador' : '') + ' · ', h('a', { href: 'privacidade.html' }, 'Política de privacidade')));
     rcT(tk, ...cards);
   }
 
@@ -8543,7 +8542,7 @@
   /* ================================================================== */
   /* 3.18.6: com internet fraca o navegador pode juntar arquivos de duas versões do app (um novo, outro guardado).
      Se isso acontecer, pede a versão nova inteira ao service worker e recarrega (uma vez por sessão). */
-  const VERSAO_APP = '3.19.10';
+  const VERSAO_APP = '3.19.11';
   function conferirVersaoArquivos() {
     const vj = self.VERSOES_JS || {};
     const dif = ['db', 'sync', 'docgen'].filter((k) => vj[k] !== VERSAO_APP);
