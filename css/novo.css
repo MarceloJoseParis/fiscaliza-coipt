@@ -1089,3 +1089,9 @@ body.nf-doc-aberto { overflow: hidden; }
 .rep-lado figcaption small { display: block; color: var(--txt2); }
 .rep-motivo { background: var(--sup2); border-radius: 10px; padding: 8px 10px; font-size: 12.5px; margin-top: 10px; }
 .rep-aviso { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 10px; }
+/* 3.19.10: arrastar os itens da notificação (segurando a foto) */
+.nf-fatos.ordenavel .nf-ft { cursor: grab; -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; touch-action: pan-y; }
+.nf-fatos.ordenavel .nf-ft img { -webkit-user-drag: none; pointer-events: none; }
+.nf-irr.arrastando { opacity: .3; outline: 2px dashed var(--pri); outline-offset: -2px; }
+.nf-irr.foto-fantasma { background: var(--sup); border-radius: 14px; }
+.nf-ft .nf-arrastar { display: block; font-size: 11px; color: var(--txt2); margin-top: 2px; }

@@ -2070,10 +2070,13 @@
   let arrastandoFoto = false;
   /* Arrastar para reordenar: no celular, segure a foto um instante e arraste (sem segurar, a tela rola
      normalmente); no computador, clique e arraste. Um toque/clique simples continua abrindo a foto. */
-  function tornarOrdenavel(grade, aoSoltar) {
+  /* opts (3.19.10): { item: seletor dos itens (padrão '.foto'), alca: seletor de onde segurar, chave: (el) => id } */
+  function tornarOrdenavel(grade, aoSoltar, opts) {
+    opts = opts || {};
+    const SEL = opts.item || '.foto', ALCA = opts.alca || null, chave = opts.chave || ((e) => e.dataset.id);
     grade.classList.add('ordenavel');
     let arr = null, inicio = null, espera = null, quadro = null, semClique = false;
-    const itens = () => [...grade.children].filter((e) => e.classList.contains('foto'));
+    const itens = () => [...grade.children].filter((e) => e.matches(SEL));
     function comecar(el, x, y) {
       const r = el.getBoundingClientRect();
       const fantasma = el.cloneNode(true);
@@ -2082,7 +2085,7 @@
       document.body.appendChild(fantasma);
       el.classList.add('arrastando');
       document.body.classList.add('arrastando-foto');
-      arr = { el, fantasma, dx: x - r.left, dy: y - r.top, x, y, ordemInicial: itens().map((e) => e.dataset.id).join() };
+      arr = { el, fantasma, dx: x - r.left, dy: y - r.top, x, y, ordemInicial: itens().map(chave).join() };
       arrastandoFoto = true;
       try { if (navigator.vibrate) navigator.vibrate(15); } catch (e) { /* */ }
       const rolar = () => {
@@ -2098,7 +2101,7 @@
       // com o dedo sobre a barra de baixo (ou o topo) enquanto a tela rola, usa o ponto logo acima/abaixo dela
       const py = Math.min(Math.max(arr.y, 72), innerHeight - (innerWidth < 1024 ? 118 : 12));
       const alvo = document.elementFromPoint(arr.x, py);
-      const f = alvo && alvo.closest ? alvo.closest('.foto') : null;
+      const f = alvo && alvo.closest ? alvo.closest(SEL) : null;
       if (!f || f === arr.el || f.parentNode !== grade) return;
       const l = itens();
       if (l.indexOf(arr.el) < l.indexOf(f)) grade.insertBefore(arr.el, f.nextSibling); else grade.insertBefore(arr.el, f);
@@ -2114,9 +2117,9 @@
       arr = null; arrastandoFoto = false;
       fantasma.remove(); el.classList.remove('arrastando'); document.body.classList.remove('arrastando-foto');
       semClique = true; setTimeout(() => { semClique = false; }, 450);
-      const ids = itens().map((e) => e.dataset.id);
+      const ids = itens().map(chave);
       // sem mudança (ou cancelado): só redesenha (volta ao lugar e mostra o que chegou durante o arraste)
-      aoSoltar(!cancelado && ids.join() !== ordemInicial ? el.dataset.id : null, ids);
+      aoSoltar(!cancelado && ids.join() !== ordemInicial ? chave(el) : null, ids);
     }
     // depois de arrastar, o clique não abre a foto
     grade.addEventListener('click', (e) => { if (semClique) { e.stopPropagation(); e.preventDefault(); } }, true);
@@ -2125,7 +2128,8 @@
     // toque
     grade.addEventListener('touchstart', (e) => {
       if (e.touches.length !== 1 || arr) return;
-      const el = e.target.closest('.foto');
+      if (ALCA && !e.target.closest(ALCA)) return;
+      const el = e.target.closest(SEL);
       if (!el || el.parentNode !== grade) return;
       const t = e.touches[0];
       inicio = { x: t.clientX, y: t.clientY, el };
@@ -2146,7 +2150,8 @@
     // mouse
     grade.addEventListener('mousedown', (e) => {
       if (e.button !== 0 || arr) return;
-      const el = e.target.closest('.foto');
+      if (ALCA && !e.target.closest(ALCA)) return;
+      const el = e.target.closest(SEL);
       if (!el || el.parentNode !== grade) return;
       e.preventDefault();
       const ini = { x: e.clientX, y: e.clientY };
@@ -2813,7 +2818,8 @@
           h('div', { class: 'sub' }, '🕒 ', dataHoraBR(f.dataHora), ' · 📍 ', coord),
           h('div', { class: 'sub', style: { marginBottom: '10px' } }, 'Por ', nomeDe(f.criadoPor) || '—', f.origem === 'galeria' ? ' · importada da galeria' : ''),
           irrDe && !irrDe.excluido ? h('div', { class: 'aviso', style: { marginBottom: '8px' } }, '📋 Foto do histórico da irregularidade “' + (irrDe.descricao || '') + '”. ',
-            h('a', { href: '#/irregularidade/' + irrDe.id, onclick: sair }, 'Ver histórico'))
+            h('a', { href: '#/irregularidade/' + irrDe.id, onclick: sair }, 'Ver histórico'),
+            podeEditar ? h('div', { class: 'acoes', style: { marginTop: '6px' } }, h('button', { class: 'btn peq', 'data-acao': 'tirar-conferencia', onclick: async () => { if (await tirarDaConferencia(f.id)) { lista[api.idx] = (await DB.get('fotos', f.id)) || f; v.atualizarMini(api.idx, classeMini(api.idx)); atual = null; await api.redesenhar(); } } }, '↩ Tirar desta conferência')) : null)
             : grupoP && grupoP.id !== f.id ? h('div', { class: 'aviso vinc-aviso', style: { marginBottom: '8px' } }, '🔗 Foto da irregularidade “' + (grupoP.descricao || '') + '” (' + nMembros + ' fotos). ',
               h('div', { class: 'acoes', style: { marginTop: '6px' } },
                 h('a', { class: 'btn peq', href: '#/irregularidade/' + grupoP.id, onclick: sair }, 'Abrir a irregularidade'),
@@ -2905,6 +2911,7 @@
             h('input', { type: 'text', value: descPropria(x.f), readonly: !podeEdG, placeholder: podeEdG ? 'Opcional — sem ela, vale a da irregularidade' : '', 'data-acao': 'desc-foto',
               onchange: async (e) => { const d = e.target.value.trim(); const novo = await atualizarCampos('fotos', x.f.id, (o) => { if (d) { o.descricao = d; delete o.descAuto; } else if (o.verificacaoDe) { o.descricao = (x.vf && x.vf.status === 'sanada' ? 'Correção: ' : 'Verificação: ') + ((x.vf && x.vf.descricao) || ''); o.descAuto = true; } else o.descricao = ''; }); if (novo) x.f = novo; toast('Descrição da foto salva'); } })) : null;
           rc(acoesGrupo, legFoto,
+            podeEdG && x && x.vf && !x.grupo ? h('button', { class: 'btn peq', 'data-acao': 'tirar-conferencia', onclick: async () => { if (!(await salvar())) return; if (await tirarDaConferencia(x.f.id)) await depoisGrupo(); } }, '↩ Tirar desta conferência') : null,
             podeEdG ? h('button', { class: 'btn peq', 'data-acao': 'vincular-mais', onclick: async () => { if (!(await salvar())) return; const P = await vincularMais(f); if (P) await depoisGrupo(P.id); } }, '➕ Vincular mais fotos') : null,
             podeEdG && x && x.grupo && nG > 1 && sel !== 0 ? h('button', { class: 'btn peq', 'data-acao': 'usar-capa', onclick: async () => { if (!(await salvar())) return; await usarComoCapa(f, x.f.id); await depoisGrupo(); } }, '⭐ Usar como capa') : null,
             podeEdG && x && x.grupo && nG > 1 ? h('button', { class: 'btn peq', 'data-acao': 'separar-foto', onclick: async () => { if (!(await salvar())) return; const r2 = await dialogoSeparar(x.f); if (r2) await depoisGrupo(r2.principalId); } }, '✂️ Separar esta foto') : null);
@@ -5035,6 +5042,34 @@
     await atualizarCampos('fotos', f.id, (o) => { o.verificacoes = (o.verificacoes || []).filter((y) => y.id !== vf.id); recalcularSituacao(o); });
     return true;
   }
+  /* 3.19.10: "Tirar desta conferência": a foto foi para a pendência errada. Ela sai da conferência (sem excluir)
+     e continua como IRREGULARIDADE separada (pendente), na visita em que foi tirada. A conferência fica (com as outras
+     fotos, ou só com o texto). */
+  async function tirarDaConferencia(fotoId) {
+    const fv = await DB.get('fotos', fotoId); if (!fv || !fv.verificacaoDe) return false;
+    const P = await DB.get('fotos', fv.verificacaoDe);
+    const vf = P ? (P.verificacoes || []).find((x) => fotosDaVerif(x).includes(fotoId)) : null;
+    const desc = descPropria(fv) || (vf && vf.descricao) || '';
+    const ok = await modal('↩ Tirar desta conferência', h('div', {},
+      h('p', { style: { marginTop: 0 } }, 'A foto sai da conferência de “' + ((P && P.descricao) || '') + '” e continua como uma irregularidade separada (pendente). Nada é excluído.'),
+      h('p', { class: 'sub' }, desc ? 'Descrição: “' + desc + '” (dá para corrigir depois).' : 'Ela fica sem descrição: descreva depois.')),
+      [{ txt: 'Cancelar', valor: false }, { txt: 'Tirar', cls: 'pri', valor: true }]);
+    if (!ok) return false;
+    await atualizarCampos('fotos', fotoId, (o) => { delete o.verificacaoDe; delete o.descAuto; delete o.vinculadaA; o.irregular = true; o.descricao = desc; delete o.verificacoes; delete o.situacao; delete o.sanadaEm; });
+    if (P) await atualizarCampos('fotos', P.id, (o) => {
+      for (const x of o.verificacoes || []) {
+        const ids = fotosDaVerif(x); if (!ids.includes(fotoId)) continue;
+        const resto = ids.filter((id) => id !== fotoId);
+        x.fotoId = resto[0] || null; if (resto.length > 1) x.fotoIds = resto; else delete x.fotoIds;
+      }
+    });
+    for (const nt of await DB.listar('notificacoes', (x) => x.status !== 'emitida' && x.registroId === fv.registroId)) {
+      if ((nt.fotos || []).some((sl) => sl.fotoId === fotoId)) await atualizarCampos('notificacoes', nt.id, (o) => { for (const sl of o.fotos || []) if (sl.fotoId === fotoId) { delete sl.grupoDe; sl.irrId = fotoId; } });
+    }
+    await registrarAtividade(fv.registroId, 'edicao', 'Foto tirada de uma conferência', 'A foto saiu da conferência de “' + ((P && P.descricao) || '') + '” e ficou como irregularidade separada' + (desc ? ': “' + desc + '”' : '') + '.');
+    toast('A foto virou uma irregularidade separada');
+    return true;
+  }
   /* 3.19.4: "Adicionar foto" numa pendência já conferida nesta visita (soma à mesma conferência) */
   async function adicionarFotosVerif(f, vf, r, visitaId) {
     const itens = [];
@@ -6973,6 +7008,11 @@
 
       /* ---- o que foi constatado ---- */
       const cardFatos = h('div', { class: 'card nf-fatos' });
+      // 3.19.10: arrastar para mudar a ordem (segurando a foto da esquerda), como na seleção de fotos
+      if (!ro) tornarOrdenavel(cardFatos, (fid, ids) => {
+        if (fid) { const por = new Map((n.fotos || []).map((x) => [x.fotoId, x])); const nova = ids.map((id) => por.get(id)).filter(Boolean); for (const x of n.fotos || []) if (!nova.includes(x)) nova.push(x); n.fotos = nova; marcar(); }
+        pintarFatos();
+      }, { item: '.nf-irr[data-foto]', alca: '.nf-ft', chave: (el) => el.dataset.foto });
       redesenharSimples = () => pintarFatos();
       const pendentesFora = () => fotosReg.filter((f) => f.irregular && situacao(f) === 'pendente' && !temIrr(f));
       const pintarFatos = () => {
@@ -6989,17 +7029,20 @@
           legTa.value = sl.legenda || '';
           const pintarItem = () => {
             if (!sl.naLista) { rc(verItem, h('span', { class: 'sub' }, 'Só no anexo (não entra na lista de irregularidades)')); return; }
-            if (sl.itemProprio) {
-              const ta = editorRico({ valor: sl.item || comoItem(sl.legenda), mini: true, rotulo: 'Texto na lista de irregularidades', attrs: { class: 'rt-ed nf-item-ta' }, aoMudar: (t) => { sl.item = t; marcar(); } });
-              rc(verItem, h('div', { class: 'nf-item-rot' }, 'Texto na lista (próprio)', h('button', { type: 'button', class: 'nf-lk', onclick: () => { sl.itemProprio = false; delete sl.item; marcar(); pintarItem(); } }, 'gerar da legenda')), ta);
-            } else rc(verItem, h('div', { class: 'nf-item-rot' }, 'Na lista: ', h('button', { type: 'button', class: 'nf-lk', onclick: () => { sl.itemProprio = true; sl.item = comoItem(sl.legenda); marcar(); pintarItem(); const t = verItem.querySelector('.rt-ed'); if (t) t.focus(); } }, 'escrever outro texto')),
-              h('div', { class: 'nf-item-v' }, comoItem(sl.legenda) || '—'));
+            // 3.19.10: o texto da lista sempre num campo editável (com B/I/U). Enquanto não for editado, acompanha a legenda.
+            const rot = h('div', { class: 'nf-item-rot' });
+            const pintarRot = () => rc(rot, sl.itemProprio ? 'Texto na lista (próprio)' : 'Texto na lista (igual à legenda)',
+              sl.itemProprio ? h('button', { type: 'button', class: 'nf-lk', onclick: () => { sl.itemProprio = false; delete sl.item; marcar(); pintarItem(); } }, 'gerar da legenda') : null);
+            const ta = editorRico({ valor: sl.itemProprio ? (sl.item || comoItem(sl.legenda)) : comoItem(sl.legenda), mini: true, rotulo: 'Texto na lista de irregularidades', attrs: { class: 'rt-ed nf-item-ta' },
+              aoMudar: (t) => { const era = sl.itemProprio; sl.itemProprio = true; sl.item = t; marcar(); if (!era) pintarRot(); } });
+            pintarRot();
+            rc(verItem, rot, ta);
           };
           pintarItem();
           const chk = h('input', { type: 'checkbox', checked: sl.naLista ? 'checked' : null, onchange: (e) => { sl.naLista = e.target.checked; marcar(); pintarFatos(); } });
           const irr = irrDaSel(sl);
           return h('div', { class: 'nf-irr' + (sl.naLista ? '' : ' so-anexo'), 'data-foto': sl.fotoId },
-            h('div', { class: 'nf-ft', role: 'button', title: 'Ver a foto', onclick: () => abrirFoto(f, null, fs.map((x) => mapaFotos.get(x.fotoId)).filter(Boolean)) }, img, h('small', {}, 'Imagem ' + (i + 1)), irr ? h('small', { class: 'nf-ft-irr', title: 'Irregularidade' }, '⚠️ irregular') : null),
+            h('div', { class: 'nf-ft', role: 'button', title: 'Ver a foto', onclick: () => abrirFoto(f, null, fs.map((x) => mapaFotos.get(x.fotoId)).filter(Boolean)) }, img, h('small', {}, 'Imagem ' + (i + 1)), irr ? h('small', { class: 'nf-ft-irr', title: 'Irregularidade' }, '⚠️ irregular') : null, !ro && fs.length > 1 ? h('small', { class: 'nf-arrastar', title: 'Segure e arraste para mudar a ordem' }, '⠿ arraste') : null),
             h('div', { class: 'nf-c' },
               h('label', { class: 'nf-rot' }, 'Legenda da foto'), legTa, verItem,
               h('label', { class: 'nf-chk' }, chk, ' Entra na lista de irregularidades'),
@@ -8241,7 +8284,7 @@
     // a partir de "Aparência e câmera", cada seção vira uma lista suspensa (fechada; lembra as abertas)
     const iniSecoes = cards.findIndex((c) => c.querySelector && (c.querySelector(':scope > h2') || {}).textContent === 'Aparência e câmera');
     if (iniSecoes >= 0) for (let i = iniSecoes; i < cards.length; i++) cards[i] = secaoRecolhivel(cards[i]);
-    cards.push(h('p', { class: 'dica', style: { textAlign: 'center' } }, 'Fiscalização de Obras · v3.19.9 · dados salvos no aparelho' + (Sync.habilitado() ? ' e no Google Drive do administrador' : '') + ' · ', h('a', { href: 'privacidade.html' }, 'Política de privacidade')));
+    cards.push(h('p', { class: 'dica', style: { textAlign: 'center' } }, 'Fiscalização de Obras · v3.19.10 · dados salvos no aparelho' + (Sync.habilitado() ? ' e no Google Drive do administrador' : '') + ' · ', h('a', { href: 'privacidade.html' }, 'Política de privacidade')));
     rcT(tk, ...cards);
   }
 
@@ -8500,7 +8543,7 @@
   /* ================================================================== */
   /* 3.18.6: com internet fraca o navegador pode juntar arquivos de duas versões do app (um novo, outro guardado).
      Se isso acontecer, pede a versão nova inteira ao service worker e recarrega (uma vez por sessão). */
-  const VERSAO_APP = '3.19.9';
+  const VERSAO_APP = '3.19.10';
   function conferirVersaoArquivos() {
     const vj = self.VERSOES_JS || {};
     const dif = ['db', 'sync', 'docgen'].filter((k) => vj[k] !== VERSAO_APP);
