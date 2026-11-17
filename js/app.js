@@ -3874,7 +3874,9 @@
     for (const [r, w] of a) if (b.has(r)) out.push(w);
     return { comuns: out, na: a.size, nb: b.size };
   }
-  const textoForte = (pc) => pc.comuns.length >= 2 || (pc.comuns.length === 1 && Math.min(pc.na, pc.nb) <= 2 && pc.comuns[0].length >= 6);
+  /* 3.19.8: texto bem parecido — a maior parte das palavras importantes em comum (sozinho, vale mesmo longe) */
+  const parecenca = (pc) => (pc.na + pc.nb - pc.comuns.length ? pc.comuns.length / (pc.na + pc.nb - pc.comuns.length) : 0);
+  const textoForte = (pc) => (pc.comuns.length >= 3 && parecenca(pc) >= 0.6) || (pc.comuns.length >= 2 && parecenca(pc) >= 0.75);
   function distanciaM(a, b) {
     const R = 6371000, rad = (x) => x * Math.PI / 180;
     const dLat = rad(b.lat - a.lat), dLng = rad(b.lng - a.lng);
@@ -3906,9 +3908,7 @@
       else if (!g && min <= 5) { nota += 2; motivos.push((nomeDe(b.autor) || 'colega') + ' registrou há ' + Math.max(1, Math.round(min)) + ' min'); }
     }
     const pc = palavrasEmComum(a.texto, b.texto);
-    // 3.19.7: com GPS nas duas e mais longe que 4 m, são lugares diferentes — o texto parecido sozinho não conta
-    const longe = g && g.d > g.lim;
-    if (textoForte(pc) && !longe) { nota += 2 + pc.comuns.length * 0.3; motivos.push('palavras: ' + pc.comuns.slice(0, 3).map((w) => '“' + w + '”').join(', ')); }
+    if (textoForte(pc)) { nota += 2 + pc.comuns.length * 0.3; motivos.push('texto ' + Math.round(parecenca(pc) * 100) + '% parecido: ' + pc.comuns.slice(0, 3).map((w) => '“' + w + '”').join(', ')); }
     return { nota, motivos };
   }
   async function infoIrr(f, todas) {
@@ -8227,7 +8227,7 @@
     // a partir de "Aparência e câmera", cada seção vira uma lista suspensa (fechada; lembra as abertas)
     const iniSecoes = cards.findIndex((c) => c.querySelector && (c.querySelector(':scope > h2') || {}).textContent === 'Aparência e câmera');
     if (iniSecoes >= 0) for (let i = iniSecoes; i < cards.length; i++) cards[i] = secaoRecolhivel(cards[i]);
-    cards.push(h('p', { class: 'dica', style: { textAlign: 'center' } }, 'Fiscalização de Obras · v3.19.7 · dados salvos no aparelho' + (Sync.habilitado() ? ' e no Google Drive do administrador' : '') + ' · ', h('a', { href: 'privacidade.html' }, 'Política de privacidade')));
+    cards.push(h('p', { class: 'dica', style: { textAlign: 'center' } }, 'Fiscalização de Obras · v3.19.8 · dados salvos no aparelho' + (Sync.habilitado() ? ' e no Google Drive do administrador' : '') + ' · ', h('a', { href: 'privacidade.html' }, 'Política de privacidade')));
     rcT(tk, ...cards);
   }
 
@@ -8486,7 +8486,7 @@
   /* ================================================================== */
   /* 3.18.6: com internet fraca o navegador pode juntar arquivos de duas versões do app (um novo, outro guardado).
      Se isso acontecer, pede a versão nova inteira ao service worker e recarrega (uma vez por sessão). */
-  const VERSAO_APP = '3.19.7';
+  const VERSAO_APP = '3.19.8';
   function conferirVersaoArquivos() {
     const vj = self.VERSOES_JS || {};
     const dif = ['db', 'sync', 'docgen'].filter((k) => vj[k] !== VERSAO_APP);
