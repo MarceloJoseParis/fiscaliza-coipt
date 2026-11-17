@@ -2027,11 +2027,12 @@
       urlFoto(f).then((u) => { img.src = u; });
       const idx = opts.selecionadas ? opts.selecionadas.indexOf(f.id) : -1;
       const marcada = opts.marcar && opts.marcar.has(f.id);
-      ap(g, h('div', { 'data-id': f.id, class: 'foto' + (idx >= 0 ? ' sel' : '') + (marcada ? ' marcada' : '') + (f.irregular ? ' irr' : '') + (f.fora_relatorio && opts.marcarRelatorio ? ' fora' : ''), onclick: (ev) => opts.onclick && opts.onclick(f, ev) },
+      ap(g, h('div', { 'data-id': f.id, class: 'foto' + (idx >= 0 ? ' sel' : '') + (marcada ? ' marcada' : '') + (f.irregular ? ' irr' : '') + (f.vinculadaA ? ' irr vinc' : '') + (f.fora_relatorio && opts.marcarRelatorio ? ' fora' : ''), onclick: (ev) => opts.onclick && opts.onclick(f, ev) },
         img,
         opts.marcar ? h('span', { class: 'marca', 'aria-hidden': 'true' }) : null,
         idx >= 0 ? h('span', { class: 'num' }, idx + 1) : null,
         f.irregular ? h('span', { class: 'alerta', title: 'Irregularidade' }, '⚠️') : null,
+        f.vinculadaA ? h('span', { class: 'alerta vinc', title: 'Foto de uma irregularidade com várias fotos' }, '🔗') : null,
         !f.driveId && Sync.habilitado() ? h('span', { class: 'nuvem', title: 'Ainda não enviada' }, '⏳') : null,
         h('div', { class: 'dt' }, dataHoraBR(f.dataHora))));
     }
@@ -2257,6 +2258,19 @@
   }
   /* Exclui com confirmação, explicando o que mais sai junto. Retorna true se excluiu. */
   async function excluirFotos(ids, texto, visitaId) {
+    // 3.19.3: foto principal de uma irregularidade com várias fotos: só ela ou a irregularidade inteira?
+    ids = ids.slice();
+    for (const id of ids.slice()) {
+      const f = await DB.get('fotos', id);
+      if (!f || !f.irregular || f.excluido) continue;
+      const m = (await membrosDe(f)).filter((x) => !ids.includes(x.id));
+      if (!m.length) continue;
+      const esc = await modal('Irregularidade com ' + (m.length + 1) + ' fotos', h('p', { style: { marginTop: 0 } }, '“' + (f.descricao || '') + '” tem ' + (m.length + 1) + ' fotos. O que excluir?'),
+        [{ txt: 'Cancelar', valor: null }, { txt: 'Só esta foto', valor: 'uma' }, { txt: 'A irregularidade inteira', cls: 'perigo', valor: 'todas' }]);
+      if (!esc) return false;
+      if (esc === 'todas') ids.push(...m.map((x) => x.id));
+      else { await separarFoto(f.id, 'foto'); texto = 'Excluir esta foto? A irregularidade continua com as outras fotos.'; }
+    }
     const plano = await planoExclusao(ids, visitaId);
     if (plano.emitidas.length) {
       await modal('Não é possível excluir', h('p', {}, 'Há foto(s) anexada(s) a notificação já emitida (' +
@@ -2327,6 +2341,25 @@
           });
           n++; continue;
         }
+        // 3.19.3: fotos ligadas a uma irregularidade (juntadas). Segue a cadeia até a principal; se ela foi excluída,
+        // a foto volta a ser comum; verificação feita (em outro aparelho) numa
+        // irregularidade que foi juntada passa para a principal.
+        if (f.vinculadaA || (f.verificacaoDe && (mapa.get(f.verificacaoDe) || {}).vinculadaA) || (f.projetoDe && (mapa.get(f.projetoDe) || {}).vinculadaA)) {
+          const raiz = (id) => { let x = mapa.get(id), k = 0; while (x && !x.excluido && x.vinculadaA && k++ < 10) x = mapa.get(x.vinculadaA); return x && !x.excluido && !x.vinculadaA ? x : null; }; // (a principal pode chegar antes ou depois na sincronização)
+          if (f.vinculadaA) {
+            const p = raiz(f.vinculadaA);
+            if (!p) { await atualizarCampos('fotos', f.id, (o) => { delete o.vinculadaA; }); n++; continue; }
+            const mover = (f.verificacoes || []).length ? f.verificacoes.slice() : null;
+            if (p.id !== f.vinculadaA || f.irregular || mover) {
+              await atualizarCampos('fotos', f.id, (o) => { o.vinculadaA = p.id; o.irregular = false; delete o.verificacoes; delete o.situacao; delete o.sanadaEm; });
+              if (mover) await atualizarCampos('fotos', p.id, (o) => { const ids = new Set((o.verificacoes || []).map((x) => x.id)); o.verificacoes = (o.verificacoes || []).concat(mover.filter((x) => !ids.has(x.id))).sort((a, b) => String(a.data || '').localeCompare(String(b.data || ''))); recalcularSituacao(o); });
+              n++; continue;
+            }
+          } else {
+            const pV = f.verificacaoDe ? raiz(f.verificacaoDe) : null, pP = f.projetoDe ? raiz(f.projetoDe) : null;
+            if (pV || pP) { await atualizarCampos('fotos', f.id, (o) => { if (pV) o.verificacaoDe = pV.id; if (pP) o.projetoDe = pP.id; }); n++; continue; }
+          }
+        }
         if (f.verificacaoDe) {
           const irr = mapa.get(f.verificacaoDe);
           if (irr && (irr.excluido || !irr.irregular)) {
@@ -2352,6 +2385,10 @@
       }
       for (const nt of await DB.listar('notificacoes')) {
         if (nt.status === 'emitida') continue;
+        if ((nt.fotos || []).some((sl) => sl.irrId && (mapa.get(sl.irrId) || {}).vinculadaA)) {
+          await atualizarCampos('notificacoes', nt.id, (o) => { for (const sl of o.fotos || []) { const x = sl.irrId && mapa.get(sl.irrId); if (x && x.vinculadaA) sl.irrId = x.vinculadaA; } });
+          n++;
+        }
         if ((nt.fotos || []).some((s) => (mapa.get(s.fotoId) || {}).excluido)) {
           await atualizarCampos('notificacoes', nt.id, (o) => { o.fotos = (o.fotos || []).filter((s) => !(mapa.get(s.fotoId) || {}).excluido); });
           n++;
@@ -2591,6 +2628,7 @@
       return bt;
     };
     for (let k = 0; k < total; k++) tira.appendChild(novaMini(k));
+    if (cfg.visivel) [...tira.children].forEach((c, i) => { c.style.display = cfg.visivel(i) ? '' : 'none'; });
     const fundo = h('div', { class: 'visor-fundo' + (cfg.classe ? ' ' + cfg.classe : '') }, h('div', { class: 'visor' },
       h('div', { class: 'visor-topo' }, contador, infoTopo, barraZoom, btGaleria, h('button', { class: 'visor-fechar', title: 'Fechar (Esc)', onclick: () => fechar() }, '✕')),
       h('div', { class: 'visor-corpo' }, palco, lado),
@@ -2635,7 +2673,10 @@
         rc(legendaImg, legenda || ''); legendaImg.style.display = legenda ? '' : 'none';
       },
       topo(info) { rc(infoTopo, info || ''); },
-      atualizarMini(k, classe) { const c = tira.children[k]; if (c) c.className = 'visor-mini ' + (classe || '') + (k === idx ? ' atual' : ''); },
+      atualizarMini(k, classe) { const c = tira.children[k]; if (c) c.className = 'visor-mini ' + (classe || '') + (k === idx ? ' atual' : ''); visibilidade(); },
+      /* 3.19.3: filtro (cfg.visivel): esconde as miniaturas que não entram e reposiciona se a atual saiu */
+      async filtrar() { visibilidade(); if (cfg.visivel && !cfg.visivel(idx)) { const k = primeiroVisivel(); if (k >= 0 && k !== idx) { idx = k; await mostrar(true); return; } } await mostrar(true); },
+      irPara: async (k) => { if (k < 0 || k >= total || fechado) return; if (k !== idx && cfg.salvar && !(await cfg.salvar())) return; idx = k; await mostrar(true); },
       async remover(k) { // item excluído: tira da tira e mostra o próximo (ou fecha se acabou)
         if (tira.children[k]) tira.children[k].remove();
         total--;
@@ -2646,15 +2687,20 @@
       redesenhar: () => mostrar(true),
       encerrar: (chamar) => encerrar(chamar),
     };
+    const vis = (k) => !cfg.visivel || cfg.visivel(k);
+    function primeiroVisivel() { for (let k = 0; k < total; k++) if (vis(k)) return k; return -1; }
+    function vizinho(d) { let k = idx + d; while (k >= 0 && k < total && !vis(k)) k += d; return k; }
+    function visibilidade() { if (cfg.visivel) [...tira.children].forEach((c, i) => { c.style.display = vis(i) ? '' : 'none'; }); }
     async function mostrar(semSalvar) {
       rc(contador, (idx + 1) + ' de ' + total + (cfg.rotulo ? '' : ''));
-      btAnt.disabled = idx === 0; btProx.disabled = idx === total - 1;
+      const ka = vizinho(-1), kp = vizinho(1);
+      btAnt.disabled = ka < 0; btProx.disabled = kp >= total;
       [...tira.children].forEach((c, i) => c.classList.toggle('atual', i === idx));
       const m = tira.children[idx]; if (m) m.scrollIntoView({ block: 'nearest', inline: 'center', behavior: 'smooth' });
       await cfg.mostrar(idx, api);
     }
     async function ir(delta) {
-      const k = idx + delta;
+      const k = Math.abs(delta) === 1 ? vizinho(delta) : idx + delta;
       if (k < 0 || k >= total || k === idx || fechado) return;
       if (cfg.salvar && !(await cfg.salvar())) return;
       idx = k; await mostrar();
@@ -2700,12 +2746,16 @@
     if (!lista.length) { lista = [f0]; idx0 = 0; }
     const podeEditar = pode.coletar();
     let atual = null; // { f, edit, base, nVer, irrDe }
-    const classeMini = (k) => (lista[k].irregular ? 'irr ' : '') + (lista[k].fora_relatorio ? 'fora' : '');
+    const classeMini = (k) => (lista[k].irregular || lista[k].vinculadaA ? 'irr ' : '') + (lista[k].fora_relatorio ? 'fora' : '');
     const mudou = () => atual && podeEditar && JSON.stringify(atual.edit) !== atual.base;
     async function salvar() {
       if (!mudou()) return true;
       const { f, edit, nVer } = atual;
       if (edit.irregular && !edit.descricao.trim()) { toast('Descreva a irregularidade.', true); return false; }
+      if (f.irregular && !edit.irregular && atual.nMembros > 1) {
+        if (!(await confirmar('Esta irregularidade tem ' + atual.nMembros + ' fotos ligadas. Ao deixar de ser irregularidade, as outras ' + (atual.nMembros - 1) + ' voltam a ser fotos comuns da visita.', 'Continuar'))) return false;
+        for (const m of await membrosDe(f)) await atualizarCampos('fotos', m.id, (o) => { delete o.vinculadaA; });
+      }
       if (f.irregular && !edit.irregular && nVer) {
         if (!(await confirmar('Esta irregularidade tem ' + nVer + ' registro(s) no histórico de verificações. Ao deixar de ser irregularidade, esse histórico é apagado (as fotos de verificação continuam como fotos comuns da visita). Continuar?', 'Continuar', true))) return false;
         for (const vf of f.verificacoes) if (vf.fotoId) await atualizarCampos('fotos', vf.fotoId, (o) => { delete o.verificacaoDe; });
@@ -2734,7 +2784,11 @@
         const edit = { descricao: f.descricao || '', irregular: !!f.irregular, incluir: !f.fora_relatorio };
         const irrDe = f.verificacaoDe ? await DB.get('fotos', f.verificacaoDe) : null;
         const nVer = (f.verificacoes || []).length;
-        atual = { f, edit, base: JSON.stringify(edit), nVer, irrDe };
+        // 3.19.3: foto de uma irregularidade com várias fotos
+        const grupoP = f.vinculadaA ? await principalDe(f) : null;
+        const nMembros = grupoP && grupoP.id !== f.id ? (await membrosDe(grupoP)).length + 1 : (f.irregular ? (await membrosDe(f)).length + 1 : 0);
+        if (k !== api.idx) return;
+        atual = { f, edit, base: JSON.stringify(edit), nVer, irrDe, nMembros };
         const coord = f.lat != null ? h('a', { href: 'https://www.google.com/maps?q=' + f.lat + ',' + f.lng, target: '_blank', rel: 'noopener' }, Foto.textoCoord(f.lat, f.lng) + (f.precisao ? ' (±' + f.precisao + ' m)' : '')) : 'sem coordenadas';
         const rotDesc = h('span', {}, edit.irregular ? 'Descrição da irregularidade *' : 'Legenda (opcional)');
         const area = inputArea(edit, 'descricao', { readonly: !podeEditar, placeholder: 'Ex.: Telhas do refeitório amassadas' });
@@ -2747,8 +2801,13 @@
           h('div', { class: 'sub', style: { marginBottom: '10px' } }, 'Por ', nomeDe(f.criadoPor) || '—', f.origem === 'galeria' ? ' · importada da galeria' : ''),
           irrDe && !irrDe.excluido ? h('div', { class: 'aviso', style: { marginBottom: '8px' } }, '📋 Foto do histórico da irregularidade “' + (irrDe.descricao || '') + '”. ',
             h('a', { href: '#/irregularidade/' + irrDe.id, onclick: sair }, 'Ver histórico'))
+            : grupoP && grupoP.id !== f.id ? h('div', { class: 'aviso vinc-aviso', style: { marginBottom: '8px' } }, '🔗 Foto da irregularidade “' + (grupoP.descricao || '') + '” (' + nMembros + ' fotos). ',
+              h('div', { class: 'acoes', style: { marginTop: '6px' } },
+                h('a', { class: 'btn peq', href: '#/irregularidade/' + grupoP.id, onclick: sair }, 'Abrir a irregularidade'),
+                podeEditar ? h('button', { class: 'btn peq', onclick: async () => { if (!(await salvar())) return; if (await dialogoSeparar(f)) { lista[api.idx] = (await DB.get('fotos', f.id)) || f; v.atualizarMini(api.idx, classeMini(api.idx)); await api.redesenhar(); } } }, '✂️ Separar') : null))
             : h('label', { class: 'linha', style: { marginBottom: '8px' } }, chkIrr, h('b', {}, '⚠️ Registrar como irregularidade')),
           nVer ? h('div', { class: 'sub', style: { marginBottom: '8px' } }, 'Histórico: ' + nVer + ' verificação(ões) — ', h('a', { href: '#/irregularidade/' + f.id, onclick: sair }, 'abrir')) : null,
+          f.irregular && nMembros > 1 ? h('div', { class: 'sub', style: { marginBottom: '8px' } }, '🔗 Irregularidade com ' + nMembros + ' fotos — ', h('a', { href: '#/irregularidade/' + f.id, onclick: sair }, 'ver todas')) : null,
           f.irregular ? blocoProjetoVisor(f, async () => { if (!(await salvar())) return false; return true; }, async () => { lista[api.idx] = (await DB.get('fotos', f.id)) || f; await api.redesenhar(); }) : null,
           h('label', { class: 'campo' }, rotDesc, area),
           h('label', { class: 'linha sub' }, chkRel, 'Incluir no relatório fotográfico'),
@@ -2769,12 +2828,20 @@
 
   /* Visualizador de irregularidades: mesma tela das fotos, com a situação, o histórico de verificações
      (fotos de antes e depois) e os botões Sanada / Não sanada. Depois de verificar, já vai para a próxima. */
-  async function abrirIrregularidades(f0, listaOrig, rotulo, visitaId, depois) {
+  async function abrirIrregularidades(f0, listaOrig, rotulo, visitaId, depois, opts) {
     const lista = listaOrig.filter((x) => x && !x.excluido);
     const idx0 = Math.max(0, lista.findIndex((x) => x.id === f0.id));
     const r = await DB.get('registros', f0.registroId);
     let atual = null; // { f, edit, base }
-    const classeMini = (k) => 'irr ' + (situacao(lista[k]) === 'sanada' ? 'sanada' : '');
+    /* 3.19.3: conferência das pendências de uma visita: mostra o que já foi conferido nesta visita (✓ / ✗),
+       quantas faltam, filtro A conferir / Conferidas / Todas e, depois de salvar, vai para a próxima que falta. */
+    const conf = !!(visitaId && opts && opts.conferir);
+    let filtro = 'todas';
+    const hoje = (k) => (conf ? hojeDe(lista[k], visitaId) : null);
+    const faltam = () => lista.filter((x) => !hojeDe(x, visitaId)).length;
+    const classeMini = (k) => { const vh = hoje(k); return 'irr ' + (situacao(lista[k]) === 'sanada' ? 'sanada' : '') + (conf ? (vh ? ' conf conf-' + vh.status : ' conf-falta') : ''); };
+    const visivel = (k) => !conf || filtro === 'todas' || (filtro === 'feitas' ? !!hoje(k) : !hoje(k));
+    const proximaQueFalta = (de) => { for (let i = 1; i <= lista.length; i++) { const k = (de + i) % lista.length; if (!hojeDe(lista[k], visitaId)) return k; } return -1; };
     const mudou = () => atual && pode.coletar() && atual.edit.descricao !== atual.base;
     async function salvar() {
       if (!mudou()) return true;
@@ -2786,17 +2853,20 @@
       return true;
     }
     const v = visorBase({
-      total: lista.length, idx: idx0, classe: 'visor-irr',
+      total: lista.length, idx: idx0, classe: 'visor-irr' + (conf ? ' visor-conf' : ''), visivel: conf ? visivel : null,
       miniatura: (k) => fotoAtualIrr(lista[k]).then((a) => urlFoto(situacao(lista[k]) === 'pendente' ? a : lista[k])), classeMini,
       salvar, aoFechar: () => { if (depois) depois(); },
       async mostrar(k, api) {
-        const f = (await DB.get('fotos', lista[k].id)) || lista[k];
+        let f = (await DB.get('fotos', lista[k].id)) || lista[k];
+        if (f.vinculadaA) f = await principalDe(f); // juntada a outra enquanto a tela estava aberta
         if (k !== api.idx) return;
         lista[k] = f;
         const st = situacao(f);
         const visOrig = f.visitaId ? await DB.get('visitas', f.visitaId) : null;
-        // fotos da irregularidade: constatação + cada verificação com foto
-        const fotos = [{ f, rot: 'Constatação · ' + dataHoraBR(f.dataHora).slice(0, 10) }];
+        // fotos da irregularidade: constatação (3.19.3: todas as fotos do grupo, a capa primeiro) + cada verificação com foto
+        const grupo = await grupoDe(f);
+        const nG = grupo.length;
+        const fotos = grupo.map((g, j) => ({ f: g, rot: 'Constatação' + (nG > 1 ? ' ' + (j + 1) + '/' + nG + (j === 0 ? ' ⭐' : '') : '') + ' · ' + dataHoraBR(g.dataHora).slice(0, 10), grupo: true }));
         const verifs = f.verificacoes || [];
         for (const vf of verifs) {
           const fv = vf.fotoId ? await DB.get('fotos', vf.fotoId) : null;
@@ -2806,19 +2876,31 @@
         const nReais = fotos.length;
         if (fpj && !fpj.excluido) fotos.push({ f: fpj, rot: '📐 Projeto', projeto: true });
         if (k !== api.idx) return;
-        let sel = nReais - 1; // começa pela foto mais recente (o projeto fica por último, para consulta)
+        let sel = nReais > nG ? nReais - 1 : 0; // começa pela verificação mais recente; sem ela, pela capa (o projeto fica por último)
         const chips = h('div', { class: 'irr-chips' });
+        const acoesGrupo = h('div', { class: 'acoes grupo-acoes', style: { marginTop: '6px' } });
+        const podeEdG = pode.coletar();
+        const depoisGrupo = async (novoId) => { atual = null; const nv = await DB.get('fotos', novoId || f.id); if (nv) lista[api.idx] = nv.vinculadaA ? await principalDe(nv) : nv; await api.redesenhar(); };
+        const pintarAcoesGrupo = () => {
+          const x = fotos[sel];
+          rc(acoesGrupo,
+            podeEdG ? h('button', { class: 'btn peq', 'data-acao': 'vincular-mais', onclick: async () => { if (!(await salvar())) return; const P = await vincularMais(f); if (P) await depoisGrupo(P.id); } }, '➕ Vincular mais fotos') : null,
+            podeEdG && x && x.grupo && nG > 1 && sel !== 0 ? h('button', { class: 'btn peq', 'data-acao': 'usar-capa', onclick: async () => { if (!(await salvar())) return; await usarComoCapa(f, x.f.id); await depoisGrupo(); } }, '⭐ Usar como capa') : null,
+            podeEdG && x && x.grupo && nG > 1 ? h('button', { class: 'btn peq', 'data-acao': 'separar-foto', onclick: async () => { if (!(await salvar())) return; const r2 = await dialogoSeparar(x.f); if (r2) await depoisGrupo(r2.principalId); } }, '✂️ Separar esta foto') : null);
+        };
         const verFoto = (i) => {
           sel = i;
           api.imagem(fotos[i].f.miniatura, urlFoto(fotos[i].f, true), fotos[i].rot, fotos[i].f);
           [...chips.children].forEach((c, j) => c.classList.toggle('ativo', j === i));
+          pintarAcoesGrupo();
         };
         fotos.forEach((x, i) => {
           const m = h('img', { alt: '' }); urlFoto(x.f).then((u) => { m.src = u; });
           chips.appendChild(h('button', { class: 'irr-chip', onclick: () => verFoto(i) }, m, h('span', {}, x.rot)));
         });
         verFoto(sel);
-        api.topo(r ? r.apelido : '');
+        const nf = conf ? faltam() : 0;
+        api.topo(conf ? (nf ? 'faltam ' + nf : 'todas conferidas ✓') : (r ? r.apelido : ''));
         const edit = { descricao: f.descricao || '' };
         atual = { f, edit, base: edit.descricao };
         const podeEd = pode.coletar();
@@ -2832,27 +2914,52 @@
           const k2 = api.idx;
           lista[k2] = (await DB.get('fotos', f.id)) || f;
           api.atualizarMini(k2, classeMini(k2));
+          if (conf) {
+            atual = null;
+            const kn = proximaQueFalta(k2);
+            if (kn >= 0) { toast((status === 'sanada' ? 'Sanada registrada' : 'Não sanada registrada') + ' — faltam ' + faltam()); if (filtro === 'feitas') filtro = 'todas'; await api.irPara(kn); return; }
+            const nS = lista.filter((x) => (hojeDe(x, visitaId) || {}).status === 'sanada').length;
+            await api.fechar();
+            await modal('Pendências conferidas', h('div', {}, h('p', { style: { marginTop: 0 } }, 'Todas as ' + lista.length + ' pendências de visitas anteriores foram conferidas nesta visita:'),
+              h('p', {}, h('b', { style: { color: 'var(--ok)' } }, '✓ ' + plural(nS, 'sanada', 'sanadas')), ' · ', h('b', { style: { color: 'var(--er)' } }, '✗ ' + plural(lista.length - nS, 'não sanada', 'não sanadas')))));
+            return;
+          }
           if (k2 < api.total - 1) { toast((status === 'sanada' ? 'Sanada registrada' : 'Não sanada registrada') + ' — próxima (' + (k2 + 2) + ' de ' + api.total + ')'); atual = null; await api.ir(1); }
           else { toast(status === 'sanada' ? 'Sanada registrada — era a última' : 'Não sanada registrada — era a última'); atual = null; await api.fechar(); }
         };
+        const vh = hoje(k);
+        const nT = lista.length, nFeitas = nT - nf;
+        const btFiltro = (cod, txt, vazio) => h('button', { class: filtro === cod ? 'ativo' : '', disabled: vazio && filtro !== cod, onclick: async () => { if (filtro === cod) return; if (!(await salvar())) return; filtro = cod; atual = null; await api.filtrar(); } }, txt);
+        const filtros = conf && nT > 1 ? h('div', { class: 'filtros irr-filtro' }, btFiltro('falta', 'A conferir (' + nf + ')', !nf), btFiltro('feitas', 'Conferidas (' + nFeitas + ')', !nFeitas), btFiltro('todas', 'Todas (' + nT + ')')) : null;
+        const cartaoHoje = vh ? h('div', { class: 'conf-hoje ' + vh.status },
+          h('b', {}, vh.status === 'sanada' ? '✓ Conferida nesta visita: sanada' : '✗ Conferida nesta visita: não sanada'),
+          h('div', {}, (vh.descricao ? '“' + vh.descricao + '” · ' : '') + (vh.fotoId ? 'com foto' : 'só texto') + ' · ' + dataHoraBR(vh.data).slice(11, 16) + ' · ' + (nomeDe(vh.por) || '—')),
+          podeEd ? h('div', { class: 'acoes' },
+            h('button', { class: 'btn peq', onclick: async () => { if (!(await salvar())) return; if (await corrigirVerificacao(f, vh)) { lista[api.idx] = (await DB.get('fotos', f.id)) || f; api.atualizarMini(api.idx, classeMini(api.idx)); atual = null; await api.redesenhar(); } } }, '✏️ Corrigir'),
+            h('button', { class: 'btn peq', onclick: async () => { if (!(await salvar())) return; if (await desfazerVerificacao(f, vh)) { lista[api.idx] = (await DB.get('fotos', f.id)) || f; api.atualizarMini(api.idx, classeMini(api.idx)); atual = null; toast('Conferência desfeita'); await api.filtrar(); } } }, '↺ Desfazer')) : null) : null;
         rc(api.lado,
-          h('div', { class: 'irr-cab' }, h('span', { class: 'badge ' + st }, st === 'sanada' ? '✓ Sanada' : 'Pendente'), rotulo ? h('span', { class: 'sub' }, rotulo) : null),
-          podeEd ? h('label', { class: 'campo', style: { marginTop: '8px' } }, h('span', {}, 'Irregularidade'), inputArea(edit, 'descricao', { rows: 2 }))
-            : h('h3', { style: { margin: '8px 0' } }, f.descricao || '(sem descrição)'),
+          filtros,
+          h('div', { class: 'irr-cab' }, h('span', { class: 'badge ' + st }, st === 'sanada' ? '✓ Sanada' : 'Pendente'), nG > 1 ? h('span', { class: 'selo-grupo' }, '🔗 ' + nG + ' fotos') : null, rotulo ? h('span', { class: 'sub' }, rotulo) : null),
+          // 3.19.3: título curto em cima (os botões ficam à vista); a descrição se corrige mais abaixo
+          h('h3', { class: 'irr-tit', style: { margin: '8px 0 2px' } }, f.descricao || '(sem descrição)'),
           h('div', { class: 'sub', style: { marginBottom: '10px' } }, 'Constatada em ' + dataHoraBR(f.dataHora) + (visOrig ? ' · Visita nº ' + visOrig.numero : '') + ' · por ' + (nomeDe(f.criadoPor) || '—')),
+          cartaoHoje,
+          // 3.19.3: Sanada / Não sanada logo abaixo da descrição (no celular, sem precisar rolar)
+          podeEd && st === 'pendente' && !vh ? h('div', { class: 'grade-bt', style: { margin: '4px 0 12px' } },
+            h('button', { class: 'btn ok grande', onclick: () => verificar('sanada') }, '✓ Sanada'),
+            h('button', { class: 'btn perigo grande', onclick: () => verificar('nao_sanada') }, '✗ Não sanada')) : null,
           fotos.length > 1 ? h('div', {}, h('div', { class: 'sub', style: { marginBottom: '4px' } }, 'Fotos (' + fotos.length + ') — toque para ver:'), chips) : null,
+          acoesGrupo,
+          podeEd ? h('label', { class: 'campo', style: { marginTop: '10px' } }, h('span', {}, 'Descrição da irregularidade (corrigir)'), inputArea(edit, 'descricao', { rows: 2 })) : null,
           podeEd ? h('div', { class: 'acoes', style: { marginTop: '6px' } }, h('button', { class: 'btn peq', onclick: async () => {
             if (!(await salvar())) return;
             if (await editarProjeto(f)) { lista[api.idx] = (await DB.get('fotos', f.id)) || f; await api.redesenhar(); }
           } }, pj ? '🔄 Trocar foto do projeto' : '📐 Incluir foto do projeto')) : null,
-          podeEd && st === 'pendente' ? h('div', { class: 'grade-bt', style: { marginTop: '10px' } },
-            h('button', { class: 'btn ok grande', onclick: () => verificar('sanada') }, '✓ Sanada'),
-            h('button', { class: 'btn perigo grande', onclick: () => verificar('nao_sanada') }, '✗ Não sanada')) : null,
           h('h3', { class: 'sub', style: { margin: '14px 0 6px' } }, 'Histórico de verificações'),
           historico.length ? h('div', {}, ...historico) : h('div', { class: 'sub' }, 'Ainda não verificada em visita posterior.'),
           h('div', { class: 'acoes', style: { marginTop: '12px' } },
             h('a', { class: 'btn peq', href: '#/irregularidade/' + f.id + (visitaId ? '/' + visitaId : ''), onclick: () => api.encerrar(false) }, 'Abrir página completa'),
-            podeEd && st === 'sanada' ? h('button', { class: 'btn peq', onclick: async () => {
+            podeEd && st === 'sanada' && !vh ? h('button', { class: 'btn peq', onclick: async () => {
               if (!(await confirmar('Reabrir esta irregularidade (voltar para pendente)?', 'Reabrir'))) return;
               await atualizarCampos('fotos', f.id, (o) => { o.verificacoes = (o.verificacoes || []).concat([{ id: DB.uuid(), data: new Date().toISOString(), status: 'nao_sanada', descricao: 'Reaberta.', fotoId: null, visitaId: visitaId || null, por: email() }]); recalcularSituacao(o); });
               lista[api.idx] = await DB.get('fotos', f.id); api.atualizarMini(api.idx, classeMini(api.idx)); atual = null; await v.iniciar();
@@ -3543,13 +3650,19 @@
         };
         const btComp = compartilhaArquivos() ? h('button', { type: 'button', class: 'btn', 'data-acao': 'compartilhar-sel', onclick: () => agir('compartilhar', btComp) }) : null;
         if (btComp) { btComp.innerHTML = icoComp; ap(btComp, h('span', {}, 'Compartilhar')); }
-        const btBaixar = h('button', { type: 'button', class: 'btn pri', 'data-acao': 'baixar-sel', onclick: () => agir('baixar', btBaixar) });
+        const btBaixar = h('button', { type: 'button', class: 'btn', 'data-acao': 'baixar-sel', onclick: () => agir('baixar', btBaixar) });
         btBaixar.innerHTML = icoBaixar; ap(btBaixar, rotBaixar);
+        // 3.19.3: juntar as fotos marcadas numa irregularidade só
+        const rotJuntar = h('span');
+        const btJuntar = podeEd ? h('button', { type: 'button', class: 'btn pri', 'data-acao': 'juntar-sel', title: 'Juntar as fotos marcadas numa irregularidade', onclick: async () => {
+          btJuntar.disabled = true;
+          try { if (await dialogoJuntar(escolhidas().map((f) => f.id))) sairSel(); } finally { btJuntar.disabled = false; pintarSel(); }
+        } }, '🔗 ', rotJuntar) : null;
         const fora = h('span', { class: 'sub fotos-de' }, 'de ' + plural(fotos.length, 'foto', 'fotos'));
         faixa = h('div', { class: 'fotos-faixa' },
           h('label', { class: 'fotos-todas' }, chkTodas, h('span', {}, 'Selecionar todas')), fora,
           h('span', { class: 'sub fotos-shift' }, 'Shift + clique marca um intervalo'),
-          h('div', { class: 'fotos-sel-acoes' }, btComp, btBaixar));
+          h('div', { class: 'fotos-sel-acoes' }, btJuntar, btComp, btBaixar));
         pintarSel = () => {
           const n = sel.size;
           tit.textContent = n ? plural(n, 'selecionada', 'selecionadas') : 'Toque nas fotos para marcar';
@@ -3557,6 +3670,7 @@
           chkTodas.indeterminate = n > 0 && n < fotos.length;
           rotBaixar.textContent = 'Baixar' + (n ? ' (' + n + ')' : '');
           btBaixar.disabled = !n; if (btComp) btComp.disabled = !n;
+          if (btJuntar) { rotJuntar.textContent = 'Juntar' + (n ? ' (' + n + ')' : ''); btJuntar.disabled = n < 2; }
           for (const el of grade.children) el.classList.toggle('marcada', sel.has(el.dataset.id));
         };
         pintarSel();
@@ -3576,22 +3690,41 @@
               h('div', { class: 'sub' }, '✗ Não sanada nesta visita · constatada em ' + dataHoraBR(f.dataHora).slice(0, 10))));
         }), irr.map((f) => {
           const img = h('img'); urlFoto(f).then((u) => { img.src = u; });
-          return h('div', { class: 'li', style: { cursor: 'pointer' }, onclick: () => abrirFoto(f, desenharFotos, irr) }, img, h('div', { style: { flex: 1 } }, h('div', {}, f.descricao || h('span', { style: { color: 'var(--alerta)' } }, '(sem descrição — toque para descrever)')), h('div', { class: 'sub' }, dataHoraBR(f.dataHora))));
+          const tIrr = h('div', { class: 'sub irr-grupo-l' }); seloGrupo(f, tIrr);
+          return h('div', { class: 'li', style: { cursor: 'pointer' }, onclick: () => abrirFoto(f, desenharFotos, irr) }, img, h('div', { style: { flex: 1 } }, tIrr, h('div', {}, f.descricao || h('span', { style: { color: 'var(--alerta)' } }, '(sem descrição — toque para descrever)')), h('div', { class: 'sub' }, dataHoraBR(f.dataHora))));
         })) : h('div', { class: 'sub' }, 'Nenhuma irregularidade registrada nesta visita.'),
         nIrr && pode.notificar() ? h('div', { class: 'acoes' }, h('button', { class: 'btn', onclick: async () => { await salvarVisita(true); notificarVisita(v0, r); } }, '📝 Gerar notificação com estas irregularidades')) : null,
         reverif.length ? h('div', { class: 'dica' }, 'Irregularidades não sanadas entram na notificação com a foto nova desta visita.') : null);
       boxIrr.className = 'card';
       boxFotos.className = 'card' + (sel ? ' fotos-selecao' : '');
-      const pend = (await irregularidadesDe(r.id)).filter((f) => situacao(f) === 'pendente' && f.visitaId !== id);
-      const conferidas = pend.filter((f) => (f.verificacoes || []).some((vf) => vf.visitaId === id));
-      const abertasP = pend.length - conferidas.length;
-      rc(bannerPend, pend.length && aberta ? h('button', { class: nc('pend'), style: abertasP ? null : { background: 'var(--ok-bg)', color: 'var(--ok)' }, onclick: () => abrirIrregularidades(pend.find((f) => !conferidas.includes(f)) || pend[0], pend, 'Pendências a verificar', id, desenharFotos) },
-        h('span', { class: nc('ic'), style: { width: '36px', height: '36px', borderRadius: '10px', display: 'grid', placeItems: 'center', background: 'rgba(255,255,255,.5)', flex: 'none' } }, ico(abertasP ? 'alerta' : 'ok')),
-        h('span', { class: nc('c') }, h('b', {}, abertasP ? plural(abertasP, 'pendência de visita anterior', 'pendências de visitas anteriores') : 'Pendências conferidas nesta visita'), h('span', {}, abertasP ? 'Confira na obra se foi sanada' : 'Toque para rever')),
-        ico('dir')) : null);
-      rc(boxPend, h('h2', {}, '📋 Pendências de visitas anteriores (' + pend.length + ')'),
-        pend.length ? h('p', { class: 'sub' }, 'Verifique cada uma e registre se foi sanada, com foto e descrição do que foi feito.') : h('div', { class: 'sub' }, 'Nenhuma irregularidade pendente nesta obra.'),
-        pend.map((f) => itemIrregularidade(f, () => abrirIrregularidades(f, pend, 'Pendências a verificar', id, desenharFotos))));
+      /* 3.19.3: progresso da conferência das pendências (conferidas / faltam, sanadas e não sanadas) */
+      const pp = await pendenciasDaVisita(r, id);
+      const pend = pp.lista, nT = pend.length, nF = pp.falta.length;
+      const abrirConf = (f) => abrirIrregularidades(f, pend, 'Pendências a conferir', id, desenharFotos, { conferir: true });
+      const pc = (n) => (100 * n / (nT || 1)).toFixed(2) + '%';
+      rc(bannerPend, nT && aberta ? h('button', { class: nc('pend') + (nF ? '' : ' n-pend-ok'), 'data-pend': nF ? 'falta' : 'ok', onclick: () => abrirConf(pp.falta[0] || pend[0]) },
+        h('span', { class: nc('pend-l1') },
+          h('span', { class: nc('ic'), style: { width: '36px', height: '36px', borderRadius: '10px', display: 'grid', placeItems: 'center', background: 'rgba(255,255,255,.5)', flex: 'none' } }, ico(nF ? 'alerta' : 'ok')),
+          h('span', { class: nc('c') }, h('b', {}, nF ? 'Pendências: ' + (nT - nF) + ' de ' + nT + ' conferidas' : (nT === 1 ? 'A pendência foi conferida' : 'Todas as ' + nT + ' pendências conferidas')),
+            h('span', {}, nF ? (nT - nF ? 'Faltam ' + nF + ' · toque para continuar' : 'Confira na obra se foram sanadas') : 'Toque para rever')),
+          ico('dir')),
+        h('span', { class: nc('pend-barra') }, h('i', { class: 's', style: { width: pc(pp.nS) } }), h('i', { class: 'n', style: { width: pc(pp.nN) } })),
+        h('span', { class: nc('pend-leg') }, h('span', { class: 's' }, plural(pp.nS, 'sanada', 'sanadas')), h('span', { class: 'n' }, plural(pp.nN, 'não sanada', 'não sanadas')), h('span', { class: 'f' }, nF + ' a conferir'))) : null);
+      const itemPend = (f) => {
+        const vh = hojeDe(f, id);
+        const img = h('img'); fotoAtualIrr(f).then((x) => urlFoto(x)).then((u) => { img.src = u; });
+        return h('div', { class: 'item', style: { cursor: 'pointer' }, 'data-pend-item': vh ? vh.status : 'falta', onclick: () => abrirConf(f) },
+          h('div', { class: 'item-irr' }, h('span', { class: 'pend-ft' }, img, vh ? h('i', { class: 'pend-mk ' + vh.status }, vh.status === 'sanada' ? '✓' : '✗') : null),
+            h('div', { class: 'cresce' },
+              (() => { const t = h('div', { class: 't', style: { fontWeight: 500 } }, f.descricao || '(sem descrição)'); seloGrupo(f, t); return t; })(),
+              h('div', { class: 'd' }, vh ? (vh.descricao ? '“' + vh.descricao + '” · ' : '') + (vh.fotoId ? '' : 'só texto · ') + dataHoraBR(vh.data).slice(11, 16)
+                : 'Constatada em ' + dataHoraBR(f.dataHora).slice(0, 10) + ((f.verificacoes || []).length ? ' · última verificação ' + dataLocalBR(f.verificacoes[f.verificacoes.length - 1].data) + ': não sanada' : '')),
+              h('span', { class: 'pend-chip ' + (vh ? vh.status : 'falta') }, vh ? (vh.status === 'sanada' ? '✓ Sanada nesta visita' : '✗ Não sanada nesta visita') : 'A conferir'))));
+      };
+      rc(boxPend, h('h2', {}, '📋 Pendências de visitas anteriores (' + nT + ')'),
+        nT ? h('p', { class: 'sub' }, 'Verifique cada uma e registre se foi sanada, com foto ou só com texto.') : h('div', { class: 'sub' }, 'Nenhuma irregularidade pendente nesta obra.'),
+        nF ? h('div', { class: 'pend-grupo' }, 'A conferir (' + nF + ')') : null, pp.falta.map(itemPend),
+        pp.feitas.length ? h('div', { class: 'pend-grupo' }, 'Conferidas nesta visita (' + pp.feitas.length + ')') : null, pp.feitas.map(itemPend));
       boxPend.className = 'card';
       boxPend.style.display = pend.length || !aberta ? '' : 'none';
       await pintarSeq(fotos);
@@ -3725,8 +3858,8 @@
     const id = v0.id;
     const fotos = (await DB.byIndex('fotos', 'visitaId', id)).filter((f) => !f.excluido);
     const irr = fotos.filter((f) => f.irregular), semDesc = irr.filter((f) => !String(f.descricao || '').trim()).length;
-    const pend = (await irregularidadesDe(r.id)).filter((f) => situacao(f) === 'pendente' && f.visitaId !== id);
-    const semConferir = pend.filter((f) => !(f.verificacoes || []).some((vf) => vf.visitaId === id));
+    const ppC = await pendenciasDaVisita(r, id);
+    const pend = ppC.lista, semConferir = ppC.falta;
     const reverif = await reverificadasNaVisita(r, id);
     const ck = (ok, t, s, bt) => h('div', { class: nc('check') },
       h('span', { class: nc('ic ' + (ok === true ? 'ok' : ok === false ? 'al' : 'in')) }, ico(ok === true ? 'ok' : ok === false ? 'alerta' : 'doc')),
@@ -3736,7 +3869,7 @@
     const lista = h('div', { class: nc('lista') },
       ck(fotos.length > 0, plural(fotos.length, 'foto', 'fotos'), plural(nGer, 'geral', 'gerais') + ' · ' + irr.length + ' de irregularidade', fotos.length ? null : voltarVisita),
       ck(!!String(v0.observacoes || '').trim(), 'Observações gerais', String(v0.observacoes || '').trim() ? 'Preenchidas e salvas' : 'Ainda em branco', String(v0.observacoes || '').trim() ? null : h('a', { class: 'btn peq', href: '#/visita/' + id }, 'Escrever')),
-      pend.length ? ck(semConferir.length === 0, 'Pendências de visitas anteriores', semConferir.length ? plural(semConferir.length, 'sem conferir', 'sem conferir') : 'Todas conferidas', semConferir.length ? h('button', { class: 'btn peq', onclick: () => abrirIrregularidades(semConferir[0], pend, 'Pendências a verificar', id, () => rotear()) }, 'Conferir') : null) : null,
+      pend.length ? ck(semConferir.length === 0, 'Pendências de visitas anteriores', semConferir.length ? plural(semConferir.length, 'sem conferir', 'sem conferir') : 'Todas conferidas', semConferir.length ? h('button', { class: 'btn peq', onclick: () => abrirIrregularidades(semConferir[0], pend, 'Pendências a conferir', id, () => rotear(), { conferir: true }) }, 'Conferir') : null) : null,
       irr.length ? ck(semDesc === 0, plural(irr.length, 'irregularidade', 'irregularidades'), semDesc ? plural(semDesc, 'sem descrição', 'sem descrição') : 'Todas descritas', semDesc ? h('button', { class: 'btn peq', onclick: async () => { for (const f of irr.filter((x) => !String(x.descricao || '').trim())) await descreverIrregularidade(f); rotear(); } }, 'Descrever') : null) : null);
     const nNotif = irr.length + reverif.length;
     const quem = r.tipo === 'convenio' ? 'a prefeitura' : 'a empresa';
@@ -3799,7 +3932,7 @@
     if (itens.length) itens[itens.length - 1] = itens[itens.length - 1].replace(/;$/, '.');
     App._sairNotif = null;
     const sel = [];
-    for (const f of fotos) sel.push(await selIrregularidade(f));
+    for (const f of fotos) sel.push(...(await selsIrregularidade(f)));
     await criarNotificacao(r.id, { itens, fotos: sel, data_vistoria: v.data, visitaId: v.id });
   }
 
@@ -3908,7 +4041,11 @@
       if (preBaixa) await preBaixa;
       if (faltando.length && !(await confirmar(faltando.length + ' foto(s) não estão neste aparelho e não foi possível baixá-las do Drive (sem internet ou ainda não enviadas pelo celular que as tirou). Gerar o relatório sem elas?', 'Gerar sem elas'))) { jp.fechar(); return; }
       const usar = incl.filter((f) => blobs.has(f.id));
-      const itens = usar.map((f) => ({ img: blobs.get(f.id), legenda: f.irregular ? 'IRREGULARIDADE: ' + (f.descricao || '') : (f.descricao || ''), irregular: !!f.irregular, descricao: f.descricao || '',
+      // 3.19.3: foto ligada a uma irregularidade com várias fotos sai como foto de irregularidade
+      const princ = new Map();
+      for (const f of usar) if (f.vinculadaA && !princ.has(f.vinculadaA)) princ.set(f.vinculadaA, await principalDe(f));
+      const descDe = (f) => f.descricao || (f.vinculadaA ? (princ.get(f.vinculadaA) || {}).descricao : '') || '';
+      const itens = usar.map((f) => ({ img: blobs.get(f.id), legenda: f.irregular || f.vinculadaA ? 'IRREGULARIDADE: ' + descDe(f) : (f.descricao || ''), irregular: !!(f.irregular || f.vinculadaA), descricao: descDe(f),
         meta: dataHoraBR(f.dataHora) + (f.lat != null ? ' · ' + Foto.textoCoord(f.lat, f.lng) : '') }));
       // 3) monta o Word
       jp.set('Montando o documento (' + itens.length + ' fotos)…', 0.8);
@@ -4095,6 +4232,233 @@
       .sort((a, b) => String(b.dataHora).localeCompare(a.dataHora));
   }
 
+  /* ================================================================== */
+  /* 3.19.3: várias fotos numa só irregularidade ("juntar")               */
+  /* A irregularidade fica na foto mais antiga do grupo (data e visita da constatação); as outras fotos ganham
+     vinculadaA = id dela (deixam de ser irregularidades soltas, mas continuam nas fotos da visita). capaId escolhe
+     a foto que aparece primeiro. O histórico de verificações das irregularidades juntadas fica todo na principal. */
+  /* ================================================================== */
+  const porData = (a, b) => String(a.dataHora || '').localeCompare(String(b.dataHora || '')) || String(a.id).localeCompare(String(b.id));
+  async function fotosDaObra(registroId) { return (await DB.byIndex('fotos', 'registroId', registroId)).filter((x) => !x.excluido); }
+  async function membrosDe(f, lista) {
+    if (!f) return [];
+    return (lista || await fotosDaObra(f.registroId)).filter((x) => !x.excluido && x.vinculadaA === f.id && x.id !== f.id).sort(porData);
+  }
+  // fotos da constatação: a capa primeiro, depois as outras da mais antiga para a mais nova
+  async function grupoDe(f, lista) {
+    const todos = [f].concat(await membrosDe(f, lista)).sort(porData);
+    const capa = (f.capaId && todos.find((x) => x.id === f.capaId)) || f;
+    return [capa].concat(todos.filter((x) => x !== capa));
+  }
+  async function capaDe(f) { return f && f.capaId ? (((await grupoDe(f)).find((x) => x.id === f.capaId)) || f) : f; }
+  // principal de uma foto (ela mesma, se não estiver ligada)
+  async function principalDe(f) {
+    let x = f, k = 0;
+    while (x && x.vinculadaA && k++ < 10) { const p = await DB.get('fotos', x.vinculadaA); if (!p || p.excluido) break; x = p; }
+    return x;
+  }
+  // monta a lista completa de fotos envolvidas (cada foto escolhida + o grupo a que ela pertence)
+  async function expandirGrupos(ids) {
+    const out = new Map();
+    const lista = [];
+    for (const id of ids) { const f = await DB.get('fotos', id); if (f && !f.excluido) lista.push(f); }
+    if (!lista.length) return [];
+    const todas = await fotosDaObra(lista[0].registroId);
+    for (const f of lista) {
+      const p = await principalDe(f);
+      out.set(p.id, p);
+      for (const m of todas.filter((x) => x.vinculadaA === p.id)) out.set(m.id, m);
+    }
+    return [...out.values()].sort(porData);
+  }
+  /* Junta as fotos (e as irregularidades a que pertencem) numa irregularidade só. */
+  async function juntarFotos(ids, capaId, descricao) {
+    const membros = await expandirGrupos(ids);
+    if (membros.length < 2) return null;
+    const P = membros[0]; // a mais antiga: data e visita da constatação
+    const irregs = membros.filter((x) => x.irregular && !x.vinculadaA);
+    const idsIrr = new Set(irregs.map((x) => x.id));
+    // histórico de todas as irregularidades juntadas, em ordem de data
+    const vistos = new Set(), verifs = [];
+    for (const x of irregs) for (const vf of x.verificacoes || []) if (!vistos.has(vf.id)) { vistos.add(vf.id); verifs.push(vf); }
+    verifs.sort((a, b) => String(a.data || '').localeCompare(String(b.data || '')));
+    const comProj = [P].concat(irregs).find((x) => x.projeto && x.projeto.fotoId);
+    const capa = membros.find((x) => x.id === capaId) ? capaId : (irregs[0] || P).id;
+    await atualizarCampos('fotos', P.id, (o) => {
+      o.irregular = true; delete o.vinculadaA;
+      o.descricao = String(descricao || '').trim() || o.descricao || '';
+      o.verificacoes = verifs; recalcularSituacao(o);
+      if (comProj) o.projeto = comProj.projeto;
+      if (capa !== P.id) o.capaId = capa; else delete o.capaId;
+    });
+    for (const x of membros) {
+      if (x.id === P.id) continue;
+      await atualizarCampos('fotos', x.id, (o) => {
+        o.vinculadaA = P.id; o.irregular = false;
+        delete o.verificacoes; delete o.situacao; delete o.sanadaEm; delete o.projeto; delete o.capaId;
+      });
+    }
+    // fotos de verificação e de projeto das irregularidades juntadas passam a apontar para a principal
+    const todas = await fotosDaObra(P.registroId);
+    for (const o of todas) {
+      if (o.verificacaoDe && idsIrr.has(o.verificacaoDe) && o.verificacaoDe !== P.id) await atualizarCampos('fotos', o.id, (y) => { y.verificacaoDe = P.id; });
+      if (o.projetoDe && idsIrr.has(o.projetoDe) && o.projetoDe !== P.id) await atualizarCampos('fotos', o.id, (y) => { y.projetoDe = P.id; });
+    }
+    // rascunhos de notificação: a irregularidade juntada passa a ser a principal
+    for (const nt of await DB.listar('notificacoes', (x) => x.status !== 'emitida' && x.registroId === P.registroId)) {
+      if ((nt.fotos || []).some((sl) => sl.irrId && idsIrr.has(sl.irrId) && sl.irrId !== P.id)) {
+        await atualizarCampos('notificacoes', nt.id, (o) => { for (const sl of o.fotos || []) if (sl.irrId && idsIrr.has(sl.irrId)) sl.irrId = P.id; });
+      }
+    }
+    await registrarAtividade(P.registroId, 'edicao', 'Irregularidades juntadas', (irregs.length > 1 ? irregs.length + ' irregularidades viraram uma só' : 'Fotos ligadas à irregularidade') + ' (' + membros.length + ' fotos): “' + String(descricao || P.descricao || '').trim() + '”.');
+    return DB.get('fotos', P.id);
+  }
+  /* Tira uma foto do grupo: vira irregularidade separada (sem histórico) ou foto comum da visita. */
+  async function separarFoto(fotoId, modo) {
+    const f = await DB.get('fotos', fotoId); if (!f) return false;
+    const P = await principalDe(f);
+    const membros = [P].concat(await membrosDe(P)).sort(porData);
+    const resto = membros.filter((x) => x.id !== fotoId);
+    if (f.id === P.id && resto.length) {
+      // a principal sai: a próxima mais antiga assume a irregularidade (descrição, histórico, projeto)
+      const N = resto[0];
+      await atualizarCampos('fotos', N.id, (o) => {
+        delete o.vinculadaA; o.irregular = true; o.descricao = P.descricao || o.descricao || '';
+        o.verificacoes = (P.verificacoes || []).slice(); recalcularSituacao(o);
+        if (P.projeto) o.projeto = P.projeto;
+        if (P.capaId && P.capaId !== N.id && P.capaId !== P.id) o.capaId = P.capaId; else delete o.capaId;
+      });
+      for (const x of resto.slice(1)) await atualizarCampos('fotos', x.id, (o) => { o.vinculadaA = N.id; });
+      for (const o of await fotosDaObra(P.registroId)) {
+        if (o.verificacaoDe === P.id) await atualizarCampos('fotos', o.id, (y) => { y.verificacaoDe = N.id; });
+        if (o.projetoDe === P.id) await atualizarCampos('fotos', o.id, (y) => { y.projetoDe = N.id; });
+      }
+      for (const nt of await DB.listar('notificacoes', (x) => x.status !== 'emitida' && x.registroId === P.registroId)) {
+        if ((nt.fotos || []).some((sl) => sl.irrId === P.id || sl.grupoDe === P.id)) await atualizarCampos('notificacoes', nt.id, (o) => { for (const sl of o.fotos || []) { if (sl.irrId === P.id) sl.irrId = N.id; if (sl.grupoDe === P.id) sl.grupoDe = N.id; } });
+      }
+      await atualizarCampos('fotos', P.id, (o) => {
+        delete o.capaId; delete o.projeto; delete o.verificacoes; delete o.situacao; delete o.sanadaEm;
+        o.irregular = modo === 'irr';
+      });
+    } else {
+      await atualizarCampos('fotos', f.id, (o) => {
+        delete o.vinculadaA; o.irregular = modo === 'irr';
+        delete o.verificacoes; delete o.situacao; delete o.sanadaEm;
+      });
+      if (P.capaId === f.id) await atualizarCampos('fotos', P.id, (o) => { delete o.capaId; });
+    }
+    const principalId = f.id === P.id && resto.length ? resto[0].id : P.id;
+    await registrarAtividade(P.registroId, 'edicao', 'Foto separada da irregularidade', '“' + (P.descricao || '') + '”: 1 foto ' + (modo === 'irr' ? 'virou irregularidade separada.' : 'voltou a ser foto comum da visita.'));
+    return { principalId };
+  }
+  /* Relatórios com uma imagem por irregularidade: as fotos do grupo viram uma imagem só (a capa maior). */
+  async function colagem(blobsLista) {
+    const bs = blobsLista.filter(Boolean);
+    if (bs.length < 2) return bs[0] || null;
+    try {
+      const ims = []; for (const b of bs.slice(0, 9)) { try { ims.push(await createImageBitmap(b)); } catch (e) { /* imagem com problema: pula */ } }
+      if (ims.length < 2) return bs[0];
+      const W = 1600, gap = 8, n = ims.length;
+      const resto = n - 1, cols = Math.min(4, resto);
+      const hCapa = Math.round(W * 0.6), wPeq = (W - gap * (cols - 1)) / cols, hPeq = Math.round(wPeq * 0.75);
+      const linhas = Math.ceil(resto / cols);
+      const H = hCapa + linhas * (hPeq + gap);
+      const cv = document.createElement('canvas'); cv.width = W; cv.height = H;
+      const c = cv.getContext('2d'); c.fillStyle = '#fff'; c.fillRect(0, 0, W, H);
+      const cobrir = (im, x, y, w, hh) => { const r = Math.max(w / im.width, hh / im.height); const sw = w / r, sh = hh / r; c.drawImage(im, (im.width - sw) / 2, (im.height - sh) / 2, sw, sh, x, y, w, hh); };
+      const etiqueta = (t, x, y) => { c.font = 'bold 30px sans-serif'; const w = c.measureText(t).width + 20; c.fillStyle = 'rgba(0,0,0,.6)'; c.fillRect(x + 10, y + 10, w, 44); c.fillStyle = '#fff'; c.fillText(t, x + 20, y + 43); };
+      cobrir(ims[0], 0, 0, W, hCapa); etiqueta('1/' + n, 0, 0);
+      for (let i = 1; i < n; i++) { const k = i - 1, x = (k % cols) * (wPeq + gap), y = hCapa + gap + Math.floor(k / cols) * (hPeq + gap); cobrir(ims[i], x, y, wPeq, hPeq); etiqueta((i + 1) + '/' + n, x, y); }
+      return await new Promise((res) => cv.toBlob((b) => res(b || bs[0]), 'image/jpeg', 0.86));
+    } catch (e) { console.warn('colagem', e); return bs[0]; }
+  }
+  async function usarComoCapa(principal, fotoId) {
+    await atualizarCampos('fotos', principal.id, (o) => { if (fotoId === o.id) delete o.capaId; else o.capaId = fotoId; });
+    toast('Capa da irregularidade trocada');
+  }
+  /* Janela "Juntar": escolhe a capa (⭐) e a descrição que fica. ids = fotos escolhidas (de qualquer grupo). */
+  async function dialogoJuntar(ids, opts) {
+    opts = opts || {};
+    const membros = await expandirGrupos(ids);
+    if (membros.length < 2) { toast('Escolha ao menos 2 fotos (ou irregularidades).', true); return null; }
+    const regs = new Set(membros.map((x) => x.registroId));
+    if (regs.size > 1) { toast('As fotos são de obras diferentes.', true); return null; }
+    const irregs = membros.filter((x) => x.irregular && !x.vinculadaA);
+    const atualP = irregs.find((x) => x.capaId) || null;
+    let capa = (atualP && atualP.capaId) || (irregs[0] || membros[0]).id;
+    const visitas = new Map();
+    for (const x of membros) if (x.visitaId && !visitas.has(x.visitaId)) visitas.set(x.visitaId, await DB.get('visitas', x.visitaId));
+    const quando = (x) => { const v = visitas.get(x.visitaId); return (v ? 'visita nº ' + v.numero + ' · ' : '') + dataHoraBR(x.dataHora).slice(0, 16); };
+    // descrições candidatas (sem repetir)
+    const cand = [];
+    for (const x of irregs.concat(membros.filter((y) => !irregs.includes(y)))) {
+      const t = String(x.descricao || '').trim().replace(/\s*\(\d+\/\d+\)\s*[.;:]?$/, '');
+      if (t && !cand.some((c) => c.t === t)) cand.push({ t, de: x });
+    }
+    const esc = { desc: cand.length ? cand[0].t : '', outra: cand.length ? '' : ' ', texto: '' };
+    const capas = h('div', { class: 'jt-capas' });
+    const pintarCapas = () => rc(capas, ...membros.map((x) => {
+      const im = h('img', { alt: '' }); urlFoto(x).then((u) => { im.src = u; });
+      return h('button', { type: 'button', class: 'jt-capa' + (x.id === capa ? ' on' : ''), 'data-foto': x.id, title: quando(x), onclick: () => { capa = x.id; pintarCapas(); } }, im);
+    }));
+    pintarCapas();
+    const ta = h('textarea', { rows: 2, placeholder: 'Descreva a irregularidade', oninput: (e) => { esc.texto = e.target.value; } });
+    const boxTa = h('div', { style: { display: cand.length ? 'none' : '' } }, ta);
+    const ops = h('div', { class: 'jt-ops' });
+    const pintarOps = () => rc(ops, ...cand.map((c, k) => h('button', { type: 'button', class: 'jt-op' + (!esc.outra && esc.desc === c.t ? ' on' : ''), 'data-op': k, onclick: () => { esc.desc = c.t; esc.outra = ''; boxTa.style.display = 'none'; pintarOps(); } },
+      h('i'), h('span', {}, c.t, h('small', {}, quando(c.de))))),
+    h('button', { type: 'button', class: 'jt-op' + (esc.outra ? ' on' : ''), 'data-op': 'outra', onclick: () => { esc.outra = ' '; boxTa.style.display = ''; pintarOps(); setTimeout(() => ta.focus(), 30); } }, h('i'), h('span', {}, '✍️ Escrever outra descrição')));
+    pintarOps();
+    const nHist = irregs.reduce((a, x) => a + (x.verificacoes || []).length, 0);
+    const nVis = new Set(membros.map((x) => x.visitaId).filter(Boolean)).size;
+    const corpo = h('div', { class: 'jt' },
+      h('div', { class: 'sub' }, 'Toque numa foto para escolher a capa (⭐)'), capas,
+      h('div', { class: 'sub', style: { marginTop: '10px' } }, 'Descrição que fica'), ops, boxTa,
+      h('div', { class: 'dica', style: { marginTop: '10px' } },
+        'As ' + membros.length + ' fotos viram UMA irregularidade' + (nVis > 1 ? ', com a data e a visita da mais antiga' : '') + '.' +
+        (nHist ? ' O histórico de verificações (' + nHist + ') fica junto.' : '') + ' Na notificação ela entra uma vez, com as fotos numeradas (1/' + membros.length + ', 2/' + membros.length + '…). Dá para separar depois.'));
+    const ok = await modal('🔗 Juntar ' + (irregs.length === membros.length ? membros.length + ' irregularidades' : membros.length + ' fotos') + ' numa irregularidade', corpo, [
+      { txt: 'Cancelar', valor: false },
+      { txt: 'Juntar', cls: 'pri', valor: true, antes: () => { if (esc.outra && !esc.texto.trim()) { toast('Escreva a descrição.', true); return false; } } }]);
+    if (!ok) return null;
+    const desc = esc.outra ? esc.texto.trim() : esc.desc;
+    const P = await juntarFotos(membros.map((x) => x.id), capa, desc);
+    if (P) toast('Juntadas: 1 irregularidade com ' + membros.length + ' fotos');
+    return P;
+  }
+  /* "Vincular mais fotos": outras irregularidades da obra e fotos das mesmas visitas */
+  async function vincularMais(P) {
+    const todas = await fotosDaObra(P.registroId);
+    const noGrupo = new Set([P.id].concat(todas.filter((x) => x.vinculadaA === P.id).map((x) => x.id)));
+    const visitasG = new Set(todas.filter((x) => noGrupo.has(x.id)).map((x) => x.visitaId).filter(Boolean));
+    const cand = todas.filter((x) => !noGrupo.has(x.id) && !x.vinculadaA && !x.verificacaoDe && !x.projetoDe && (x.irregular || (x.visitaId && visitasG.has(x.visitaId))))
+      .sort((a, b) => (b.irregular - a.irregular) || porData(b, a));
+    if (!cand.length) { toast('Não há outras fotos ou irregularidades desta obra para vincular.'); return null; }
+    const sel = new Set();
+    const grade = h('div', { class: 'jt-grade' }, cand.map((x) => {
+      const im = h('img', { alt: '' }); urlFoto(x).then((u) => { im.src = u; });
+      const bt = h('button', { type: 'button', class: 'jt-cand' + (x.irregular ? ' irr' : ''), 'data-foto': x.id, onclick: () => { if (sel.has(x.id)) sel.delete(x.id); else sel.add(x.id); bt.classList.toggle('on', sel.has(x.id)); } },
+        im, h('span', {}, x.irregular ? '⚠️ ' + (x.descricao || '') : (x.descricao || dataHoraBR(x.dataHora).slice(0, 16))));
+      return bt;
+    }));
+    const ok = await modal('➕ Vincular mais fotos', h('div', {}, h('p', { class: 'sub', style: { marginTop: 0 } }, 'Marque as irregularidades (⚠️) ou fotos que são da mesma coisa que “' + (P.descricao || '') + '”.'), grade),
+      [{ txt: 'Cancelar', valor: false }, { txt: 'Continuar', cls: 'pri', valor: true, antes: () => { if (!sel.size) { toast('Marque ao menos uma.', true); return false; } } }]);
+    if (!ok) return null;
+    return dialogoJuntar([P.id].concat([...sel]));
+  }
+  async function dialogoSeparar(f) {
+    const modo = await modal('✂️ Separar esta foto', h('div', {}, h('p', { style: { marginTop: 0 } }, 'A foto sai desta irregularidade. Ela vira:')),
+      [{ txt: 'Cancelar', valor: null }, { txt: 'Foto comum da visita', valor: 'foto' }, { txt: 'Irregularidade separada', cls: 'pri', valor: 'irr' }]);
+    if (!modo) return false;
+    const r = await separarFoto(f.id, modo);
+    toast(modo === 'irr' ? 'Foto separada: virou outra irregularidade (pendente)' : 'Foto separada: voltou a ser foto comum');
+    return r;
+  }
+  // "🔗 5 fotos" ao lado de uma irregularidade (conta quando a lista já tiver sido montada)
+  function seloGrupo(f, onde) {
+    membrosDe(f).then((m) => { if (m.length && onde && !onde.querySelector('.selo-grupo')) onde.appendChild(h('span', { class: 'selo-grupo' }, '🔗 ' + (m.length + 1) + ' fotos')); });
+  }
+
   /* Foto "atual" de uma irregularidade: a mais recente tirada numa verificacao
      "nao sanada"; sem isso, a foto original da constatacao. */
   async function fotoAtualIrr(f, mapa) {
@@ -4105,12 +4469,29 @@
       const fv = mapa ? mapa.get(vf.fotoId) : await DB.get('fotos', vf.fotoId);
       if (fv && !fv.excluido) return fv;
     }
+    if (f.capaId) { const c = mapa ? mapa.get(f.capaId) : await DB.get('fotos', f.capaId); if (c && !c.excluido && c.vinculadaA === f.id) return c; } // 3.19.3: a capa do grupo
     return f;
   }
   // item de anexo de notificacao para uma irregularidade (usa a foto atual)
   async function selIrregularidade(f, mapa) {
     const atual = await fotoAtualIrr(f, mapa);
     return { fotoId: atual.id, irrId: f.id, legenda: legendaPadrao(f) };
+  }
+  /* 3.19.3: irregularidade com várias fotos: entra uma vez na lista (a principal) e as fotos da constatação
+     vão no anexo com a legenda numerada (1/5, 2/5…). Se houver foto nova de verificação, ela vem depois. */
+  const legendaNumerada = (f, k, n) => semPontoFinal(legendaPadrao(f)) + ' (' + k + '/' + n + ').';
+  const semPontoFinal = (t) => String(t || '').trim().replace(/[\s.;:]+$/, '');
+  async function selsIrregularidade(f, mapa) {
+    const prim = await selIrregularidade(f, mapa);
+    const lista = mapa ? [...mapa.values()] : null;
+    const grupo = await grupoDe(f, lista);
+    if (grupo.length < 2) return [prim];
+    const n = grupo.length;
+    if (grupo.some((g) => g.id === prim.fotoId)) {
+      // sem foto nova: a capa é a entrada da irregularidade; as outras vão só no anexo
+      return grupo.map((g, k) => (g.id === prim.fotoId ? Object.assign(prim, { legenda: legendaNumerada(f, k + 1, n) }) : { fotoId: g.id, grupoDe: f.id, legenda: legendaNumerada(f, k + 1, n), naLista: false }));
+    }
+    return grupo.map((g, k) => ({ fotoId: g.id, grupoDe: f.id, legenda: legendaNumerada(f, k + 1, n), naLista: false })).concat([prim]);
   }
 
   /* Passagem entre irregularidades: a tela da irregularidade lembra a lista de onde foi aberta
@@ -4122,14 +4503,16 @@
   function navIrr() { try { return JSON.parse(sessionStorage.getItem('nav_irr') || 'null'); } catch (e) { return null; } }
 
   function itemIrregularidade(f, onclick, extra) {
-    const img = h('img'); fotoAtualIrr(f).then((a) => urlFoto(situacao(f) === 'pendente' ? a : f)).then((u) => { img.src = u; });
+    const img = h('img'); fotoAtualIrr(f).then(async (a) => urlFoto(situacao(f) === 'pendente' ? a : await capaDe(f))).then((u) => { img.src = u; });
+    const tit = h('div', { class: 't', style: { fontWeight: 500 } }, f.descricao || '(sem descrição)');
+    seloGrupo(f, tit);
     const st = situacao(f);
     const ult = (f.verificacoes || [])[(f.verificacoes || []).length - 1];
     return h('div', { class: 'item', style: { cursor: 'pointer' }, onclick },
       h('div', { class: 'item-irr' }, extra || null, img,
         h('div', { class: 'cresce' },
           h('span', { class: 'badge ' + st, style: { float: 'right', marginLeft: '6px' } }, st === 'sanada' ? '✓ Sanada' : 'Pendente'),
-          h('div', { class: 't', style: { fontWeight: 500 } }, f.descricao || '(sem descrição)'),
+          tit,
           h('div', { class: 'd' }, 'Constatada em ' + dataHoraBR(f.dataHora).slice(0, 10) +
             (st === 'sanada' && f.sanadaEm ? ' · sanada em ' + dataLocalBR(f.sanadaEm) : '') +
             (st === 'pendente' && ult ? ' · última verificação ' + dataLocalBR(ult.data) + ': não sanada' : '')))));
@@ -4141,11 +4524,35 @@
     const lista = todas.filter((f) => filtro === 'todas' || situacao(f) === filtro);
     const nP = todas.filter((f) => situacao(f) === 'pendente').length, nS = todas.length - nP;
     const bt = (k, t) => h('button', { class: filtro === k ? 'ativo' : '', onclick: () => { sessionStorage.setItem('filtro_irr', k); telaRegistro(r.id); } }, t);
+    // 3.19.3: selecionar irregularidades para juntar (a mesma coisa vista em fotos ou visitas diferentes)
+    const caixa = h('div');
+    let sel = null;
+    const barra = h('div', { class: 'irr-sel-barra' });
+    const desenhar = () => {
+      const n = sel ? sel.size : 0;
+      rc(caixa, lista.length ? lista.map((f) => {
+        const ck = sel ? h('input', { type: 'checkbox', class: 'irr-ck', checked: sel.has(f.id) ? 'checked' : null, onclick: (e) => e.stopPropagation(), onchange: (e) => { if (e.target.checked) sel.add(f.id); else sel.delete(f.id); desenhar(); } }) : null;
+        const it = itemIrregularidade(f, () => {
+          if (sel) { if (sel.has(f.id)) sel.delete(f.id); else sel.add(f.id); desenhar(); return; }
+          abrirIrregularidades(f, lista, { pendente: 'Pendentes da obra', sanada: 'Sanadas da obra', todas: 'Irregularidades da obra' }[filtro], null, () => telaRegistro(r.id));
+        }, ck);
+        if (sel && sel.has(f.id)) it.classList.add('irr-marcada');
+        it.dataset.irr = f.id;
+        return it;
+      }) : h('div', { class: 'vazio' }, filtro === 'pendente' ? 'Nenhuma irregularidade pendente. 👍' : 'Nada por aqui.'));
+      rc(barra, sel ? [h('span', { class: 'sub', style: { flex: 1 } }, n ? plural(n, 'selecionada', 'selecionadas') : 'Marque as irregularidades que são a mesma coisa'),
+        h('button', { class: 'btn', onclick: () => { sel = null; desenhar(); } }, 'Cancelar'),
+        h('button', { class: 'btn pri', 'data-acao': 'juntar-irr', disabled: n < 2, onclick: async () => { if (await dialogoJuntar([...sel])) telaRegistro(r.id, 'irr'); } }, '🔗 Juntar selecionadas')] : []);
+      barra.style.display = sel ? '' : 'none';
+      btSel.textContent = sel ? 'Cancelar seleção' : '☑ Selecionar';
+    };
+    const btSel = h('button', { class: 'btn', 'data-acao': 'selecionar-irr', onclick: () => { sel = sel ? null : new Set(); desenhar(); } });
+    desenhar();
     return h('div', {},
       h('div', { class: 'filtros' }, bt('pendente', 'Pendentes (' + nP + ')'), bt('sanada', 'Sanadas (' + nS + ')'), bt('todas', 'Todas (' + todas.length + ')')),
-      todas.length ? h('div', { class: 'acoes', style: { marginTop: 0, marginBottom: '10px' } }, h('button', { class: 'btn', onclick: () => dialogoIrregularidades(r) }, '📄 Relatório de irregularidades')) : null,
-      lista.length ? lista.map((f) => itemIrregularidade(f, () => abrirIrregularidades(f, lista, { pendente: 'Pendentes da obra', sanada: 'Sanadas da obra', todas: 'Irregularidades da obra' }[filtro], null, () => telaRegistro(r.id))))
-        : h('div', { class: 'vazio' }, filtro === 'pendente' ? 'Nenhuma irregularidade pendente. 👍' : 'Nada por aqui.'));
+      todas.length ? h('div', { class: 'acoes', style: { marginTop: 0, marginBottom: '10px' } }, h('button', { class: 'btn', onclick: () => dialogoIrregularidades(r) }, '📄 Relatório de irregularidades'),
+        pode.coletar() && lista.length > 1 ? btSel : null) : null,
+      caixa, barra);
   }
 
   async function telaIrregularidade(id, visitaId) {
@@ -4159,13 +4566,18 @@
     const st = situacao(f);
     const visOrig = f.visitaId ? await DB.get('visitas', f.visitaId) : null;
     const img = h('img', { class: 'grande' });
-    urlFoto(f, true).then((u) => { img.src = u; });
+    const grupoF = await grupoDe(f);
+    urlFoto(grupoF[0], true).then((u) => { img.src = u; });
+    const tiraGrupo = grupoF.length > 1 ? h('div', { class: 'irr-chips grupo-pagina' }, grupoF.map((g, j) => {
+      const m = h('img', { alt: '' }); urlFoto(g).then((u) => { m.src = u; });
+      return h('button', { class: 'irr-chip' + (j === 0 ? ' ativo' : ''), onclick: (e) => { urlFoto(g, true).then((u) => { img.src = u; }); [...e.currentTarget.parentNode.children].forEach((c) => c.classList.toggle('ativo', c === e.currentTarget)); } }, m, h('span', {}, (j + 1) + '/' + grupoF.length + (j === 0 ? ' ⭐' : '')));
+    })) : null;
 
     const cab = h('div', { class: 'card' },
       h('span', { class: 'badge ' + st, style: { float: 'right' } }, st === 'sanada' ? '✓ Sanada' : 'Pendente'),
       h('div', { class: 'sub' }, 'Constatada em ' + dataHoraBR(f.dataHora) + (visOrig ? ' · Visita nº ' + visOrig.numero : '') + ' · por ' + (nomeDe(f.criadoPor) || '—')),
-      h('h2', { style: { margin: '6px 0 10px' } }, f.descricao || '(sem descrição)'),
-      img,
+      h('h2', { style: { margin: '6px 0 10px' } }, f.descricao || '(sem descrição)', grupoF.length > 1 ? h('span', { class: 'selo-grupo' }, '🔗 ' + grupoF.length + ' fotos') : null),
+      img, tiraGrupo,
       f.lat != null ? h('div', { class: 'sub' }, '📍 ', h('a', { href: 'https://www.google.com/maps?q=' + f.lat + ',' + f.lng, target: '_blank', rel: 'noopener' }, Foto.textoCoord(f.lat, f.lng))) : null,
       pode.coletar() ? h('div', { class: 'acoes' }, h('button', { class: 'btn peq', onclick: () => abrirFoto(f, () => telaIrregularidade(id, visitaId)) }, '✏️ Editar descrição')) : null);
 
@@ -4179,10 +4591,10 @@
         vf.descricao ? h('div', { style: { margin: '4px 0' } }, vf.descricao) : null);
       if (fotoV) {
         const i1 = h('img'), i2 = h('img');
-        urlFoto(f).then((u) => { i1.src = u; });
+        urlFoto(grupoF[0]).then((u) => { i1.src = u; });
         urlFoto(fotoV).then((u) => { i2.src = u; });
         ap(box, h('div', { class: 'antes-depois' },
-          h('figure', {}, i1, h('figcaption', {}, 'Antes · ' + dataHoraBR(f.dataHora).slice(0, 10))),
+          h('figure', {}, i1, h('figcaption', {}, 'Antes · ' + dataHoraBR(grupoF[0].dataHora).slice(0, 10))),
           h('figure', { onclick: () => abrirFoto(fotoV) }, i2, h('figcaption', {}, 'Depois · ' + dataHoraBR(fotoV.dataHora).slice(0, 10)))));
       }
       if (pode.coletar()) ap(box, h('div', { class: 'acoes', style: { marginTop: '6px' } }, h('button', { class: 'btn peq perigo', onclick: async () => {
@@ -4253,32 +4665,93 @@
     });
   }
 
+  /* 3.19.3: conferência desta visita (a última verificação registrada nela) */
+  function hojeDe(f, visitaId) {
+    if (!f || !visitaId) return null;
+    const vs = f.verificacoes || [];
+    for (let i = vs.length - 1; i >= 0; i--) if (vs[i].visitaId === visitaId) return vs[i];
+    return null;
+  }
+  /* Pendências de visitas anteriores para conferir numa visita: as pendentes e as que foram sanadas nesta visita
+     (para continuarem à vista como conferidas). As que faltam vêm primeiro. */
+  async function pendenciasDaVisita(r, visitaId) {
+    const todas = (await irregularidadesDe(r.id)).filter((f) => f.visitaId !== visitaId && (situacao(f) === 'pendente' || hojeDe(f, visitaId)));
+    const falta = todas.filter((f) => !hojeDe(f, visitaId)), feitas = todas.filter((f) => hojeDe(f, visitaId));
+    const nS = feitas.filter((f) => hojeDe(f, visitaId).status === 'sanada').length;
+    return { lista: falta.concat(feitas), falta, feitas, nS, nN: feitas.length - nS };
+  }
+  /* Corrigir a conferência desta visita: troca sanada / não sanada e o texto (a foto, se houver, continua) */
+  async function corrigirVerificacao(f, vf) {
+    const dado = { status: vf.status, descricao: vf.descricao || '' };
+    const seg = h('div', { class: 'seg verif-modo' });
+    const desenhar = () => rc(seg,
+      h('button', { type: 'button', class: dado.status === 'sanada' ? 'ativo' : '', onclick: () => { dado.status = 'sanada'; desenhar(); } }, '✓ Sanada'),
+      h('button', { type: 'button', class: dado.status === 'nao_sanada' ? 'ativo' : '', onclick: () => { dado.status = 'nao_sanada'; desenhar(); } }, '✗ Não sanada'));
+    desenhar();
+    const ok = await modal('✏️ Corrigir conferência', h('div', {}, h('p', { class: 'sub', style: { marginTop: 0 } }, f.descricao || ''), seg,
+      campo('Descrição *', inputArea(dado, 'descricao', { rows: 3 }))), [
+      { txt: 'Cancelar', valor: false },
+      { txt: 'Salvar', cls: 'pri', valor: true, antes: () => { if (!dado.descricao.trim()) { toast('Descreva a situação.', true); return false; } } }]);
+    if (!ok) return false;
+    await atualizarCampos('fotos', f.id, (o) => {
+      const x = (o.verificacoes || []).find((y) => y.id === vf.id);
+      if (!x) return;
+      x.status = dado.status; x.descricao = dado.descricao.trim(); x.corrigidaEm = new Date().toISOString(); x.corrigidaPor = email();
+      recalcularSituacao(o);
+    });
+    if (vf.fotoId) await atualizarCampos('fotos', vf.fotoId, (o) => { o.descricao = (dado.status === 'sanada' ? 'Correção: ' : 'Verificação: ') + dado.descricao.trim(); });
+    toast('Conferência corrigida');
+    return true;
+  }
+  /* Desfazer a conferência desta visita (volta a ficar "a conferir"); a foto tirada nela é excluída */
+  async function desfazerVerificacao(f, vf) {
+    const fv = vf.fotoId ? await DB.get('fotos', vf.fotoId) : null;
+    if (fv && !fv.excluido) return excluirFotos([fv.id], 'Desfazer a conferência desta pendência? A foto tirada na conferência será excluída e a pendência volta a ficar “a conferir”.');
+    if (!(await confirmar('Desfazer a conferência desta pendência? Ela volta a ficar “a conferir”.', 'Desfazer'))) return false;
+    await atualizarCampos('fotos', f.id, (o) => { o.verificacoes = (o.verificacoes || []).filter((y) => y.id !== vf.id); recalcularSituacao(o); });
+    return true;
+  }
   async function verificarIrregularidade(f, r, status, visitaId, opts) {
     const dado = { descricao: '', foto: null, origem: 'camera' };
+    /* 3.19.3: registrar com foto ou só com texto (o app lembra a última escolha) */
+    let modoFoto = 'foto'; try { modoFoto = localStorage.getItem('verifModo') === 'texto' ? 'texto' : 'foto'; } catch (e) { /* */ }
     const prev = h('div', { class: 'antes-depois', style: { marginBottom: '10px' } });
-    const imgAntes = h('img'); urlFoto(f).then((u) => { imgAntes.src = u; });
+    const imgAntes = h('img'); capaDe(f).then(urlFoto).then((u) => { imgAntes.src = u; });
     const imgDepois = h('img');
     rc(prev, h('figure', {}, imgAntes, h('figcaption', {}, 'Antes')), h('figure', {}, imgDepois, h('figcaption', {}, 'Depois (toque em Câmera ou Galeria)')));
     const inpGal = h('input', { type: 'file', accept: 'image/*', class: 'oculto' });
     inpGal.addEventListener('change', () => { if (inpGal.files[0]) { dado.foto = inpGal.files[0]; dado.origem = 'galeria'; imgDepois.src = URL.createObjectURL(dado.foto); } });
-    const corpo = h('div', {},
-      h('p', { class: 'sub', style: { marginTop: 0 } }, f.descricao || ''),
-      prev,
+    const areaFoto = h('div', { class: 'verif-foto' }, prev,
       h('div', { class: 'acoes', style: { marginTop: 0 } },
         h('button', { class: 'btn', onclick: async (e) => {
           const b = await escolherFoto('Depois · ' + (f.descricao || ''), e.target.closest('.modal-fundo'));
           if (b) { dado.foto = b; dado.origem = 'camera'; imgDepois.src = URL.createObjectURL(b); }
         } }, '📷 Câmera'),
-        h('button', { class: 'btn', onclick: () => inpGal.click() }, '🖼️ Galeria'), inpGal),
+        h('button', { class: 'btn', onclick: () => inpGal.click() }, '🖼️ Galeria'), inpGal));
+    const avisoTexto = h('div', { class: 'dica verif-texto' }, 'Sem foto nova: no relatório e na notificação vale a foto da constatação.');
+    const segModo = h('div', { class: 'seg verif-modo' });
+    const desenharModo = () => {
+      rc(segModo,
+        h('button', { type: 'button', 'data-modo': 'foto', class: modoFoto === 'foto' ? 'ativo' : '', onclick: () => { modoFoto = 'foto'; desenharModo(); } }, '📷 Com foto'),
+        h('button', { type: 'button', 'data-modo': 'texto', class: modoFoto === 'texto' ? 'ativo' : '', onclick: () => { modoFoto = 'texto'; desenharModo(); } }, '✍️ Só texto'));
+      areaFoto.style.display = modoFoto === 'foto' ? '' : 'none';
+      avisoTexto.style.display = modoFoto === 'texto' ? '' : 'none';
+    };
+    desenharModo();
+    const corpo = h('div', {},
+      h('p', { class: 'sub', style: { marginTop: 0 } }, f.descricao || ''),
+      segModo, areaFoto,
       campo(status === 'sanada' ? 'O que foi feito (providência adotada) *' : 'Situação encontrada *',
-        inputArea(dado, 'descricao', { placeholder: status === 'sanada' ? 'Ex.: Telhas substituídas e cumeeiras refixadas.' : 'Ex.: Empresa ainda não iniciou a correção.' })));
+        inputArea(dado, 'descricao', { placeholder: status === 'sanada' ? 'Ex.: Telhas substituídas e cumeeiras refixadas.' : 'Ex.: Empresa ainda não iniciou a correção.' })), avisoTexto);
     const ok = await modal(status === 'sanada' ? '✓ Registrar como sanada' : '✗ Registrar como não sanada', corpo, [
       { txt: 'Cancelar', valor: false },
       { txt: 'Salvar', cls: status === 'sanada' ? 'ok' : 'pri', valor: true, antes: () => {
         if (!dado.descricao.trim()) { toast('Descreva ' + (status === 'sanada' ? 'o que foi feito.' : 'a situação encontrada.'), true); return false; }
-        if (status === 'sanada' && !dado.foto) return confirmar('Registrar como sanada sem foto do “depois”?', 'Registrar sem foto');
+        if (modoFoto === 'foto' && !dado.foto) return confirmar(status === 'sanada' ? 'Registrar como sanada sem foto do “depois”?' : 'Registrar sem foto nova?', 'Registrar sem foto');
       } }]);
     if (!ok) return false;
+    try { localStorage.setItem('verifModo', modoFoto); } catch (e) { /* */ }
+    if (modoFoto === 'texto') dado.foto = null;
     let fotoV = null;
     if (dado.foto) {
       const visita = visitaId ? await DB.get('visitas', visitaId) : null;
@@ -4337,9 +4810,10 @@
     try {
       const escolhidas = todas.filter((x) => sel.has(x.id));
       // 1) junta todas as fotos (constatação + verificações) e busca de uma vez, várias ao mesmo tempo
-      const fotoDe = new Map();
+      const fotoDe = new Map(), grupos = new Map();
       for (const f of escolhidas) {
         fotoDe.set(f.id, f);
+        const g = await grupoDe(f); grupos.set(f.id, g); for (const x of g) fotoDe.set(x.id, x);
         for (const vf of f.verificacoes || []) if (vf.fotoId && !fotoDe.has(vf.fotoId)) { const fv = await DB.get('fotos', vf.fotoId); if (fv) fotoDe.set(fv.id, fv); }
       }
       const buscar = [...fotoDe.values()].filter((x) => !x.excluido);
@@ -4371,7 +4845,7 @@
           constatada_data: dataHoraBR(f.dataHora),
           constatada_visita: await visitaTxt(f.visitaId),
           constatada_por: nomeDe(f.criadoPor) || '',
-          img: f.excluido ? null : img(f.id),
+          img: f.excluido ? null : (grupos.get(f.id).length > 1 ? await colagem(grupos.get(f.id).map((x) => img(x.id))) : img(f.id)),
           historico,
         });
       }
@@ -4415,8 +4889,9 @@
       const ultimaSanada = (f) => (f.verificacoes || []).filter((x) => x.status === 'sanada').pop() || {};
       // 1) fotos de antes e depois, buscadas de uma vez
       const buscar = [], fotoV = new Map();
+      const gruposS = new Map();
       for (const f of escolhidas) {
-        buscar.push(f);
+        const g = await grupoDe(f); gruposS.set(f.id, g); buscar.push(...g);
         const vf = ultimaSanada(f);
         const fv = vf.fotoId ? await DB.get('fotos', vf.fotoId) : null;
         if (fv) { fotoV.set(f.id, fv); buscar.push(fv); }
@@ -4432,7 +4907,7 @@
         const visA = f.visitaId ? await DB.get('visitas', f.visitaId) : null;
         const visD = vf.visitaId ? await DB.get('visitas', vf.visitaId) : null;
         itens.push({
-          antes_img: blobs.get(f.id), antes_desc: f.descricao || '', antes_data: dataHoraBR(f.dataHora).slice(0, 10), antes_visita: visA ? 'Visita nº ' + visA.numero : '',
+          antes_img: gruposS.get(f.id).length > 1 ? await colagem(gruposS.get(f.id).map((x) => blobs.get(x.id))) : blobs.get(f.id), antes_desc: f.descricao || '', antes_data: dataHoraBR(f.dataHora).slice(0, 10), antes_visita: visA ? 'Visita nº ' + visA.numero : '',
           depois_img: fv ? blobs.get(fv.id) : null, depois_desc: vf.descricao || '', depois_data: vf.data ? dataLocalBR(vf.data) : '—',
           depois_visita: visD ? 'Visita nº ' + visD.numero : (fv ? '' : 'sem foto'), verificado_por: nomeDe(vf.por) || '',
         });
@@ -4703,7 +5178,7 @@
   }
   // rascunho: projeto atual da irregularidade da foto anexada (a menos que tenha sido desmarcado)
   async function projetoDaSel(sel) {
-    if (sel.semProjeto) return null;
+    if (sel.semProjeto || sel.grupoDe) return null;
     let irr = sel.irrId ? await DB.get('fotos', sel.irrId) : null;
     if (!irr) { const f = await DB.get('fotos', sel.fotoId); if (f && f.irregular) irr = f; else if (f && f.verificacaoDe) irr = await DB.get('fotos', f.verificacaoDe); }
     const p = projetoDe(irr);
@@ -5667,12 +6142,13 @@
       return a ? Object.assign({}, a, { irregular: true, descricao: f.descricao, _irr: f }) : f;
     }).filter(Boolean);
     const descSel = (s) => { const irr = (s.irrId && mapaFotos.get(s.irrId)) || irrPorFoto.get(s.fotoId); return ((irr || mapaFotos.get(s.fotoId) || {}).descricao) || ''; };
-    const temIrr = (f) => (n.fotos || []).some((s) => s.irrId === f.id || s.fotoId === f.id || (atualDe.get(f.id) && s.fotoId === atualDe.get(f.id).id));
+    const temIrr = (f) => (n.fotos || []).some((s) => s.irrId === f.id || s.grupoDe === f.id || s.fotoId === f.id || (atualDe.get(f.id) && s.fotoId === atualDe.get(f.id).id));
     let sujo = false;
     // rascunho: troca a foto antiga de uma irregularidade pela foto nova da verificacao
     if (n.status !== 'emitida') {
       let trocou = 0;
       for (const s of n.fotos || []) {
+        if (s.grupoDe) continue; // 3.19.3: foto da constatação de uma irregularidade com várias fotos
         const irr = s.irrId ? mapaFotos.get(s.irrId) : ((mapaFotos.get(s.fotoId) || {}).irregular ? mapaFotos.get(s.fotoId) : null);
         const a = irr && atualDe.get(irr.id);
         if (a && s.fotoId !== a.id) { s.fotoId = a.id; s.irrId = irr.id; trocou++; }
@@ -5685,7 +6161,9 @@
     // 3.18.2: a legenda da foto é a descrição da foto na visita — o que for escrito aqui corrige a visita ao salvar
     const legEditadas = new Set();
     const semPonto = (t) => String(t || '').trim().replace(/[\s.;:]+$/, '');
-    const fonteDesc = (s) => irrDaSel(s) || mapaFotos.get(s.fotoId) || null;
+    const fonteDesc = (s) => (s.grupoDe && mapaFotos.get(s.grupoDe)) || irrDaSel(s) || mapaFotos.get(s.fotoId) || null;
+    const sufixoGrupo = (t) => { const m = String(t || '').match(/\s*\((\d+\/\d+)\)\s*[.;:]?\s*$/); return m ? ' (' + m[1] + ')' : ''; };
+    const semSufixo = (t) => semPonto(String(t || '').replace(/\s*\(\d+\/\d+\)\s*[.;:]?\s*$/, ''));
 
     /* --- cabecalho --- */
     const fmtNum = (CONFIG.formato_numero || {})[r.tipo] || '';
@@ -5737,7 +6215,7 @@
             .sort((a, b) => String(a.dataHora).localeCompare(b.dataHora));
           if (!pend.length) { toast('Todas as irregularidades pendentes já estão na notificação.'); return; }
           const novas = [];
-          for (const f of pend) novas.push(await selIrregularidade(f, mapaFotos));
+          for (const f of pend) novas.push(...(await selsIrregularidade(f, mapaFotos)));
           n.fotos = (n.fotos || []).concat(novas);
           const novos = [...new Set(pend.map((f) => (f.descricao || '').trim().replace(/[.;]?$/, ';')).filter((d) => d !== ';'))].filter((d) => !(n.itens || []).includes(d));
           n.itens = (n.itens || []).concat(novos);
@@ -5774,7 +6252,7 @@
     /* --- fotos --- */
     const fotosBox = h('div');
     // foto do projeto da irregularidade: vai logo abaixo desta imagem (Imagem N-A)
-    const irrDaSel = (s) => (s.irrId && mapaFotos.get(s.irrId)) || irrPorFoto.get(s.fotoId) || ((mapaFotos.get(s.fotoId) || {}).irregular ? mapaFotos.get(s.fotoId) : null);
+    const irrDaSel = (s) => s.grupoDe ? null : (s.irrId && mapaFotos.get(s.irrId)) || irrPorFoto.get(s.fotoId) || ((mapaFotos.get(s.fotoId) || {}).irregular ? mapaFotos.get(s.fotoId) : null);
     const linhaProjeto = (s, i) => {
       const irr = irrDaSel(s);
       const p = ro ? s.projeto : projetoDe(irr);
@@ -5802,7 +6280,7 @@
         urlFoto(f).then((u) => { img.src = u; });
         const ta = h('textarea', { readonly: ro, placeholder: 'Legenda', oninput: (e) => { s.legenda = e.target.value; legEditadas.add(s.fotoId); marcar(); } });
         ta.value = s.legenda || '';
-        const nova = s.irrId && s.irrId !== s.fotoId && f.dataHora ? ' · foto atualizada em ' + dataHoraBR(f.dataHora).slice(0, 10) : '';
+        const nova = s.irrId && s.irrId !== s.fotoId && f.verificacaoDe && f.dataHora ? ' · foto atualizada em ' + dataHoraBR(f.dataHora).slice(0, 10) : '';
         return h('div', { class: 'li' }, img, h('div', { style: { flex: 1 } }, h('div', { class: 'sub' }, 'Imagem ' + (i + 1) + nova), ta, linhaProjeto(s, i)),
           ro ? null : h('div', { class: 'ctl' },
             h('button', { class: 'btn peq', disabled: i === 0, onclick: () => { n.fotos.splice(i - 1, 0, n.fotos.splice(i, 1)[0]); marcar(); desenharFotos(); } }, '▲'),
@@ -5853,7 +6331,7 @@
       for (const fid of Array.from(legEditadas)) {
         legEditadas.delete(fid);
         const sel = (n.fotos || []).find((x) => x.fotoId === fid); if (!sel) continue;
-        const f = fonteDesc(sel); const d = semPonto(sel.legenda);
+        const f = fonteDesc(sel); const d = semSufixo(sel.legenda);
         if (!f || !d || d === semPonto(f.descricao)) continue;
         const novo = await atualizarCampos('fotos', f.id, (o) => { o.descricao = d; });
         if (novo) mapaFotos.set(f.id, novo);
@@ -6002,7 +6480,7 @@
       // podiam ser diferentes da descrição de propósito, ficam como estão)
       if (eraV2) for (const sl of n.fotos || []) {
         const f = fonteDesc(sl);
-        if (f && semPonto(f.descricao) && semPonto(f.descricao) !== semPonto(sl.legenda)) { sl.legenda = legendaPadrao(f); sujo = true; }
+        if (f && semPonto(f.descricao) && semPonto(f.descricao) !== semSufixo(sl.legenda)) { sl.legenda = semPonto(f.descricao) + sufixoGrupo(sl.legenda) + '.'; sujo = true; }
       }
       n.itens = itensFinal();
       const quem = quemResponde(r.tipo);
@@ -6175,7 +6653,7 @@
       async function incluirPendentes() {
         const pend = pendentesFora().sort((a, b) => String(a.dataHora).localeCompare(b.dataHora));
         if (!pend.length) return;
-        for (const f of pend) { const sl = await selIrregularidade(f, mapaFotos); sl.naLista = true; n.fotos = (n.fotos || []).concat(sl); }
+        for (const f of pend) { const sls = await selsIrregularidade(f, mapaFotos); for (const sl of sls) if (!sl.grupoDe) sl.naLista = true; n.fotos = (n.fotos || []).concat(sls); }
         marcar(); pintarFatos();
         toast(plural(pend.length, 'irregularidade pendente incluída', 'irregularidades pendentes incluídas'));
       }
@@ -7385,7 +7863,7 @@
     // a partir de "Aparência e câmera", cada seção vira uma lista suspensa (fechada; lembra as abertas)
     const iniSecoes = cards.findIndex((c) => c.querySelector && (c.querySelector(':scope > h2') || {}).textContent === 'Aparência e câmera');
     if (iniSecoes >= 0) for (let i = iniSecoes; i < cards.length; i++) cards[i] = secaoRecolhivel(cards[i]);
-    cards.push(h('p', { class: 'dica', style: { textAlign: 'center' } }, 'Fiscalização de Obras · v3.19.2 · dados salvos no aparelho' + (Sync.habilitado() ? ' e no Google Drive do administrador' : '') + ' · ', h('a', { href: 'privacidade.html' }, 'Política de privacidade')));
+    cards.push(h('p', { class: 'dica', style: { textAlign: 'center' } }, 'Fiscalização de Obras · v3.19.3 · dados salvos no aparelho' + (Sync.habilitado() ? ' e no Google Drive do administrador' : '') + ' · ', h('a', { href: 'privacidade.html' }, 'Política de privacidade')));
     rcT(tk, ...cards);
   }
 
@@ -7644,7 +8122,7 @@
   /* ================================================================== */
   /* 3.18.6: com internet fraca o navegador pode juntar arquivos de duas versões do app (um novo, outro guardado).
      Se isso acontecer, pede a versão nova inteira ao service worker e recarrega (uma vez por sessão). */
-  const VERSAO_APP = '3.19.2';
+  const VERSAO_APP = '3.19.3';
   function conferirVersaoArquivos() {
     const vj = self.VERSOES_JS || {};
     const dif = ['db', 'sync', 'docgen'].filter((k) => vj[k] !== VERSAO_APP);
